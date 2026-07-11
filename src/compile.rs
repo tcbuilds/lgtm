@@ -6,6 +6,15 @@ use thiserror::Error;
 
 use crate::policy::{self, Rule};
 
+mod packet;
+mod plan;
+
+pub use packet::{CompiledInstructions, compile_selected};
+pub use plan::{ENFORCEMENT_PLAN_SCHEMA_JSON, EnforcementPlan};
+
+#[cfg(test)]
+mod instruction_tests;
+
 /// Failure modes of the `compile --validate` path.
 ///
 /// Distinguishes a registry that fails validation from an I/O failure while

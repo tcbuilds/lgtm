@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:lgtm:schema:enforcement-plan",
+  "title": "lgtm enforcement plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["context_identity", "rule_ids", "checks", "evidence_required"],
+  "properties": {
+    "context_identity": {
+      "type": "string",
+      "pattern": "^files-fnv1a64-[0-9a-f]{16}$"
+    },
+    "rule_ids": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "checks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "evidence_required": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  }
+}
