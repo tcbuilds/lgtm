@@ -200,6 +200,14 @@ fn run_doctor() -> ExitCode {
             println!("  Go: go install github.com/zricethezav/gitleaks/v8@latest");
         }
     }
+    match lgtm::checks::ruff::installed_version() {
+        Some(version) => println!("ruff: ready ({version})"),
+        None => {
+            println!("ruff: MISSING");
+            println!("  Install: uv tool install ruff");
+            println!("  Alternative: pipx install ruff");
+        }
+    }
     ExitCode::SUCCESS
 }
 

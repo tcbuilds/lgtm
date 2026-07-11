@@ -7,8 +7,8 @@ use std::process::ExitCode;
 
 use serde::{Deserialize, Serialize};
 
-use crate::checks::gitleaks;
 use crate::checks::{EnforcementResult, Location, ResultEvidence, Status};
+use crate::checks::{gitleaks, ruff};
 use crate::policy::Severity;
 
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024;
@@ -180,7 +180,16 @@ fn rerun_checks(paths: &[String]) -> Vec<EnforcementResult> {
             })
             .collect();
     }
-    vec![result]
+    let mut results = vec![result];
+    let python_files: Vec<String> = paths
+        .iter()
+        .filter(|path| path.ends_with(".py"))
+        .cloned()
+        .collect();
+    if !python_files.is_empty() {
+        results.extend(ruff::scan(&python_files));
+    }
+    results
 }
 
 fn append_task_evidence(

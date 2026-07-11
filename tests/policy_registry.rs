@@ -13,6 +13,7 @@ fn embedded_registry_validates_against_schema() {
         vec![
             "no-committed-secrets",
             "no-swallowed-errors",
+            "no-broad-exception-handling",
             "external-call-timeout",
         ]
     );

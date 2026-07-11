@@ -144,9 +144,11 @@ fn missing_gitleaks_is_prominent_but_does_not_block_stop() {
     assert!(stop.status.success(), "unverified MUST must not hard-block");
     let stdout = String::from_utf8(stop.stdout).expect("UTF-8 stdout");
     assert!(stdout.contains("UNVERIFIED no-committed-secrets"));
+    assert!(stdout.contains("UNVERIFIED no-swallowed-errors"));
+    assert!(stdout.contains("UNVERIFIED no-broad-exception-handling"));
     let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
     let record: Value = serde_json::from_str(evidence.lines().last().expect("evidence line"))
         .expect("evidence JSON");
-    assert_eq!(record["rules"]["unverified"], 1);
+    assert_eq!(record["rules"]["unverified"], 3);
     assert_eq!(record["rules"]["failed"], 0);
 }

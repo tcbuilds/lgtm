@@ -45,12 +45,34 @@
     "instruction": "Do not catch and suppress errors. Convert unknown external errors into typed domain errors, add context before propagating, and never leave a bare or empty except.",
     "enforcement": {
       "mode": "static",
-      "checks": ["ruff.BLE001", "ruff.E722"]
+      "checks": ["ruff.check"]
     },
     "overridable": false,
     "evidence": {
       "required": ["check_result"]
     },
+    "references": ["codingStandards.md#error-handling"]
+  },
+  {
+    "id": "no-broad-exception-handling",
+    "title": "No broad exception handling",
+    "description": "Exception handlers must catch only the specific failures an operation can raise.",
+    "severity": "error",
+    "level": "must",
+    "category": "error-handling",
+    "applies_to": {
+      "languages": ["python"],
+      "domains": ["backend", "api", "worker", "infrastructure"],
+      "file_patterns": ["**/*.py"]
+    },
+    "activation": {
+      "change_types": ["create", "modify"],
+      "signals": ["exception-handler", "try-except", "bare-except"]
+    },
+    "instruction": "Catch specific exception types. Do not use bare except or catch Exception without converting, contextualizing, or re-raising it.",
+    "enforcement": { "mode": "static", "checks": ["ruff.check"] },
+    "overridable": false,
+    "evidence": { "required": ["check_result"] },
     "references": ["codingStandards.md#error-handling"]
   },
   {

@@ -7,8 +7,8 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
-use crate::checks::gitleaks;
 use crate::checks::{EnforcementResult, Status};
+use crate::checks::{gitleaks, ruff};
 
 mod evidence;
 mod input;
@@ -43,9 +43,11 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     let Some(root) = repo_root(hook_input.cwd.as_deref()) else {
         return ExitCode::SUCCESS;
     };
-    let result = scan_target(&root, &file_path);
-    persist(&root, hook_input.session_id.as_deref(), &result);
-    handle_result(output, &result)
+    let results = scan_target(&root, &file_path);
+    for result in &results {
+        persist(&root, hook_input.session_id.as_deref(), result);
+    }
+    handle_results(output, &results)
 }
 
 fn read_input(input: &mut impl Read) -> Option<input::HookInput> {
@@ -63,38 +65,54 @@ fn read_input(input: &mut impl Read) -> Option<input::HookInput> {
         .ok()
 }
 
-fn scan_target(root: &Path, file_path: &str) -> EnforcementResult {
+fn scan_target(root: &Path, file_path: &str) -> Vec<EnforcementResult> {
     let Some(resolved) = resolve_target(root, file_path) else {
-        return unverified_target(file_path);
+        return vec![unverified_target(file_path)];
     };
     let mut result = gitleaks::scan(std::slice::from_ref(&resolved));
     if result.locations.is_empty() {
         result.locations.push(crate::checks::Location {
-            file: resolved,
+            file: resolved.clone(),
             line: None,
         });
     }
-    result
+    let mut results = vec![result];
+    if resolved.ends_with(".py") {
+        results.extend(ruff::scan(std::slice::from_ref(&resolved)));
+    }
+    results
 }
 
-fn handle_result(output: &mut impl Write, result: &EnforcementResult) -> ExitCode {
-    match result.status {
-        Status::Failed => emit_block(output, result),
-        Status::Unverified => {
-            diagnostic(
-                "scan",
-                &result.rule_id,
-                "secret scan unverified; not blocking",
-                false,
-            );
-            ExitCode::SUCCESS
-        }
-        _ => ExitCode::SUCCESS,
+fn handle_results(output: &mut impl Write, results: &[EnforcementResult]) -> ExitCode {
+    let failures: Vec<_> = results
+        .iter()
+        .filter(|result| result.status == Status::Failed)
+        .collect();
+    for result in results
+        .iter()
+        .filter(|result| result.status == Status::Unverified)
+    {
+        diagnostic(
+            "scan",
+            &result.rule_id,
+            "check unverified; not blocking",
+            false,
+        );
+    }
+    if failures.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        emit_blocks(output, &failures)
     }
 }
 
-fn emit_block(output: &mut impl Write, result: &EnforcementResult) -> ExitCode {
-    let payload = json!({ "decision": "block", "reason": block_reason(result) });
+fn emit_blocks(output: &mut impl Write, results: &[&EnforcementResult]) -> ExitCode {
+    let reason = results
+        .iter()
+        .map(|result| block_reason(result))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let payload = json!({ "decision": "block", "reason": reason });
     let serialized = match serde_json::to_string(&payload) {
         Ok(serialized) => serialized,
         Err(error) => {

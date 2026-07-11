@@ -64,3 +64,15 @@ fn derives_framework_domain_from_repository_metadata() {
     let context = build(&fixture_root(), &[], "");
     assert_eq!(context.domains, ["api"]);
 }
+
+#[test]
+fn derives_exception_handler_signals_from_diff() {
+    let context = build(
+        &fixture_root(),
+        &["src/services/store.py".to_string()],
+        "+try:\n+    work()\n+except:\n+    pass\n",
+    );
+
+    assert!(context.risk_signals.contains(&"try-except".to_string()));
+    assert!(context.risk_signals.contains(&"bare-except".to_string()));
+}

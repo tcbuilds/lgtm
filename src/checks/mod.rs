@@ -10,6 +10,7 @@
 
 #[path = "gitleaks/api.rs"]
 pub mod gitleaks;
+pub mod ruff;
 
 use serde::{Deserialize, Serialize};
 
