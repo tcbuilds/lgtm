@@ -71,7 +71,7 @@ fn capture(root: &Path, target: &Path, session: Option<&str>) -> Result<(), Stri
         .to_string_lossy()
         .to_string();
     let context = context::build(root, &[relative], "");
-    let (_, registry) = crate::policy::load_profiled_registry(root)?;
+    let (_, registry, _) = crate::policy::load_profiled_registry(root)?;
     let selected = select_rules(&context, &registry, ChangeType::Modify);
     let compiled = compile_selected(&selected, &context.files_touched);
     baseline::capture(root, target, session, &compiled)

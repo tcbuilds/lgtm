@@ -151,14 +151,14 @@
     "severity": "error", "level": "must", "category": "testing",
     "applies_to": {"languages": ["python"], "domains": [], "file_patterns": ["**/*.py"]}, "activation": {"change_types": ["modify"], "signals": ["bug-fix"]},
     "instruction": "Add a deterministic regression test for observable bug fixes.", "enforcement": {"mode": "diff", "checks": ["git.diff"]},
-    "overridable": false, "evidence": {"required": ["check_result", "changed_locations"]}, "references": ["codingStandards.md#testing-standards"]
+    "overridable": true, "evidence": {"required": ["check_result", "changed_locations"]}, "references": ["codingStandards.md#testing-standards"]
   },
   {
     "id": "new-behavior-tests-required", "title": "New behavior tests required", "description": "Source behavior changes require corresponding tests.",
     "severity": "error", "level": "must", "category": "testing",
     "applies_to": {"languages": ["python"], "domains": [], "file_patterns": ["**/*.py"]}, "activation": {"change_types": ["create", "modify"], "signals": []},
     "instruction": "Add deterministic tests for new or changed source behavior.", "enforcement": {"mode": "diff", "checks": ["git.diff"]},
-    "overridable": false, "evidence": {"required": ["check_result", "changed_locations"]}, "references": ["codingStandards.md#testing-standards"]
+    "overridable": true, "evidence": {"required": ["check_result", "changed_locations"]}, "references": ["codingStandards.md#testing-standards"]
   },
   {
     "id": "preserve-unrelated-user-changes", "title": "Preserve unrelated user changes", "description": "Do not modify files outside the current task scope.",

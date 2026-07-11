@@ -52,7 +52,7 @@ struct TaskEvidence<'a> {
     rules: RuleCounts,
     results: &'a [EnforcementResult],
     commands: &'a [commands::CommandEvidence],
-    overrides: Vec<serde_json::Value>,
+    overrides: &'a [crate::policy::overrides::OverrideRecord],
 }
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
@@ -72,7 +72,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Full);
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
-    let (profile, registry) = crate::policy::load_profiled_registry(&root)?;
+    let (profile, registry, overrides) = crate::policy::load_profiled_registry(&root)?;
     let paths = touched_paths(&root, hook_input.session_id.as_deref())?;
     let mut results = rerun_checks(&paths);
     let touched: BTreeSet<String> = paths
@@ -95,11 +95,13 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         &command_run.evidence,
     ));
     crate::policy::profile::apply_resolved_results(&registry, &mut results);
+    crate::policy::overrides::apply_results(&overrides, &mut results);
     append_task_evidence(
         &root,
         hook_input.session_id.as_deref(),
         &results,
         &command_run.evidence,
+        &overrides,
         &profile,
     )?;
 
@@ -276,6 +278,7 @@ fn append_task_evidence(
     session_id: Option<&str>,
     results: &[EnforcementResult],
     commands: &[commands::CommandEvidence],
+    overrides: &[crate::policy::overrides::OverrideRecord],
     profile: &str,
 ) -> Result<(), String> {
     let directory = root.join(".lgtm/evidence");
@@ -290,7 +293,7 @@ fn append_task_evidence(
         rules: count_results(results),
         results,
         commands,
-        overrides: Vec::new(),
+        overrides,
     };
     let mut line =
         serde_json::to_string(&record).map_err(|error| format!("serialize evidence ({error})"))?;

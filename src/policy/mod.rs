@@ -10,6 +10,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod overrides;
 pub mod profile;
 
 /// The rule schema, embedded at build time.
@@ -346,11 +347,14 @@ pub fn load_embedded_registry() -> Result<Vec<Rule>, RegistryError> {
     Ok(rules)
 }
 
-pub fn load_profiled_registry(root: &std::path::Path) -> Result<(String, Vec<Rule>), String> {
+pub fn load_profiled_registry(
+    root: &std::path::Path,
+) -> Result<(String, Vec<Rule>, Vec<overrides::OverrideRecord>), String> {
     let rules = load_embedded_registry().map_err(|error| error.to_string())?;
     let name = profile::load_name(root)?;
-    let resolved = profile::resolve(&name, &rules)?;
-    Ok((name, resolved))
+    let mut resolved = profile::resolve(&name, &rules)?;
+    let overrides = overrides::apply(root, &mut resolved)?;
+    Ok((name, resolved, overrides))
 }
 
 #[cfg(test)]
@@ -393,6 +397,13 @@ mod tests {
     fn security_critical_rules_are_not_overridable() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
         for rule in &rules {
+            if matches!(
+                rule.id.as_str(),
+                "regression-test-required" | "new-behavior-tests-required"
+            ) {
+                assert!(rule.overridable);
+                continue;
+            }
             assert!(
                 !rule.overridable,
                 "seed MUST rule {} must be non-overridable",

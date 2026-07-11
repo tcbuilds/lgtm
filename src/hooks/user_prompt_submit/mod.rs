@@ -49,7 +49,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<(), Strin
     persist_intent(&root, hook_input.session_id.as_deref(), intent.label())?;
     let files = files::likely_files(&prompt);
     let context = context::build(&root, &files, &prompt);
-    let (_, registry) = crate::policy::load_profiled_registry(&root)?;
+    let (_, registry, _) = crate::policy::load_profiled_registry(&root)?;
     let selected = select_rules(&context, &registry, ChangeType::Modify);
     let compiled = compile_selected(&selected, &context.files_touched);
     write_response(output, intent.label(), &compiled.packet)
