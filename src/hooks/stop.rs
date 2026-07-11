@@ -21,6 +21,8 @@ struct HookInput {
     session_id: Option<String>,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default)]
+    transcript_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +92,10 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         intent.as_deref(),
     ));
     results.extend(command_run.results);
+    results.push(crate::checks::claims::evaluate(
+        hook_input.transcript_path.as_deref().map(Path::new),
+        &command_run.evidence,
+    ));
     append_task_evidence(
         &root,
         hook_input.session_id.as_deref(),

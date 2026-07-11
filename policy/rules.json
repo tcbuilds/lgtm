@@ -191,5 +191,12 @@
     "enforcement": {"mode": "command", "checks": ["command.required"]},
     "overridable": false, "evidence": {"required": ["check_result", "command_result"]},
     "references": ["codingStandards.md#review-and-change-standards"]
+  },
+  {
+    "id": "evidence-claims-honest", "title": "Verification claims require evidence", "description": "Assistant verification claims must match current successful command evidence.",
+    "severity": "error", "level": "must", "category": "ai-agent-behavior",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]}, "activation": {"change_types": ["create", "modify", "delete"], "signals": []},
+    "instruction": "Do not claim a command or tests passed unless current Stop evidence proves exit status 0.", "enforcement": {"mode": "evidence", "checks": ["transcript.claims"]},
+    "overridable": false, "evidence": {"required": ["check_result"]}, "references": ["codingStandards.md#review-and-change-standards"]
   }
 ]

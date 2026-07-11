@@ -25,6 +25,7 @@ fn embedded_registry_validates_against_schema() {
             "new-dependency-review",
             "auth-change-security-review",
             "required-repository-commands",
+            "evidence-claims-honest",
         ]
     );
 }

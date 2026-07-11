@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 14);
+        assert_eq!(rules.len(), 15);
     }
 
     #[test]
@@ -372,6 +372,7 @@ mod tests {
                 "new-dependency-review",
                 "auth-change-security-review",
                 "required-repository-commands",
+                "evidence-claims-honest",
             ]
         );
     }

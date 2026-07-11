@@ -8,6 +8,7 @@
 //! idea.md §Enforcement Result exactly so the JSON on the wire is stable across
 //! every producer and consumer.
 
+pub mod claims;
 pub mod commands;
 pub mod diff;
 #[path = "gitleaks/api.rs"]
