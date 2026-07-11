@@ -1,0 +1,56 @@
+[
+  {
+    "id": "shared-id",
+    "title": "First rule using the shared id",
+    "description": "A schema-valid rule whose id is intentionally reused by a later rule in this fixture to exercise the registry-wide uniqueness check.",
+    "severity": "error",
+    "level": "must",
+    "category": "security",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": []
+    },
+    "activation": {
+      "change_types": ["create"],
+      "signals": ["credential"]
+    },
+    "instruction": "First rule instruction.",
+    "enforcement": {
+      "mode": "static",
+      "checks": ["gitleaks.detect"]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": ["check_result"]
+    },
+    "references": ["codingStandards.md#non-negotiable-rules"]
+  },
+  {
+    "id": "shared-id",
+    "title": "Second rule reusing the shared id",
+    "description": "A schema-valid rule that duplicates the id of the first rule; the registry loader must reject the pair before deserialization.",
+    "severity": "warning",
+    "level": "should",
+    "category": "error-handling",
+    "applies_to": {
+      "languages": ["python"],
+      "domains": ["backend"],
+      "file_patterns": ["**/*.py"]
+    },
+    "activation": {
+      "change_types": ["modify"],
+      "signals": ["try-except"]
+    },
+    "instruction": "Second rule instruction.",
+    "enforcement": {
+      "mode": "static",
+      "checks": ["ruff.BLE001"]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": ["check_result"]
+    },
+    "references": ["codingStandards.md#error-handling"]
+  }
+]

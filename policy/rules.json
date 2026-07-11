@@ -1,0 +1,83 @@
+[
+  {
+    "id": "no-committed-secrets",
+    "title": "No committed secrets",
+    "description": "Secrets, tokens, private keys, or production credentials must never appear in code, logs, fixtures, screenshots, or commit history.",
+    "severity": "error",
+    "level": "must",
+    "category": "security",
+    "applies_to": {
+      "languages": [],
+      "domains": ["backend", "api", "worker", "infrastructure"],
+      "file_patterns": ["**/*"]
+    },
+    "activation": {
+      "change_types": ["create", "modify"],
+      "signals": ["credential", "token", "private-key", "env-file"]
+    },
+    "instruction": "Do not add secrets, tokens, private keys, or credentials to tracked files. Load them from environment variables or a secret manager.",
+    "enforcement": {
+      "mode": "static",
+      "checks": ["gitleaks.detect"]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": ["check_result"]
+    },
+    "references": ["codingStandards.md#non-negotiable-rules"]
+  },
+  {
+    "id": "no-swallowed-errors",
+    "title": "No swallowed errors",
+    "description": "Errors must not be silently discarded. An intentionally ignored error must be documented with the reason, and broad exception handling must add context and re-raise or convert.",
+    "severity": "error",
+    "level": "must",
+    "category": "error-handling",
+    "applies_to": {
+      "languages": ["python"],
+      "domains": ["backend", "api", "worker", "infrastructure"],
+      "file_patterns": ["**/*.py"]
+    },
+    "activation": {
+      "change_types": ["create", "modify"],
+      "signals": ["exception-handler", "try-except", "bare-except"]
+    },
+    "instruction": "Do not catch and suppress errors. Convert unknown external errors into typed domain errors, add context before propagating, and never leave a bare or empty except.",
+    "enforcement": {
+      "mode": "static",
+      "checks": ["ruff.BLE001", "ruff.E722"]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": ["check_result"]
+    },
+    "references": ["codingStandards.md#error-handling"]
+  },
+  {
+    "id": "external-call-timeout",
+    "title": "External calls require timeouts",
+    "description": "Network, database, subprocess, lock, and external API operations must have explicit bounded timeouts.",
+    "severity": "error",
+    "level": "must",
+    "category": "reliability",
+    "applies_to": {
+      "languages": ["python"],
+      "domains": ["backend", "api", "worker", "infrastructure"],
+      "file_patterns": ["**/*.py"]
+    },
+    "activation": {
+      "change_types": ["create", "modify"],
+      "signals": ["http-client", "database-client", "subprocess", "lock", "external-api"]
+    },
+    "instruction": "Add an explicit timeout and ensure cancellation or cleanup is handled.",
+    "enforcement": {
+      "mode": "hybrid",
+      "checks": ["semgrep.external_call_timeout", "diff.external_call_added"]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": ["check_result", "changed_locations"]
+    },
+    "references": ["codingStandards.md#non-negotiable-rules"]
+  }
+]

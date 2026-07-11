@@ -1,0 +1,25 @@
+[
+  {
+    "id": "malformed-example",
+    "title": "Malformed rule missing a required field and using an invalid severity",
+    "description": "This fixture intentionally violates the schema: severity is not in the allowed enum and the required enforcement field is absent.",
+    "severity": "critical",
+    "level": "must",
+    "category": "security",
+    "applies_to": {
+      "languages": ["python"],
+      "domains": ["backend"],
+      "file_patterns": ["**/*.py"]
+    },
+    "activation": {
+      "change_types": ["create"],
+      "signals": ["credential"]
+    },
+    "instruction": "This rule cannot compile because it fails schema validation.",
+    "overridable": false,
+    "evidence": {
+      "required": ["check_result"]
+    },
+    "references": ["codingStandards.md#non-negotiable-rules"]
+  }
+]

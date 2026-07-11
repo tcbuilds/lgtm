@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://golden-horizons.dev/lgtm/rule.schema.json",
+  "title": "lgtm canonical rule model",
+  "description": "Agent-neutral engineering rule. One structured object per rule; the operational source of truth compiled into the lgtm binary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "title",
+    "description",
+    "severity",
+    "level",
+    "category",
+    "applies_to",
+    "activation",
+    "instruction",
+    "enforcement",
+    "overridable",
+    "evidence",
+    "references"
+  ],
+  "properties": {
+    "id": {
+      "description": "Stable, immutable rule identifier. Kebab-case; never reused for a different rule.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "minLength": 1
+    },
+    "title": {
+      "description": "Short human-readable rule name.",
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "description": "What the rule requires and why, in plain language.",
+      "type": "string",
+      "minLength": 1
+    },
+    "severity": {
+      "description": "How a violation is reported by the enforcement runtime.",
+      "type": "string",
+      "enum": ["error", "warning", "info"]
+    },
+    "level": {
+      "description": "Enforcement strength. must = blocks completion; should = expected by default; review = triggers inspection.",
+      "type": "string",
+      "enum": ["must", "should", "review"]
+    },
+    "category": {
+      "description": "Rule category derived from the coding-standards taxonomy.",
+      "type": "string",
+      "enum": [
+        "correctness",
+        "security",
+        "reliability",
+        "error-handling",
+        "validation",
+        "architecture",
+        "dependencies",
+        "testing",
+        "observability",
+        "performance",
+        "documentation",
+        "refactoring",
+        "change-management",
+        "ai-agent-behavior",
+        "language-specific",
+        "infrastructure"
+      ]
+    },
+    "applies_to": {
+      "description": "Scope filter: which languages, domains, and file patterns the rule can apply to.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["languages", "domains", "file_patterns"],
+      "properties": {
+        "languages": {
+          "description": "Languages the rule can apply to. An empty array means the rule applies to all languages; a non-empty array restricts it to the listed languages.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "domains": {
+          "description": "Domains the rule can apply to. An empty array means the rule applies to all domains; a non-empty array restricts it to the listed domains.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "file_patterns": {
+          "description": "File glob patterns the rule can apply to. An empty array means the rule applies to all files; a non-empty array restricts it to files matching the listed patterns.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "activation": {
+      "description": "Deterministic signals that switch the rule on for a task.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["change_types", "signals"],
+      "properties": {
+        "change_types": {
+          "description": "Change kinds that switch the rule on. An empty array means the rule activates for any change kind; a non-empty array restricts activation to the listed change kinds.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["create", "modify", "delete"]
+          },
+          "uniqueItems": true
+        },
+        "signals": {
+          "description": "Deterministic signals that switch the rule on. An empty array means no signal is required to activate; a non-empty array restricts activation to tasks carrying one of the listed signals.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "instruction": {
+      "description": "Compact directive injected into the agent context when the rule activates.",
+      "type": "string",
+      "minLength": 1
+    },
+    "enforcement": {
+      "description": "How the rule is verified.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "checks"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["instruction", "static", "command", "diff", "evidence", "hybrid"]
+        },
+        "checks": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "overridable": {
+      "description": "Whether repo-local config may downgrade or disable the rule. Security-critical rules are false.",
+      "type": "boolean"
+    },
+    "evidence": {
+      "description": "Evidence artifacts a task must produce for this rule.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required"],
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "references": {
+      "description": "Source anchors in the human standards this rule derives from.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  }
+}
