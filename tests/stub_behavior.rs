@@ -28,10 +28,6 @@ fn run_full(args: &[&str]) -> (i32, String, String) {
 fn stubs_exit_zero_and_report_on_stderr() {
     let cases = [
         (
-            vec!["hook", "user-prompt-submit"],
-            "not yet implemented: hook user-prompt-submit\n",
-        ),
-        (
             vec!["hook", "pre-tool-use"],
             "not yet implemented: hook pre-tool-use\n",
         ),

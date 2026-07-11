@@ -9,6 +9,7 @@ use lgtm::compile;
 use lgtm::hooks::post_tool_use;
 use lgtm::hooks::session_start;
 use lgtm::hooks::stop;
+use lgtm::hooks::user_prompt_submit;
 use lgtm::init;
 
 /// Agent-neutral policy compiler and enforcement runtime.
@@ -164,7 +165,11 @@ fn run_hook(event: HookEvent) -> ExitCode {
             let stdout = io::stdout();
             session_start::run(&mut stdin.lock(), &mut stdout.lock())
         }
-        HookEvent::UserPromptSubmit => run_hook_stub("user-prompt-submit"),
+        HookEvent::UserPromptSubmit => {
+            let stdin = io::stdin();
+            let stdout = io::stdout();
+            user_prompt_submit::run(&mut stdin.lock(), &mut stdout.lock())
+        }
         HookEvent::PreToolUse => run_hook_stub("pre-tool-use"),
         HookEvent::PostToolUse => {
             let stdin = io::stdin();
