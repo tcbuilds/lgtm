@@ -4,5 +4,10 @@
 //! policy registry and compiler here lets integration tests exercise the same
 //! code paths the binary runs.
 
+pub mod checks;
 pub mod compile;
+pub mod detect;
+pub mod fsutil;
+pub mod hooks;
+pub mod init;
 pub mod policy;

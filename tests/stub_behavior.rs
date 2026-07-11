@@ -27,12 +27,14 @@ fn run_full(args: &[&str]) -> (i32, String, String) {
 #[test]
 fn stubs_exit_zero_and_report_on_stderr() {
     let cases = [
-        (vec!["init"], "not yet implemented: init\n"),
         (
-            vec!["hook", "session-start"],
-            "not yet implemented: hook session-start\n",
+            vec!["hook", "user-prompt-submit"],
+            "not yet implemented: hook user-prompt-submit\n",
         ),
-        (vec!["doctor"], "not yet implemented: doctor\n"),
+        (
+            vec!["hook", "pre-tool-use"],
+            "not yet implemented: hook pre-tool-use\n",
+        ),
         (vec!["compile"], "not yet implemented: compile\n"),
         (vec!["report"], "not yet implemented: report\n"),
     ];
@@ -44,6 +46,30 @@ fn stubs_exit_zero_and_report_on_stderr() {
             "stub {args:?} must report the exact unimplemented line"
         );
     }
+}
+
+#[test]
+fn doctor_reports_gitleaks_state_and_guidance() {
+    let (code, stdout, stderr) = run_full(&["doctor"]);
+    assert_eq!(code, 0);
+    assert!(stderr.is_empty());
+    assert!(stdout.contains("gitleaks:"));
+    if stdout.contains("MISSING") {
+        assert!(stdout.contains("Install:"));
+    }
+}
+
+#[test]
+fn doctor_reports_missing_gitleaks_with_install_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .arg("doctor")
+        .env("PATH", "/lgtm-test-no-tools")
+        .output()
+        .expect("doctor executes");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+    assert!(stdout.contains("gitleaks: MISSING"));
+    assert!(stdout.contains("go install github.com/zricethezav/gitleaks/v8@latest"));
 }
 
 /// `compile --validate` is no longer a stub: it validates the embedded

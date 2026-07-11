@@ -3,7 +3,13 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use std::path::Path;
+
 use lgtm::compile;
+use lgtm::hooks::post_tool_use;
+use lgtm::hooks::session_start;
+use lgtm::hooks::stop;
+use lgtm::init;
 
 /// Agent-neutral policy compiler and enforcement runtime.
 #[derive(Debug, Parser)]
@@ -51,14 +57,13 @@ fn main() -> ExitCode {
 
 /// Dispatch a parsed command to its handler.
 ///
-/// Every subcommand is currently an unimplemented stub. Hook invocations must
-/// fail safe: a stub must never block an agent session, so all stubs report to
-/// stderr and exit with success.
+/// Implemented commands dispatch to their handlers. Remaining stubs report to
+/// stderr and exit successfully so unfinished hooks never wedge an agent session.
 fn run(command: Command) -> ExitCode {
     let name = match command {
-        Command::Init => "init",
-        Command::Hook { event } => return run_hook_stub(event),
-        Command::Doctor => "doctor",
+        Command::Init => return run_init(),
+        Command::Hook { event } => return run_hook(event),
+        Command::Doctor => return run_doctor(),
         Command::Compile { validate } => return run_compile(validate),
         Command::Report => "report",
     };
@@ -105,15 +110,92 @@ fn compile_exit_code(
     }
 }
 
-/// Stub for a lifecycle-event invocation. Fails safe by exiting with success.
-fn run_hook_stub(event: HookEvent) -> ExitCode {
-    let event_name = match event {
-        HookEvent::SessionStart => "session-start",
-        HookEvent::UserPromptSubmit => "user-prompt-submit",
-        HookEvent::PreToolUse => "pre-tool-use",
-        HookEvent::PostToolUse => "post-tool-use",
-        HookEvent::Stop => "stop",
+/// Handle `lgtm init`.
+///
+/// Scaffolds repo-local config and merges Claude Code hook entries into the
+/// current working directory, then prints a concise report to stdout. On
+/// failure the precise cause is written to stderr and the process exits
+/// non-zero without partially reporting success.
+fn run_init() -> ExitCode {
+    match init::run(Path::new(".")) {
+        Ok(summary) => {
+            report_init_summary(&summary);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("init failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Print the human-readable init report to stdout.
+fn report_init_summary(summary: &init::InitSummary) {
+    let languages = if summary.detection.languages.is_empty() {
+        "none".to_string()
+    } else {
+        summary.detection.languages.join(", ")
     };
+    println!("lgtm init complete");
+    println!("  git repo: {}", summary.detection.is_git_repo);
+    println!("  languages: {languages}");
+    for (language, commands) in &summary.detection.required_commands {
+        println!("  commands ({language}): {}", commands.join(", "));
+    }
+    if summary.files_written.is_empty() {
+        println!("  files: already up to date");
+    } else {
+        println!("  files: {}", summary.files_written.join(", "));
+    }
+    for note in &summary.notes {
+        println!("  note: {note}");
+    }
+}
+
+/// Dispatch a lifecycle-event invocation to its handler.
+///
+/// Implemented hooks read their payload from stdin and write their agent-facing
+/// response to stdout. Stop is the deliberate exception to the usual fail-safe
+/// success exit: it returns 2 when a rerun confirms an unresolved MUST failure.
+fn run_hook(event: HookEvent) -> ExitCode {
+    match event {
+        HookEvent::SessionStart => {
+            let stdin = io::stdin();
+            let stdout = io::stdout();
+            session_start::run(&mut stdin.lock(), &mut stdout.lock())
+        }
+        HookEvent::UserPromptSubmit => run_hook_stub("user-prompt-submit"),
+        HookEvent::PreToolUse => run_hook_stub("pre-tool-use"),
+        HookEvent::PostToolUse => {
+            let stdin = io::stdin();
+            let stdout = io::stdout();
+            post_tool_use::run(&mut stdin.lock(), &mut stdout.lock())
+        }
+        HookEvent::Stop => {
+            let stdin = io::stdin();
+            let stdout = io::stdout();
+            stop::run(&mut stdin.lock(), &mut stdout.lock())
+        }
+    }
+}
+
+/// Report whether the wrapped MVP tool is ready and how to install it.
+fn run_doctor() -> ExitCode {
+    match lgtm::checks::gitleaks::installed_version() {
+        Some(version) => println!("gitleaks: ready ({version})"),
+        None => {
+            println!("gitleaks: MISSING");
+            println!("  Install: https://github.com/gitleaks/gitleaks#installing");
+            println!("  macOS: brew install gitleaks");
+            println!("  Go: go install github.com/zricethezav/gitleaks/v8@latest");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Stub for a not-yet-implemented lifecycle event. Fails safe by exiting with
+/// success so a stub never blocks an agent session.
+fn run_hook_stub(event_name: &str) -> ExitCode {
     eprintln!("not yet implemented: hook {event_name}");
     ExitCode::SUCCESS
 }
