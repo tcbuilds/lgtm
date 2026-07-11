@@ -1,0 +1,51 @@
+rules:
+  - id: lgtm.external-call-timeout-requests
+    languages: [python]
+    severity: ERROR
+    message: External call requires an explicit timeout.
+    patterns:
+      - pattern: requests.$METHOD(...)
+      - metavariable-regex: {metavariable: $METHOD, regex: "^(get|post|put|patch|delete|request)$"}
+      - pattern-not: requests.$METHOD(..., timeout=$TIMEOUT, ...)
+  - id: lgtm.external-call-timeout-subprocess
+    languages: [python]
+    severity: ERROR
+    message: Subprocess call requires an explicit timeout.
+    patterns:
+      - pattern: subprocess.$METHOD(...)
+      - metavariable-regex: {metavariable: $METHOD, regex: "^(run|call|check_call|check_output)$"}
+      - pattern-not: subprocess.$METHOD(..., timeout=$TIMEOUT, ...)
+  - id: lgtm.public-input-validation
+    languages: [python]
+    severity: ERROR
+    message: Public JSON input must be validated before use.
+    patterns:
+      - pattern: $DATA = request.get_json(...)
+      - pattern-not-inside: |
+          $DATA = request.get_json(...)
+          ...
+          $SCHEMA.load($DATA)
+  - id: lgtm.sql-parameterization
+    languages: [python]
+    severity: ERROR
+    message: SQL must use parameters rather than string interpolation.
+    pattern-either:
+      - pattern: $CURSOR.execute(f"...{$VALUE}...")
+      - pattern: $CURSOR.execute("..." % $VALUE)
+      - pattern: $CURSOR.execute("..." + $VALUE)
+  - id: lgtm.bounded-retries-loops
+    languages: [python]
+    severity: ERROR
+    message: Retry and worker loops must have an explicit bound.
+    pattern: |
+      while True:
+        ...
+  - id: lgtm.destructive-operation-safeguards
+    languages: [python]
+    severity: ERROR
+    message: Recursive destructive operations require an explicit safeguard.
+    patterns:
+      - pattern: shutil.rmtree(...)
+      - pattern-not-inside: |
+          if confirmed:
+            ...

@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 4);
+        assert_eq!(rules.len(), 8);
     }
 
     #[test]
@@ -362,6 +362,10 @@ mod tests {
                 "no-swallowed-errors",
                 "no-broad-exception-handling",
                 "external-call-timeout",
+                "public-input-validation",
+                "sql-parameterization",
+                "bounded-retries-loops",
+                "destructive-operation-safeguards",
             ]
         );
     }

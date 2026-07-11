@@ -11,7 +11,7 @@ const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const DRAIN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub(super) fn run_captured(mut command: Command) -> Option<(Option<i32>, Vec<u8>)> {
+pub(crate) fn run_captured(mut command: Command) -> Option<(Option<i32>, Vec<u8>)> {
     prepare_command(&mut command);
     let mut child = command.spawn().ok()?;
     let pid = child.id();

@@ -11,6 +11,7 @@
 #[path = "gitleaks/api.rs"]
 pub mod gitleaks;
 pub mod ruff;
+pub mod semgrep;
 
 use serde::{Deserialize, Serialize};
 

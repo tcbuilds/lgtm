@@ -15,6 +15,10 @@ fn embedded_registry_validates_against_schema() {
             "no-swallowed-errors",
             "no-broad-exception-handling",
             "external-call-timeout",
+            "public-input-validation",
+            "sql-parameterization",
+            "bounded-retries-loops",
+            "destructive-operation-safeguards",
         ]
     );
 }
@@ -116,13 +120,10 @@ fn full_example_rule_round_trips() {
     assert_eq!(rule.level, Level::Must);
     assert_eq!(rule.category, Category::Reliability);
     assert_eq!(rule.applies_to.languages, vec!["python".to_string()]);
-    assert_eq!(rule.enforcement.mode, EnforcementMode::Hybrid);
+    assert_eq!(rule.enforcement.mode, EnforcementMode::Static);
     assert_eq!(
         rule.enforcement.checks,
-        vec![
-            "semgrep.external_call_timeout".to_string(),
-            "diff.external_call_added".to_string(),
-        ]
+        vec!["semgrep.external-call-timeout".to_string()]
     );
     assert!(!rule.overridable);
     assert_eq!(

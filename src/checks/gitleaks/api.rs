@@ -4,11 +4,11 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 #[path = "report.rs"]
-mod report;
+pub(crate) mod report;
 #[path = "result.rs"]
 mod result;
 #[path = "runner.rs"]
-mod runner;
+pub(crate) mod runner;
 
 use report::{ReportDir, ScanOutcome};
 use result::{failed, passed, passed_with_version, unverified};

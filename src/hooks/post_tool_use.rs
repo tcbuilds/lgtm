@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use serde_json::json;
 
 use crate::checks::{EnforcementResult, Status};
-use crate::checks::{gitleaks, ruff};
+use crate::checks::{gitleaks, ruff, semgrep};
 
 mod evidence;
 mod input;
@@ -79,6 +79,7 @@ fn scan_target(root: &Path, file_path: &str) -> Vec<EnforcementResult> {
     let mut results = vec![result];
     if resolved.ends_with(".py") {
         results.extend(ruff::scan(std::slice::from_ref(&resolved)));
+        results.extend(semgrep::scan(std::slice::from_ref(&resolved)));
     }
     results
 }

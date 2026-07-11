@@ -93,13 +93,57 @@
     },
     "instruction": "Add an explicit timeout and ensure cancellation or cleanup is handled.",
     "enforcement": {
-      "mode": "hybrid",
-      "checks": ["semgrep.external_call_timeout", "diff.external_call_added"]
+      "mode": "static",
+      "checks": ["semgrep.external-call-timeout"]
     },
     "overridable": false,
     "evidence": {
       "required": ["check_result", "changed_locations"]
     },
     "references": ["codingStandards.md#non-negotiable-rules"]
+  },
+  {
+    "id": "public-input-validation", "title": "Validate public input",
+    "description": "Public request input must be validated before use.",
+    "severity": "error", "level": "must", "category": "validation",
+    "applies_to": {"languages": ["python"], "domains": ["backend", "api"], "file_patterns": ["**/*.py"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["public-input"]},
+    "instruction": "Validate and normalize public input with an explicit schema before use.",
+    "enforcement": {"mode": "static", "checks": ["semgrep.public-input-validation"]},
+    "overridable": false, "evidence": {"required": ["check_result"]},
+    "references": ["codingStandards.md#non-negotiable-rules"]
+  },
+  {
+    "id": "sql-parameterization", "title": "Parameterize SQL",
+    "description": "SQL statements must not interpolate untrusted values.",
+    "severity": "error", "level": "must", "category": "security",
+    "applies_to": {"languages": ["python"], "domains": ["backend", "api", "worker"], "file_patterns": ["**/*.py"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["database-write", "database-client"]},
+    "instruction": "Use driver parameters for every dynamic SQL value.",
+    "enforcement": {"mode": "static", "checks": ["semgrep.sql-parameterization"]},
+    "overridable": false, "evidence": {"required": ["check_result"]},
+    "references": ["codingStandards.md#security-standards"]
+  },
+  {
+    "id": "bounded-retries-loops", "title": "Bound retries and loops",
+    "description": "Retry and worker loops must have explicit termination bounds.",
+    "severity": "error", "level": "must", "category": "reliability",
+    "applies_to": {"languages": ["python"], "domains": ["backend", "api", "worker"], "file_patterns": ["**/*.py"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["retry", "loop"]},
+    "instruction": "Add an explicit attempt, time, or cancellation bound.",
+    "enforcement": {"mode": "static", "checks": ["semgrep.bounded-retries-loops"]},
+    "overridable": false, "evidence": {"required": ["check_result"]},
+    "references": ["codingStandards.md#non-negotiable-rules"]
+  },
+  {
+    "id": "destructive-operation-safeguards", "title": "Safeguard destructive operations",
+    "description": "Recursive destructive operations require explicit safeguards.",
+    "severity": "error", "level": "must", "category": "security",
+    "applies_to": {"languages": ["python"], "domains": ["backend", "api", "worker", "infrastructure"], "file_patterns": ["**/*.py"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["destructive-operation"]},
+    "instruction": "Require explicit confirmation and validate the target before recursive deletion.",
+    "enforcement": {"mode": "static", "checks": ["semgrep.destructive-operation-safeguards"]},
+    "overridable": false, "evidence": {"required": ["check_result"]},
+    "references": ["codingStandards.md#security-standards"]
   }
 ]

@@ -208,6 +208,13 @@ fn run_doctor() -> ExitCode {
             println!("  Alternative: pipx install ruff");
         }
     }
+    match lgtm::checks::semgrep::installed_version() {
+        Some(version) => println!("semgrep: ready ({version})"),
+        None => {
+            println!("semgrep: MISSING");
+            println!("  Install: uv tool install semgrep");
+        }
+    }
     ExitCode::SUCCESS
 }
 

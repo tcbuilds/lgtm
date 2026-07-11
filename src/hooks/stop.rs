@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use serde::{Deserialize, Serialize};
 
 use crate::checks::{EnforcementResult, Location, ResultEvidence, Status};
-use crate::checks::{gitleaks, ruff};
+use crate::checks::{gitleaks, ruff, semgrep};
 use crate::policy::Severity;
 
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024;
@@ -188,6 +188,7 @@ fn rerun_checks(paths: &[String]) -> Vec<EnforcementResult> {
         .collect();
     if !python_files.is_empty() {
         results.extend(ruff::scan(&python_files));
+        results.extend(semgrep::scan(&python_files));
     }
     results
 }

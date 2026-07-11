@@ -163,3 +163,26 @@ fn constrained_activation_requires_change_type_and_signal() {
     assert!(select_rules(&context, &[rule.clone()], ChangeType::Modify).is_empty());
     assert_eq!(select_rules(&context, &[rule], ChangeType::Create).len(), 1);
 }
+
+#[test]
+fn semgrep_policy_rules_activate_for_representative_python_change() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/semgrep-python");
+    let files = vec!["violations.py".to_string()];
+    let diff = std::fs::read_to_string(root.join("violations.py")).expect("fixture readable");
+    let context = context::build(&root, &files, &diff);
+    let registry = load_embedded_registry().expect("embedded registry valid");
+    let ids: Vec<_> = select_rules(&context, &registry, ChangeType::Modify)
+        .iter()
+        .map(|rule| rule.id.as_str())
+        .collect();
+
+    for expected in [
+        "external-call-timeout",
+        "public-input-validation",
+        "sql-parameterization",
+        "bounded-retries-loops",
+        "destructive-operation-safeguards",
+    ] {
+        assert!(ids.contains(&expected), "missing selected rule {expected}");
+    }
+}

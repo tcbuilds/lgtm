@@ -44,12 +44,12 @@ fn parse_report(report_path: &Path) -> ScanOutcome {
         })
 }
 
-pub(super) struct ReportDir {
+pub(crate) struct ReportDir {
     dir: PathBuf,
 }
 
 impl ReportDir {
-    pub(super) fn create() -> Result<Self, String> {
+    pub(crate) fn create() -> Result<Self, String> {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,7 +66,7 @@ impl ReportDir {
         Ok(Self { dir })
     }
 
-    pub(super) fn report_path(&self) -> PathBuf {
+    pub(crate) fn report_path(&self) -> PathBuf {
         self.dir.join("report.json")
     }
 }
