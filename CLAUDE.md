@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Two source documents:
 
-- `idea.md` — the **finalized spec** (refined 2026-07-11 via interactive Q&A). Read this first. Its "Key Decisions (Resolved)" table locks 16 architectural choices — do not re-litigate them; treat them as settled unless the user explicitly reopens one.
+- `idea.md` — the **finalized spec** (refined 2026-07-11 via interactive Q&A). Read this first. Its "Key Decisions (Resolved)" table locks 17 architectural choices — do not re-litigate them; treat them as settled unless the user explicitly reopens one.
 - `codingStandards.md` — the human-readable engineering standard (Coding Standards V2). This is the **source material** the policy registry (`policy/rules.json`) will be derived from, not general guidance for working in this repo. Sections map to rule categories; each standard gets one or more stable rule IDs.
 
 ## Locked Decisions (summary — full table in idea.md)
