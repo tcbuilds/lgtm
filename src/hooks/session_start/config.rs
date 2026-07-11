@@ -57,8 +57,11 @@ fn parse_config(mut file: std::fs::File) -> ConfigState {
     if contents.trim().is_empty() {
         return ConfigState::NotInitialized;
     }
-    serde_json::from_str::<Config>(&contents).map_or_else(
-        |error| ConfigState::Malformed(format!("invalid JSON ({error})")),
-        ConfigState::Present,
-    )
+    match serde_json::from_str::<Config>(&contents) {
+        Ok(config) => match crate::policy::profile::validate_name(&config.profile) {
+            Ok(()) => ConfigState::Present(config),
+            Err(error) => ConfigState::Malformed(error),
+        },
+        Err(error) => ConfigState::Malformed(format!("invalid JSON ({error})")),
+    }
 }

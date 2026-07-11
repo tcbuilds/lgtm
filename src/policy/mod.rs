@@ -10,6 +10,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod profile;
+
 /// The rule schema, embedded at build time.
 pub const RULE_SCHEMA_JSON: &str = include_str!("../../policy/rule.schema.json");
 
@@ -338,7 +340,17 @@ fn check_unique_ids(rules_array: &[serde_json::Value]) -> Result<(), RegistryErr
 
 /// Validate and deserialize the embedded registry.
 pub fn load_embedded_registry() -> Result<Vec<Rule>, RegistryError> {
-    load_and_validate(RULES_JSON)
+    let rules = load_and_validate(RULES_JSON)?;
+    profile::validate_embedded(&rules)
+        .map_err(|message| RegistryError::SchemaViolations(vec![message]))?;
+    Ok(rules)
+}
+
+pub fn load_profiled_registry(root: &std::path::Path) -> Result<(String, Vec<Rule>), String> {
+    let rules = load_embedded_registry().map_err(|error| error.to_string())?;
+    let name = profile::load_name(root)?;
+    let resolved = profile::resolve(&name, &rules)?;
+    Ok((name, resolved))
 }
 
 #[cfg(test)]

@@ -1,0 +1,8 @@
+{
+  "name": "prototype",
+  "rules": {
+    "regression-test-required": {"severity":"warning","required_evidence":["check_result"]},
+    "new-behavior-tests-required": {"severity":"warning","required_evidence":["check_result"]},
+    "required-repository-commands": {"severity":"warning","required_evidence":["check_result"]}
+  }
+}

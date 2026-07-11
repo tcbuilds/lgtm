@@ -45,7 +45,15 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     let Some(root) = repo_root(hook_input.cwd.as_deref()) else {
         return ExitCode::SUCCESS;
     };
-    let results = scan_target(&root, &file_path);
+    let mut results = scan_target(&root, &file_path);
+    let (_, registry) = match crate::policy::load_profiled_registry(&root) {
+        Ok(profile) => profile,
+        Err(reason) => {
+            diagnostic("load", "profile", &reason, false);
+            return ExitCode::SUCCESS;
+        }
+    };
+    crate::policy::profile::apply_resolved_results(&registry, &mut results);
     for result in &results {
         persist(&root, hook_input.session_id.as_deref(), result);
     }

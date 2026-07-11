@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::compile::compile_selected;
 use crate::context;
-use crate::policy::{ChangeType, load_embedded_registry};
+use crate::policy::ChangeType;
 use crate::select::select_rules;
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
@@ -71,7 +71,7 @@ fn capture(root: &Path, target: &Path, session: Option<&str>) -> Result<(), Stri
         .to_string_lossy()
         .to_string();
     let context = context::build(root, &[relative], "");
-    let registry = load_embedded_registry().map_err(|error| error.to_string())?;
+    let (_, registry) = crate::policy::load_profiled_registry(root)?;
     let selected = select_rules(&context, &registry, ChangeType::Modify);
     let compiled = compile_selected(&selected, &context.files_touched);
     baseline::capture(root, target, session, &compiled)

@@ -12,7 +12,7 @@ use serde_json::json;
 
 use crate::compile::compile_selected;
 use crate::context;
-use crate::policy::{ChangeType, load_embedded_registry};
+use crate::policy::ChangeType;
 use crate::select::select_rules;
 
 use input::{MAX_PAYLOAD_BYTES, bounded_prompt, parse};
@@ -49,7 +49,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<(), Strin
     persist_intent(&root, hook_input.session_id.as_deref(), intent.label())?;
     let files = files::likely_files(&prompt);
     let context = context::build(&root, &files, &prompt);
-    let registry = load_embedded_registry().map_err(|error| error.to_string())?;
+    let (_, registry) = crate::policy::load_profiled_registry(&root)?;
     let selected = select_rules(&context, &registry, ChangeType::Modify);
     let compiled = compile_selected(&selected, &context.files_touched);
     write_response(output, intent.label(), &compiled.packet)

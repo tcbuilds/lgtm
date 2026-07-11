@@ -1,0 +1,8 @@
+{
+  "name": "infrastructure",
+  "rules": {
+    "new-dependency-review": {"severity":"error","required_evidence":["check_result","review_result"]},
+    "auth-change-security-review": {"severity":"error","required_evidence":["check_result","review_result"]},
+    "required-repository-commands": {"severity":"error","required_evidence":["check_result","command_result","rollback_result"]}
+  }
+}

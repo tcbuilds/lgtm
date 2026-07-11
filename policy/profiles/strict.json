@@ -1,0 +1,7 @@
+{
+  "name": "strict",
+  "rules": {
+    "new-dependency-review": {"severity":"error","required_evidence":["check_result","review_result"]},
+    "auth-change-security-review": {"severity":"error","required_evidence":["check_result","review_result"]}
+  }
+}

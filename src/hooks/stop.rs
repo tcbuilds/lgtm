@@ -47,7 +47,7 @@ struct RuleCounts {
 struct TaskEvidence<'a> {
     task_id: &'a str,
     agent: &'static str,
-    profile: &'static str,
+    profile: &'a str,
     commit: Option<String>,
     rules: RuleCounts,
     results: &'a [EnforcementResult],
@@ -72,6 +72,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Full);
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
+    let (profile, registry) = crate::policy::load_profiled_registry(&root)?;
     let paths = touched_paths(&root, hook_input.session_id.as_deref())?;
     let mut results = rerun_checks(&paths);
     let touched: BTreeSet<String> = paths
@@ -93,11 +94,13 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         hook_input.transcript_path.as_deref().map(Path::new),
         &command_run.evidence,
     ));
+    crate::policy::profile::apply_resolved_results(&registry, &mut results);
     append_task_evidence(
         &root,
         hook_input.session_id.as_deref(),
         &results,
         &command_run.evidence,
+        &profile,
     )?;
 
     let failures: Vec<&EnforcementResult> = results
@@ -273,6 +276,7 @@ fn append_task_evidence(
     session_id: Option<&str>,
     results: &[EnforcementResult],
     commands: &[commands::CommandEvidence],
+    profile: &str,
 ) -> Result<(), String> {
     let directory = root.join(".lgtm/evidence");
     std::fs::create_dir_all(&directory)
@@ -281,7 +285,7 @@ fn append_task_evidence(
     let record = TaskEvidence {
         task_id,
         agent: "claude-code",
-        profile: "default",
+        profile,
         commit: None,
         rules: count_results(results),
         results,
