@@ -24,6 +24,7 @@ fn embedded_registry_validates_against_schema() {
             "preserve-unrelated-user-changes",
             "new-dependency-review",
             "auth-change-security-review",
+            "required-repository-commands",
         ]
     );
 }

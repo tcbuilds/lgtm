@@ -180,5 +180,16 @@
     "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]}, "activation": {"change_types": ["create", "modify"], "signals": ["authentication", "authorization"]},
     "instruction": "Perform a focused authentication, authorization, and sensitive-data review.", "enforcement": {"mode": "diff", "checks": ["git.diff"]},
     "overridable": false, "evidence": {"required": ["check_result"]}, "references": ["codingStandards.md#security-standards"]
+  },
+  {
+    "id": "required-repository-commands", "title": "Required repository commands pass",
+    "description": "Repository-configured validation commands must pass before Stop completes.",
+    "severity": "error", "level": "must", "category": "testing",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": []},
+    "instruction": "Run every configured repository validation command and fix failures.",
+    "enforcement": {"mode": "command", "checks": ["command.required"]},
+    "overridable": false, "evidence": {"required": ["check_result", "command_result"]},
+    "references": ["codingStandards.md#review-and-change-standards"]
   }
 ]

@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use serde::{Deserialize, Serialize};
 
 use crate::checks::{EnforcementResult, Location, ResultEvidence, Status};
-use crate::checks::{gitleaks, ruff, semgrep};
+use crate::checks::{commands, gitleaks, ruff, semgrep};
 use crate::policy::Severity;
 
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024;
@@ -48,7 +48,7 @@ struct TaskEvidence<'a> {
     commit: Option<String>,
     rules: RuleCounts,
     results: &'a [EnforcementResult],
-    commands: Vec<serde_json::Value>,
+    commands: &'a [commands::CommandEvidence],
     overrides: Vec<serde_json::Value>,
 }
 
@@ -68,6 +68,13 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
 fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode, String> {
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
+    let command_run = match commands::load(&root) {
+        Ok(configured) => commands::run(&root, &configured),
+        Err(reason) => commands::RunResults {
+            results: vec![commands::config_unverified(&reason)],
+            evidence: Vec::new(),
+        },
+    };
     let paths = touched_paths(&root, hook_input.session_id.as_deref())?;
     let mut results = rerun_checks(&paths);
     let touched: BTreeSet<String> = paths
@@ -82,7 +89,13 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         baseline.as_ref(),
         intent.as_deref(),
     ));
-    append_task_evidence(&root, hook_input.session_id.as_deref(), &results)?;
+    results.extend(command_run.results);
+    append_task_evidence(
+        &root,
+        hook_input.session_id.as_deref(),
+        &results,
+        &command_run.evidence,
+    )?;
 
     let failures: Vec<&EnforcementResult> = results
         .iter()
@@ -242,6 +255,7 @@ fn append_task_evidence(
     root: &Path,
     session_id: Option<&str>,
     results: &[EnforcementResult],
+    commands: &[commands::CommandEvidence],
 ) -> Result<(), String> {
     let directory = root.join(".lgtm/evidence");
     std::fs::create_dir_all(&directory)
@@ -254,7 +268,7 @@ fn append_task_evidence(
         commit: None,
         rules: count_results(results),
         results,
-        commands: Vec::new(),
+        commands,
         overrides: Vec::new(),
     };
     let mut line =

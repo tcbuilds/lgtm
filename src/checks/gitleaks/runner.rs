@@ -11,7 +11,17 @@ const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const DRAIN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub(crate) fn run_captured(mut command: Command) -> Option<(Option<i32>, Vec<u8>)> {
+pub(crate) fn run_captured(command: Command) -> Option<(Option<i32>, Vec<u8>)> {
+    run_details(command).map(|details| (details.code, details.stdout))
+}
+
+pub(crate) struct Captured {
+    pub(crate) code: Option<i32>,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+}
+
+pub(crate) fn run_details(mut command: Command) -> Option<Captured> {
     prepare_command(&mut command);
     let mut child = command.spawn().ok()?;
     let pid = child.id();
@@ -19,8 +29,12 @@ pub(crate) fn run_captured(mut command: Command) -> Option<(Option<i32>, Vec<u8>
     let stderr = drain_bounded(child.stderr.take());
     let status = wait_bounded(child, pid);
     let captured = join_bounded(stdout, DRAIN_JOIN_TIMEOUT).unwrap_or_default();
-    let _ = join_bounded(stderr, DRAIN_JOIN_TIMEOUT);
-    status.map(|status| (status.code(), captured))
+    let stderr = join_bounded(stderr, DRAIN_JOIN_TIMEOUT).unwrap_or_default();
+    status.map(|status| Captured {
+        code: status.code(),
+        stdout: captured,
+        stderr,
+    })
 }
 
 pub(super) fn run_scan(mut command: Command, report_path: &Path) -> ScanOutcome {
