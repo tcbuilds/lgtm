@@ -22,5 +22,5 @@ Install through `scripts/install.sh`, which uses an authenticated GitHub CLI ses
 
 - Consumers need `gh` authenticated with repository access.
 - Supported release platforms are Linux x86_64 and macOS x86_64.
-- Tags must match the Cargo package version, beginning with `v0.1.0`.
+- Tags must match the Cargo package version. The failed cross-platform `v0.1.0` attempt remains immutable; the corrected first release is `v0.1.1`.
 - No `rust-toolchain.toml` is added: hosted stable Rust is selected explicitly in CI, avoiding repository-wide toolchain pin churn.

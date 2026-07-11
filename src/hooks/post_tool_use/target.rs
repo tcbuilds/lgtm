@@ -13,6 +13,7 @@ pub(super) fn repo_root(cwd: Option<&str>) -> Option<PathBuf> {
 }
 
 pub(super) fn resolve_target(root: &Path, file_path: &str) -> Option<String> {
+    let root = std::fs::canonicalize(root).ok()?;
     let candidate = Path::new(file_path);
     let resolved = if candidate.is_absolute() {
         candidate.to_path_buf()
@@ -25,7 +26,7 @@ pub(super) fn resolve_target(root: &Path, file_path: &str) -> Option<String> {
     }
     let canonical = std::fs::canonicalize(resolved).ok()?;
     canonical
-        .starts_with(root)
+        .starts_with(&root)
         .then(|| canonical.to_string_lossy().into_owned())
 }
 
