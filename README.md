@@ -15,6 +15,12 @@ cargo install --path .
 lgtm --version
 ```
 
+After public releases are enabled, a cloned checkout can install the latest prebuilt binary without Rust:
+
+```bash
+./scripts/install.sh
+```
+
 Move to the Python repository you want to protect and initialize LGTM:
 
 ```bash

@@ -8,7 +8,7 @@ DEST="$ROOT/dest"
 mkdir -p "$BIN" "$ASSETS" "$DEST"
 
 cleanup() {
-  for file in "$DEST/lgtm" "$ASSETS/lgtm" "$ASSETS"/*.tar.gz "$ASSETS"/*.sha256 "$BIN/gh" "$BIN/uname"; do
+  for file in "$DEST/lgtm" "$ASSETS/lgtm" "$ASSETS"/*.tar.gz "$ASSETS"/*.sha256 "$BIN/curl" "$BIN/uname"; do
     test ! -f "$file" || unlink "$file"
   done
   rmdir "$DEST" "$ASSETS" "$BIN" "$ROOT" 2>/dev/null || true
@@ -21,31 +21,41 @@ archive="$ASSETS/lgtm-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
 tar -C "$ASSETS" -czf "$archive" lgtm
 (cd "$ASSETS" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
 
-cat > "$BIN/gh" <<'EOF'
+cat > "$BIN/curl" <<'EOF'
 #!/bin/sh
 set -eu
-if test "$1 $2" = "auth status"; then test "${FAKE_AUTH_FAIL:-0}" != 1; exit; fi
-if test "$1 $2" = "release view"; then printf 'v0.1.0\n'; exit 0; fi
-if test "$1 $2" = "release download"; then
-  destination=""
-  while test "$#" -gt 0; do
-    if test "$1" = "--dir"; then destination=$2; shift 2; else shift; fi
-  done
-  cp "$FAKE_ASSETS"/*.tar.gz "$FAKE_ASSETS"/*.sha256 "$destination/"
-  exit 0
+test "${FAKE_CURL_FAIL:-0}" != 1
+destination=""
+url=""
+effective_url=0
+while test "$#" -gt 0; do
+  case "$1" in
+    -o) destination=$2; shift 2 ;;
+    -w) effective_url=1; shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+if test "$effective_url" = 1; then
+  printf 'https://github.com/tcbuilds/lgtm/releases/tag/v0.1.0'
+else
+  cp "$FAKE_ASSETS/${url##*/}" "$destination"
 fi
-exit 1
 EOF
 cat > "$BIN/uname" <<'EOF'
 #!/bin/sh
 if test "${1:-}" = "-s"; then printf '%s\n' "${FAKE_OS:-Linux}"; else printf '%s\n' "${FAKE_ARCH:-x86_64}"; fi
 EOF
-chmod 755 "$BIN/gh" "$BIN/uname"
+chmod 755 "$BIN/curl" "$BIN/uname"
 
 PATH="$BIN:$PATH" FAKE_ASSETS="$ASSETS" LGTM_INSTALL_DIR="$DEST" VERSION=v0.1.0 \
   sh "$(dirname "$0")/install.sh" >/dev/null
 test -x "$DEST/lgtm"
 test "$("$DEST/lgtm")" = "fixture lgtm"
+
+PATH="$BIN:$PATH" FAKE_ASSETS="$ASSETS" LGTM_INSTALL_DIR="$DEST" \
+  sh "$(dirname "$0")/install.sh" >/dev/null
+test -x "$DEST/lgtm"
 
 set +e
 PATH="$BIN:$PATH" FAKE_ASSETS="$ASSETS" FAKE_ARCH=arm64 LGTM_INSTALL_DIR="$DEST" VERSION=v0.1.0 \
@@ -58,14 +68,14 @@ unlink "$ROOT/unsupported.out"
 unlink "$ROOT/unsupported.err"
 
 set +e
-PATH="$BIN:$PATH" FAKE_AUTH_FAIL=1 LGTM_INSTALL_DIR="$DEST" VERSION=v0.1.0 \
-  sh "$(dirname "$0")/install.sh" >"$ROOT/auth.out" 2>"$ROOT/auth.err"
+PATH="$BIN:$PATH" FAKE_CURL_FAIL=1 LGTM_INSTALL_DIR="$DEST" VERSION=v0.1.0 \
+  sh "$(dirname "$0")/install.sh" >"$ROOT/download.out" 2>"$ROOT/download.err"
 code=$?
 set -e
 test "$code" -ne 0
-grep -q "authenticate GitHub CLI" "$ROOT/auth.err"
-unlink "$ROOT/auth.out"
-unlink "$ROOT/auth.err"
+grep -q "release archive download failed" "$ROOT/download.err"
+unlink "$ROOT/download.out"
+unlink "$ROOT/download.err"
 
 set +e
 PATH="$BIN:$PATH" FAKE_ASSETS="$ASSETS" LGTM_INSTALL_DIR="$DEST" VERSION='v1/../../unsafe' \

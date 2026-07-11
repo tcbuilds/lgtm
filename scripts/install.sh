@@ -2,6 +2,7 @@
 set -eu
 
 REPOSITORY=${LGTM_REPOSITORY:-tcbuilds/lgtm}
+RELEASE_BASE_URL=${LGTM_RELEASE_BASE_URL:-"https://github.com/$REPOSITORY/releases"}
 INSTALL_DIR=${LGTM_INSTALL_DIR:-"$HOME/.local/bin"}
 VERSION=${VERSION:-}
 
@@ -10,8 +11,7 @@ fail() {
   exit 1
 }
 
-command -v gh >/dev/null 2>&1 || fail "GitHub CLI (gh) is required for this private repository"
-gh auth status --hostname github.com >/dev/null 2>&1 || fail "authenticate GitHub CLI with access to $REPOSITORY"
+command -v curl >/dev/null 2>&1 || fail "curl is required"
 
 os=$(uname -s)
 arch=$(uname -m)
@@ -23,8 +23,9 @@ case "$os" in
 esac
 
 if test -z "$VERSION"; then
-  VERSION=$(gh release view --repo "$REPOSITORY" --json tagName --jq .tagName 2>/dev/null) \
-    || fail "could not resolve the latest private release"
+  latest_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$RELEASE_BASE_URL/latest") \
+    || fail "could not resolve the latest public release"
+  VERSION=${latest_url##*/}
 fi
 case "$VERSION" in
   v[0-9]*) ;;
@@ -51,9 +52,11 @@ trap cleanup EXIT HUP INT TERM
 mkdir -p "$INSTALL_DIR" || fail "could not create install directory: $INSTALL_DIR"
 stage=$(mktemp "$INSTALL_DIR/.lgtm.install.XXXXXX") || fail "could not create atomic install stage"
 
-gh release download "$VERSION" --repo "$REPOSITORY" --dir "$temp_dir" \
-  --pattern "$archive" --pattern "$checksum" \
-  || fail "private release download failed; verify the tag and repository access"
+asset_base="$RELEASE_BASE_URL/download/$VERSION"
+curl -fsSL "$asset_base/$archive" -o "$temp_dir/$archive" \
+  || fail "release archive download failed; verify the tag and platform"
+curl -fsSL "$asset_base/$checksum" -o "$temp_dir/$checksum" \
+  || fail "release checksum download failed; verify the tag and platform"
 
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "$temp_dir" && sha256sum -c "$checksum") >/dev/null 2>&1 || fail "checksum verification failed"
