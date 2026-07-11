@@ -26,10 +26,7 @@ fn run_full(args: &[&str]) -> (i32, String, String) {
 /// and announce itself on stderr so the missing implementation is visible.
 #[test]
 fn stubs_exit_zero_and_report_on_stderr() {
-    let cases = [
-        (vec!["compile"], "not yet implemented: compile\n"),
-        (vec!["report"], "not yet implemented: report\n"),
-    ];
+    let cases = [(vec!["compile"], "not yet implemented: compile\n")];
     for (args, expected_stderr) in cases {
         let (code, stderr) = run(&args);
         assert_eq!(code, 0, "stub {args:?} must exit 0 to fail safe");

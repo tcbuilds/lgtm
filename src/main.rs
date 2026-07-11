@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use lgtm::compile;
 use lgtm::hooks::post_tool_use;
@@ -39,7 +39,12 @@ enum Command {
         validate: bool,
     },
     /// Summarize evidence records for completed tasks.
-    Report,
+    Report {
+        #[arg(long)]
+        evidence: Option<PathBuf>,
+        #[arg(long)]
+        task: Option<String>,
+    },
 }
 
 /// The five native agent lifecycle events wired by the Claude Code adapter.
@@ -62,15 +67,25 @@ fn main() -> ExitCode {
 /// Implemented commands dispatch to their handlers. Remaining stubs report to
 /// stderr and exit successfully so unfinished hooks never wedge an agent session.
 fn run(command: Command) -> ExitCode {
-    let name = match command {
-        Command::Init => return run_init(),
-        Command::Hook { event } => return run_hook(event),
-        Command::Doctor => return run_doctor(),
-        Command::Compile { validate } => return run_compile(validate),
-        Command::Report => "report",
-    };
-    report_unimplemented(name);
-    ExitCode::SUCCESS
+    match command {
+        Command::Init => run_init(),
+        Command::Hook { event } => run_hook(event),
+        Command::Doctor => run_doctor(),
+        Command::Compile { validate } => run_compile(validate),
+        Command::Report { evidence, task } => run_report(evidence, task),
+    }
+}
+
+fn run_report(evidence: Option<PathBuf>, task: Option<String>) -> ExitCode {
+    let path = evidence.unwrap_or_else(|| PathBuf::from(".lgtm/evidence/evidence.jsonl"));
+    let stdout = io::stdout();
+    match lgtm::report::render(&path, task.as_deref(), &mut stdout.lock()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(reason) => {
+            eprintln!("report failed: {reason}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Handle `lgtm compile`.
@@ -257,7 +272,7 @@ mod tests {
     #[test]
     fn parses_report_subcommand() {
         let cli = Cli::try_parse_from(["lgtm", "report"]).expect("report should parse");
-        assert!(matches!(cli.command, Command::Report));
+        assert!(matches!(cli.command, Command::Report { .. }));
     }
 
     #[test]
