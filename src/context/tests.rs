@@ -24,6 +24,7 @@ fn derives_context_from_fixture_repo_and_diff() {
         context.risk_signals,
         [
             "authentication",
+            "database-client",
             "database-write",
             "http-client",
             "public-api"

@@ -12,3 +12,4 @@ pub mod fsutil;
 pub mod hooks;
 pub mod init;
 pub mod policy;
+pub mod select;
