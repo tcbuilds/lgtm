@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use serde::{Deserialize, Serialize};
 
+use crate::checks::tiers::{self, Hook, Tier};
 use crate::checks::{EnforcementResult, Location, ResultEvidence, Status};
 use crate::checks::{commands, gitleaks, ruff, semgrep};
 use crate::policy::Severity;
@@ -68,15 +69,9 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
 }
 
 fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode, String> {
+    debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Full);
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
-    let command_run = match commands::load(&root) {
-        Ok(configured) => commands::run(&root, &configured),
-        Err(reason) => commands::RunResults {
-            results: vec![commands::config_unverified(&reason)],
-            evidence: Vec::new(),
-        },
-    };
     let paths = touched_paths(&root, hook_input.session_id.as_deref())?;
     let mut results = rerun_checks(&paths);
     let touched: BTreeSet<String> = paths
@@ -91,6 +86,8 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         baseline.as_ref(),
         intent.as_deref(),
     ));
+    results.extend(rerun_python_checks(&paths));
+    let command_run = run_repository_commands(&root);
     results.extend(command_run.results);
     results.push(crate::checks::claims::evaluate(
         hook_input.transcript_path.as_deref().map(Path::new),
@@ -113,6 +110,16 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     }
     write_block_decision(&failures)?;
     Ok(ExitCode::from(2))
+}
+
+fn run_repository_commands(root: &Path) -> commands::RunResults {
+    match commands::load(root) {
+        Ok(configured) => commands::run(root, &configured),
+        Err(reason) => commands::RunResults {
+            results: vec![commands::config_unverified(&reason)],
+            evidence: Vec::new(),
+        },
+    }
 }
 
 fn read_diff_baseline(root: &Path, session_id: Option<&str>) -> Option<BTreeSet<String>> {
@@ -244,16 +251,20 @@ fn rerun_checks(paths: &[String]) -> Vec<EnforcementResult> {
             })
             .collect();
     }
-    let mut results = vec![result];
+    vec![result]
+}
+
+fn rerun_python_checks(paths: &[String]) -> Vec<EnforcementResult> {
     let python_files: Vec<String> = paths
         .iter()
         .filter(|path| path.ends_with(".py"))
         .cloned()
         .collect();
-    if !python_files.is_empty() {
-        results.extend(ruff::scan(&python_files));
-        results.extend(semgrep::scan(&python_files));
+    if python_files.is_empty() {
+        return Vec::new();
     }
+    let mut results = ruff::scan(&python_files);
+    results.extend(semgrep::scan(&python_files));
     results
 }
 

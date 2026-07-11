@@ -8,8 +8,9 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
+use crate::checks::tiers::{self, Check, Hook};
 use crate::checks::{EnforcementResult, Status};
-use crate::checks::{gitleaks, ruff, semgrep};
+use crate::checks::{gitleaks, ruff};
 
 mod evidence;
 mod input;
@@ -70,29 +71,39 @@ fn scan_target(root: &Path, file_path: &str) -> Vec<EnforcementResult> {
     let Some(resolved) = resolve_target(root, file_path) else {
         return vec![unverified_target(file_path)];
     };
-    let mut result = gitleaks::scan(std::slice::from_ref(&resolved));
+    let mut results = Vec::new();
+    for check in tiers::checks(tiers::for_hook(Hook::PostToolUse)) {
+        match check {
+            Check::Secrets => results.push(scan_secrets(&resolved)),
+            Check::Diff => results.extend(scan_diff(root, &resolved)),
+            Check::Ruff if resolved.ends_with(".py") => {
+                results.extend(ruff::scan(std::slice::from_ref(&resolved)));
+            }
+            Check::Ruff => {}
+            _ => unreachable!("fast tier contains only fast checks"),
+        }
+    }
+    results
+}
+
+fn scan_secrets(resolved: &str) -> EnforcementResult {
+    let mut result = gitleaks::scan(&[resolved.to_string()]);
     if result.locations.is_empty() {
         result.locations.push(crate::checks::Location {
-            file: resolved.clone(),
+            file: resolved.to_string(),
             line: None,
         });
     }
-    let mut results = vec![result];
-    if resolved.ends_with(".py") {
-        results.extend(ruff::scan(std::slice::from_ref(&resolved)));
-        results.extend(semgrep::scan(std::slice::from_ref(&resolved)));
-    }
+    result
+}
+
+fn scan_diff(root: &Path, resolved: &str) -> Vec<EnforcementResult> {
     let touched = Path::new(&resolved)
         .strip_prefix(root)
         .ok()
         .map(|path| BTreeSet::from([path.to_string_lossy().into_owned()]))
         .unwrap_or_default();
-    results.extend(
-        crate::checks::diff::evaluate(root, &touched, None, None)
-            .into_iter()
-            .filter(|result| result.status == Status::Warning),
-    );
-    results
+    crate::checks::diff::evaluate(root, &touched, None, None)
 }
 
 fn handle_results(output: &mut impl Write, results: &[EnforcementResult]) -> ExitCode {
