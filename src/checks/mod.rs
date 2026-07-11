@@ -44,6 +44,8 @@ pub enum Status {
     Unverified,
     /// A MUST violation was downgraded by an explicit repo-local override.
     Overridden,
+    /// A non-protected rule was waived with an active owner/reason/expiry record.
+    Waived,
 }
 
 /// A source location a result points at.
@@ -135,6 +137,7 @@ mod tests {
             Status::NotApplicable,
             Status::Unverified,
             Status::Overridden,
+            Status::Waived,
         ];
         for status in statuses {
             let encoded = serde_json::to_string(&status).expect("status serializes");

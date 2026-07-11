@@ -71,7 +71,7 @@ fn capture(root: &Path, target: &Path, session: Option<&str>) -> Result<(), Stri
         .to_string_lossy()
         .to_string();
     let context = context::build(root, &[relative], "");
-    let (_, registry, _, compatibility) = crate::policy::load_profiled_registry(root)?;
+    let (_, registry, _, _, compatibility) = crate::policy::load_profiled_registry(root)?;
     if compatibility == crate::policy::config_version::Compatibility::LegacyMissing {
         eprintln!(
             "validate failed: entity=config-version reason=version missing; legacy compatibility accepted, run lgtm init retryable=false"

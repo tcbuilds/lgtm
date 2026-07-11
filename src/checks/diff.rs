@@ -19,6 +19,42 @@ struct Evaluation<'a> {
     auth: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    PostToolUse,
+    Stop,
+}
+
+pub fn evaluate_at(
+    root: &Path,
+    touched: &BTreeSet<String>,
+    baseline: Option<&BTreeSet<String>>,
+    intent: Option<&str>,
+    stage: Stage,
+) -> Vec<EnforcementResult> {
+    let mut results = evaluate(root, touched, baseline, intent);
+    if stage == Stage::PostToolUse {
+        defer_slice_completion(&mut results);
+    }
+    results
+}
+
+fn defer_slice_completion(results: &mut [EnforcementResult]) {
+    for result in results {
+        if result.status == Status::Failed
+            && matches!(
+                result.rule_id.as_str(),
+                "regression-test-required" | "new-behavior-tests-required"
+            )
+        {
+            result.status = Status::Warning;
+            result
+                .message
+                .push_str(" Deferred until the Stop slice-completion gate.");
+        }
+    }
+}
+
 pub fn evaluate(
     root: &Path,
     touched: &BTreeSet<String>,

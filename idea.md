@@ -79,11 +79,11 @@ The system separates:
 | Evidence storage | **`.lgtm/evidence/` gitignored** | Local JSONL per task. Attach to PRs later via flag. Zero commit noise. |
 | Missing wrapped tools | **Degrade → `unverified`** | Never silently pass. Surfaced in evidence and Stop report. `lgtm doctor` lists missing tools with install commands. |
 | Profiles (MVP) | **All four** | default, strict, prototype, infrastructure. |
-| Waivers (MVP) | **None** | MUST = must. Waiver machinery post-MVP. |
+| Waivers (MVP) | **Narrow audited flow** | Dogfooding triggered ADR-0003's reconsideration threshold; non-security rules may be waived with reason, owner, and future expiry. |
 | Dogfood target | **internal-python-repo** | Selected for its more active Python agent work; initialized with all five hooks on 2026-07-11. |
 | Codex adapter | **Post-MVP** | Only after Claude Code loop proven. |
 
-**Accepted risk:** hard block + no waivers means a legitimate MUST exception has no escape hatch in MVP. Fallback for genuine emergencies: `.lgtm/config.json` severity override (recorded in evidence, security-critical rules non-overridable). If this bites more than once during dogfooding, the waiver flow gets pulled forward.
+**Dogfood resolution:** the no-waiver hard block affected two legitimate best-effort exception boundaries, meeting ADR-0003's trigger. ADR-0005 therefore adds audited, expiring waivers for non-security rules. Repository severity overrides remain available only for `overridable: true` rules; security-critical rules remain non-overridable and unwaivable.
 
 ---
 
@@ -210,7 +210,7 @@ Each rule is a structured object rather than a paragraph in a prompt.
 
 ### MUST
 
-A change cannot be considered compliant without satisfying the rule. In MVP there are no waivers; the only relief valve is a repo-level severity override for rules marked `overridable: true`, recorded in evidence.
+A change cannot be considered compliant without satisfying the rule or carrying an active ADR-0005 waiver. Waivers require a reason, owner, and future UTC expiry, are recorded in evidence, and cannot apply to protected security rules. Repo-level severity overrides remain limited to rules marked `overridable: true`.
 
 Examples:
 
@@ -660,7 +660,7 @@ Each original standard maps to one or more stable rule IDs.
 - Post-edit fast checks; hard-blocking Stop verification gate.
 - Evidence JSONL under `.lgtm/evidence/`.
 - All four profiles.
-- No waiver machinery (severity overrides on `overridable: true` rules only).
+- Narrow audited waiver machinery for non-security rules, pulled forward by dogfood under ADR-0005; severity overrides remain limited to `overridable: true` rules.
 
 ### First Enforceable Rules
 
@@ -703,7 +703,7 @@ Dogfood on **one active Python revenue repo** (candidate: internal-python-repo o
 
 ## Future Capabilities
 
-- Waiver flow (`lgtm waive` with reason/owner/expiry) — pulled forward if the no-waiver MVP bites more than once.
+- Waiver flow (`lgtm waive` with reason/owner/expiry) — pulled forward after the ADR-0003 dogfood trigger was met; security-critical rules remain ineligible.
 - TypeScript rule coverage.
 - Codex adapter, IDE integrations, CI enforcement, PR annotations.
 - Native tree-sitter checks (reduce external tool dependency).

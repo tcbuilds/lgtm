@@ -18,6 +18,8 @@ struct Record {
     commands: Vec<CommandRecord>,
     #[serde(default)]
     overrides: Vec<OverrideRecord>,
+    #[serde(default)]
+    waivers: Vec<WaiverRecord>,
 }
 
 #[derive(Deserialize)]
@@ -32,6 +34,14 @@ struct OverrideRecord {
     rule_id: String,
     action: String,
     severity: Option<crate::policy::Severity>,
+}
+
+#[derive(Deserialize)]
+struct WaiverRecord {
+    rule_id: String,
+    reason: String,
+    owner: String,
+    expires: String,
 }
 
 pub fn render(path: &Path, task: Option<&str>, output: &mut impl Write) -> Result<(), String> {
@@ -102,6 +112,7 @@ fn write_report(
     write_results(record, output)?;
     write_commands(record, output)?;
     write_overrides(record, output)?;
+    write_waivers(record, output)?;
     write_risks(record, output)
 }
 
@@ -213,6 +224,22 @@ fn write_overrides(record: &Record, output: &mut impl Write) -> Result<(), Strin
     Ok(())
 }
 
+fn write_waivers(record: &Record, output: &mut impl Write) -> Result<(), String> {
+    writeln!(output, "Waivers ({}):", record.waivers.len()).map_err(write_error)?;
+    for item in &record.waivers {
+        writeln!(
+            output,
+            "- {}: owner={} expires={} reason={}",
+            sanitize(&item.rule_id),
+            sanitize(&item.owner),
+            sanitize(&item.expires),
+            sanitize(&item.reason)
+        )
+        .map_err(write_error)?;
+    }
+    Ok(())
+}
+
 fn write_risks(record: &Record, output: &mut impl Write) -> Result<(), String> {
     let risks: Vec<_> = record
         .results
@@ -246,6 +273,7 @@ fn status_name(status: Status) -> &'static str {
         Status::NotApplicable => "not-applicable",
         Status::Unverified => "unverified",
         Status::Overridden => "overridden",
+        Status::Waived => "waived",
     }
 }
 fn not_run_reason(status: Status) -> &'static str {

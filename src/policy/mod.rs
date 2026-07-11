@@ -13,6 +13,7 @@ use thiserror::Error;
 pub mod config_version;
 pub mod overrides;
 pub mod profile;
+pub mod waivers;
 
 /// The rule schema, embedded at build time.
 pub const RULE_SCHEMA_JSON: &str = include_str!("../../policy/rule.schema.json");
@@ -348,22 +349,21 @@ pub fn load_embedded_registry() -> Result<Vec<Rule>, RegistryError> {
     Ok(rules)
 }
 
-pub fn load_profiled_registry(
-    root: &std::path::Path,
-) -> Result<
-    (
-        String,
-        Vec<Rule>,
-        Vec<overrides::OverrideRecord>,
-        config_version::Compatibility,
-    ),
+pub type ResolvedRegistry = (
     String,
-> {
+    Vec<Rule>,
+    Vec<overrides::OverrideRecord>,
+    Vec<waivers::Waiver>,
+    config_version::Compatibility,
+);
+
+pub fn load_profiled_registry(root: &std::path::Path) -> Result<ResolvedRegistry, String> {
     let rules = load_embedded_registry().map_err(|error| error.to_string())?;
     let (name, compatibility) = profile::load_name(root)?;
     let mut resolved = profile::resolve(&name, &rules)?;
     let overrides = overrides::apply(root, &mut resolved)?;
-    Ok((name, resolved, overrides, compatibility))
+    let waivers = waivers::load_active(root, &resolved)?;
+    Ok((name, resolved, overrides, waivers, compatibility))
 }
 
 #[cfg(test)]

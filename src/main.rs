@@ -45,6 +45,17 @@ enum Command {
         #[arg(long)]
         task: Option<String>,
     },
+    /// Create or replace an audited, expiring waiver for a non-protected rule.
+    Waive {
+        #[arg(long)]
+        rule: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        expires: String,
+    },
 }
 
 /// The five native agent lifecycle events wired by the Claude Code adapter.
@@ -73,6 +84,32 @@ fn run(command: Command) -> ExitCode {
         Command::Doctor => run_doctor(),
         Command::Compile { validate } => run_compile(validate),
         Command::Report { evidence, task } => run_report(evidence, task),
+        Command::Waive {
+            rule,
+            reason,
+            owner,
+            expires,
+        } => run_waive(&rule, &reason, &owner, &expires),
+    }
+}
+
+fn run_waive(rule: &str, reason: &str, owner: &str, expires: &str) -> ExitCode {
+    let root = match std::env::current_dir() {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("waive failed: resolve cwd ({error})");
+            return ExitCode::FAILURE;
+        }
+    };
+    match lgtm::policy::waivers::create(&root, rule, reason, owner, expires) {
+        Ok(()) => {
+            println!("waiver recorded for {rule} through {expires}");
+            ExitCode::SUCCESS
+        }
+        Err(reason) => {
+            eprintln!("waive failed: {reason}");
+            ExitCode::FAILURE
+        }
     }
 }
 

@@ -41,6 +41,7 @@ struct RuleCounts {
     not_applicable: usize,
     unverified: usize,
     overridden: usize,
+    waived: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,6 +54,7 @@ struct TaskEvidence<'a> {
     results: &'a [EnforcementResult],
     commands: &'a [commands::CommandEvidence],
     overrides: &'a [crate::policy::overrides::OverrideRecord],
+    waivers: &'a [crate::policy::waivers::Waiver],
 }
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
@@ -72,7 +74,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Full);
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
-    let (profile, registry, overrides, compatibility) =
+    let (profile, registry, overrides, waivers, compatibility) =
         crate::policy::load_profiled_registry(&root)?;
     let paths = touched_paths(&root, hook_input.session_id.as_deref())?;
     let mut results = rerun_checks(&paths);
@@ -100,12 +102,14 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     }
     crate::policy::profile::apply_resolved_results(&registry, &mut results);
     crate::policy::overrides::apply_results(&overrides, &mut results);
+    crate::policy::waivers::apply(&waivers, &mut results);
     append_task_evidence(
         &root,
         hook_input.session_id.as_deref(),
         &results,
         &command_run.evidence,
         &overrides,
+        &waivers,
         &profile,
     )?;
 
@@ -300,6 +304,7 @@ fn append_task_evidence(
     results: &[EnforcementResult],
     commands: &[commands::CommandEvidence],
     overrides: &[crate::policy::overrides::OverrideRecord],
+    waivers: &[crate::policy::waivers::Waiver],
     profile: &str,
 ) -> Result<(), String> {
     let directory = root.join(".lgtm/evidence");
@@ -315,6 +320,7 @@ fn append_task_evidence(
         results,
         commands,
         overrides,
+        waivers,
     };
     let mut line =
         serde_json::to_string(&record).map_err(|error| format!("serialize evidence ({error})"))?;
@@ -359,6 +365,7 @@ fn count_results(results: &[EnforcementResult]) -> RuleCounts {
         not_applicable: 0,
         unverified: 0,
         overridden: 0,
+        waived: 0,
     };
     for result in results {
         match result.status {
@@ -369,6 +376,7 @@ fn count_results(results: &[EnforcementResult]) -> RuleCounts {
             Status::NotApplicable => counts.not_applicable += 1,
             Status::Unverified => counts.unverified += 1,
             Status::Overridden => counts.overridden += 1,
+            Status::Waived => counts.waived += 1,
         }
     }
     counts

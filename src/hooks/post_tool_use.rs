@@ -46,14 +46,14 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
         return ExitCode::SUCCESS;
     };
     let mut results = scan_target(&root, &file_path);
-    let (_, registry, overrides, compatibility) = match crate::policy::load_profiled_registry(&root)
-    {
-        Ok(profile) => profile,
-        Err(reason) => {
-            diagnostic("load", "profile", &reason, false);
-            return ExitCode::SUCCESS;
-        }
-    };
+    let (_, registry, overrides, waivers, compatibility) =
+        match crate::policy::load_profiled_registry(&root) {
+            Ok(profile) => profile,
+            Err(reason) => {
+                diagnostic("load", "profile", &reason, false);
+                return ExitCode::SUCCESS;
+            }
+        };
     if compatibility == crate::policy::config_version::Compatibility::LegacyMissing {
         diagnostic(
             "validate",
@@ -64,6 +64,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     }
     crate::policy::profile::apply_resolved_results(&registry, &mut results);
     crate::policy::overrides::apply_results(&overrides, &mut results);
+    crate::policy::waivers::apply(&waivers, &mut results);
     for result in &results {
         persist(&root, hook_input.session_id.as_deref(), result);
     }
@@ -121,7 +122,13 @@ fn scan_diff(root: &Path, resolved: &str) -> Vec<EnforcementResult> {
         .ok()
         .map(|path| BTreeSet::from([path.to_string_lossy().into_owned()]))
         .unwrap_or_default();
-    crate::checks::diff::evaluate(root, &touched, None, None)
+    crate::checks::diff::evaluate_at(
+        root,
+        &touched,
+        None,
+        None,
+        crate::checks::diff::Stage::PostToolUse,
+    )
 }
 
 fn handle_results(output: &mut impl Write, results: &[EnforcementResult]) -> ExitCode {
