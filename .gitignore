@@ -1,0 +1,13 @@
+# Rust
+/target/
+Cargo.lock.orig
+**/*.rs.bk
+
+# lgtm runtime artifacts (consumer-repo pattern, and self-hosting later)
+.lgtm/evidence/
+
+# Local tooling
+.claude/settings.local.json
+.codegraph/
+*.log
+.DS_Store
