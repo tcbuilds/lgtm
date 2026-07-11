@@ -21,13 +21,20 @@ pub(crate) struct Captured {
     pub(crate) stderr: Vec<u8>,
 }
 
-pub(crate) fn run_details(mut command: Command) -> Option<Captured> {
+pub(crate) fn run_details(command: Command) -> Option<Captured> {
+    run_details_with_timeout(command, SUBPROCESS_TIMEOUT)
+}
+
+pub(crate) fn run_details_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> Option<Captured> {
     prepare_command(&mut command);
     let mut child = command.spawn().ok()?;
     let pid = child.id();
     let stdout = drain_bounded(child.stdout.take());
     let stderr = drain_bounded(child.stderr.take());
-    let status = wait_bounded(child, pid);
+    let status = wait_bounded(child, pid, timeout);
     let captured = join_bounded(stdout, DRAIN_JOIN_TIMEOUT).unwrap_or_default();
     let stderr = join_bounded(stderr, DRAIN_JOIN_TIMEOUT).unwrap_or_default();
     status.map(|status| Captured {
@@ -51,7 +58,7 @@ pub(super) fn run_scan(mut command: Command, report_path: &Path) -> ScanOutcome 
     let pid = child.id();
     let stdout = drain_bounded(child.stdout.take());
     let stderr = drain_bounded(child.stderr.take());
-    let status = wait_bounded(child, pid);
+    let status = wait_bounded(child, pid, SUBPROCESS_TIMEOUT);
     let _ = join_bounded(stdout, DRAIN_JOIN_TIMEOUT);
     let _ = join_bounded(stderr, DRAIN_JOIN_TIMEOUT);
     status.map_or_else(
@@ -68,7 +75,7 @@ fn prepare_command(command: &mut Command) {
     set_own_process_group(command);
 }
 
-fn wait_bounded(child: Child, pid: u32) -> Option<std::process::ExitStatus> {
+fn wait_bounded(child: Child, pid: u32, timeout: Duration) -> Option<std::process::ExitStatus> {
     let child = Arc::new(Mutex::new(child));
     let (sender, receiver) = mpsc::channel();
     let waiter = Arc::clone(&child);
@@ -91,7 +98,7 @@ fn wait_bounded(child: Child, pid: u32) -> Option<std::process::ExitStatus> {
             }
         }
     });
-    let outcome = match receiver.recv_timeout(SUBPROCESS_TIMEOUT) {
+    let outcome = match receiver.recv_timeout(timeout) {
         Ok(Ok(status)) => Some(status),
         Ok(Err(())) => None,
         Err(_) => {

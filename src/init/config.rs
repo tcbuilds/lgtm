@@ -100,6 +100,16 @@ pub(super) fn validate_config(path: &Path) -> Result<ValidatedConfig, InitError>
     validate_optional_field(path, &object, "languages", is_string_array)?;
     validate_optional_field(path, &object, "disabled_rules", is_string_array)?;
     validate_optional_field(path, &object, "severity_overrides", is_string_valued_object)?;
+    if let Some(value) = object.get("command_timeout_seconds")
+        && !value
+            .as_u64()
+            .is_some_and(|seconds| (1..=3600).contains(&seconds))
+    {
+        return Err(InitError::ConfigFieldWrongType {
+            path: path.to_path_buf(),
+            field: "command_timeout_seconds".to_string(),
+        });
+    }
     if let Some(required) = object.get("required_commands") {
         let Value::Object(commands) = required else {
             return Err(InitError::ConfigFieldWrongType {

@@ -19,13 +19,30 @@ impl Fixture {
     }
 
     fn script(&self, name: &str, exit: i32) -> String {
+        self.script_body(name, &format!("exit {exit}"))
+    }
+
+    fn script_body(&self, name: &str, body: &str) -> String {
         let path = self.root.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\nexit {exit}\n")).expect("script written");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("script written");
         let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&path, permissions).expect("script executable");
         path.to_string_lossy().into_owned()
     }
+}
+
+#[test]
+fn configured_duration_terminates_long_command() {
+    let fixture = Fixture::create();
+    let command = fixture.script_body("slow", "sleep 1");
+    let output = run(
+        &fixture.root,
+        &[command],
+        std::time::Duration::from_millis(20),
+    );
+    assert_eq!(output.results[0].status, Status::Unverified);
+    assert_eq!(output.evidence[0].exit_code, None);
 }
 
 impl Drop for Fixture {
@@ -38,7 +55,7 @@ impl Drop for Fixture {
 fn success_and_failure_record_exit_and_duration() {
     let fixture = Fixture::create();
     let commands = vec![fixture.script("pass", 0), fixture.script("fail", 7)];
-    let output = run(&fixture.root, &commands);
+    let output = run(&fixture.root, &commands, std::time::Duration::from_secs(30));
     assert_eq!(output.results[0].status, Status::Passed);
     assert_eq!(output.results[1].status, Status::Failed);
     assert_eq!(output.evidence[0].exit_code, Some(0));
@@ -59,7 +76,7 @@ fn shell_operators_and_environment_assignments_are_unverified() {
         "echo ok # hidden".to_string(),
         "echo ok\necho hidden".to_string(),
     ];
-    let output = run(&fixture.root, &commands);
+    let output = run(&fixture.root, &commands, std::time::Duration::from_secs(30));
     assert!(
         output
             .results
@@ -78,7 +95,7 @@ fn config_loads_grouped_commands_and_enforces_cap() {
         r#"{"required_commands":{"python":["ruff check ."],"tests":["cargo test"]}}"#,
     )
     .expect("config");
-    assert_eq!(load(&fixture.root).unwrap().len(), 2);
+    assert_eq!(load(&fixture.root).unwrap().commands.len(), 2);
     let too_many = serde_json::json!({"required_commands": {"all": vec!["true"; 65]}});
     std::fs::write(
         fixture.root.join(".lgtm/config.json"),
@@ -86,4 +103,26 @@ fn config_loads_grouped_commands_and_enforces_cap() {
     )
     .expect("oversized config");
     assert!(load(&fixture.root).unwrap_err().contains("exceeds 64"));
+}
+
+#[test]
+fn config_uses_default_and_validates_custom_timeout() {
+    let fixture = Fixture::create();
+    std::fs::create_dir(fixture.root.join(".lgtm")).unwrap();
+    std::fs::write(fixture.root.join(".lgtm/config.json"), "{}").unwrap();
+    assert_eq!(load(&fixture.root).unwrap().timeout.as_secs(), 30);
+    std::fs::write(
+        fixture.root.join(".lgtm/config.json"),
+        r#"{"command_timeout_seconds":2}"#,
+    )
+    .unwrap();
+    assert_eq!(load(&fixture.root).unwrap().timeout.as_secs(), 2);
+    for invalid in ["0", "3601", "\"30\""] {
+        std::fs::write(
+            fixture.root.join(".lgtm/config.json"),
+            format!(r#"{{"command_timeout_seconds":{invalid}}}"#),
+        )
+        .unwrap();
+        assert!(load(&fixture.root).is_err());
+    }
 }

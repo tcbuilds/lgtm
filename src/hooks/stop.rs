@@ -140,7 +140,7 @@ fn legacy_version_result() -> EnforcementResult {
 
 fn run_repository_commands(root: &Path) -> commands::RunResults {
     match commands::load(root) {
-        Ok(configured) => commands::run(root, &configured),
+        Ok(configured) => commands::run(root, &configured.commands, configured.timeout),
         Err(reason) => commands::RunResults {
             results: vec![commands::config_unverified(&reason)],
             evidence: Vec::new(),

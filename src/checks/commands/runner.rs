@@ -6,7 +6,7 @@ use crate::checks::Status;
 
 use super::result::{CommandEvidence, RunResults, not_applicable, result};
 
-pub fn run(root: &Path, commands: &[String]) -> RunResults {
+pub fn run(root: &Path, commands: &[String], timeout: std::time::Duration) -> RunResults {
     let mut output = RunResults {
         results: Vec::new(),
         evidence: Vec::new(),
@@ -16,12 +16,12 @@ pub fn run(root: &Path, commands: &[String]) -> RunResults {
         return output;
     }
     for command in commands {
-        run_one(root, command, &mut output);
+        run_one(root, command, timeout, &mut output);
     }
     output
 }
 
-fn run_one(root: &Path, command: &str, output: &mut RunResults) {
+fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mut RunResults) {
     let argv = match parse(command) {
         Ok(argv) => argv,
         Err(reason) => {
@@ -44,7 +44,7 @@ fn run_one(root: &Path, command: &str, output: &mut RunResults) {
         .args(&argv[1..])
         .current_dir(root)
         .stdin(Stdio::null());
-    let details = crate::checks::gitleaks::runner::run_details(process);
+    let details = crate::checks::gitleaks::runner::run_details_with_timeout(process, timeout);
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let code = details.as_ref().and_then(|details| details.code);
     output.evidence.push(CommandEvidence {

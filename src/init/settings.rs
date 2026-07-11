@@ -12,6 +12,7 @@ pub fn build_config(detection: &Detection) -> Value {
         "languages": detection.languages,
         "disabled_rules": [],
         "severity_overrides": {},
+        "command_timeout_seconds": 300,
         "required_commands": required,
     })
 }

@@ -3,8 +3,16 @@ use std::path::Path;
 
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 const MAX_COMMANDS: usize = 64;
+pub const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+const MAX_TIMEOUT_SECONDS: u64 = 3600;
 
-pub fn load(root: &Path) -> Result<Vec<String>, String> {
+#[derive(Debug)]
+pub struct Settings {
+    pub commands: Vec<String>,
+    pub timeout: std::time::Duration,
+}
+
+pub fn load(root: &Path) -> Result<Settings, String> {
     let path = root.join(".lgtm/config.json");
     match std::fs::symlink_metadata(&path) {
         Ok(metadata) if !metadata.is_file() => {
@@ -14,7 +22,7 @@ pub fn load(root: &Path) -> Result<Vec<String>, String> {
             return Err(format!("config exceeds {MAX_CONFIG_BYTES} bytes"));
         }
         Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(defaults()),
         Err(error) => return Err(format!("inspect config ({error})")),
     }
     let Some(file) = crate::fsutil::open_regular_file(&path)
@@ -30,12 +38,16 @@ pub fn load(root: &Path) -> Result<Vec<String>, String> {
         return Err(format!("config exceeds {MAX_CONFIG_BYTES} bytes"));
     }
     if raw.trim().is_empty() {
-        return Ok(Vec::new());
+        return Ok(defaults());
     }
     let value: serde_json::Value =
         serde_json::from_str(&raw).map_err(|error| format!("parse required commands ({error})"))?;
+    let timeout = timeout(&value)?;
     let Some(required) = value.get("required_commands") else {
-        return Ok(Vec::new());
+        return Ok(Settings {
+            commands: Vec::new(),
+            timeout,
+        });
     };
     let map = required
         .as_object()
@@ -55,5 +67,27 @@ pub fn load(root: &Path) -> Result<Vec<String>, String> {
             }
         }
     }
-    Ok(commands)
+    Ok(Settings { commands, timeout })
+}
+
+fn defaults() -> Settings {
+    Settings {
+        commands: Vec::new(),
+        timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
+    }
+}
+
+fn timeout(value: &serde_json::Value) -> Result<std::time::Duration, String> {
+    let seconds = match value.get("command_timeout_seconds") {
+        None => DEFAULT_TIMEOUT_SECONDS,
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| "command_timeout_seconds must be an integer".to_string())?,
+    };
+    if !(1..=MAX_TIMEOUT_SECONDS).contains(&seconds) {
+        return Err(format!(
+            "command_timeout_seconds must be between 1 and {MAX_TIMEOUT_SECONDS}"
+        ));
+    }
+    Ok(std::time::Duration::from_secs(seconds))
 }
