@@ -7,6 +7,7 @@ use std::path::Path;
 
 use lgtm::compile;
 use lgtm::hooks::post_tool_use;
+use lgtm::hooks::pre_tool_use;
 use lgtm::hooks::session_start;
 use lgtm::hooks::stop;
 use lgtm::hooks::user_prompt_submit;
@@ -170,7 +171,11 @@ fn run_hook(event: HookEvent) -> ExitCode {
             let stdout = io::stdout();
             user_prompt_submit::run(&mut stdin.lock(), &mut stdout.lock())
         }
-        HookEvent::PreToolUse => run_hook_stub("pre-tool-use"),
+        HookEvent::PreToolUse => {
+            let stdin = io::stdin();
+            let stdout = io::stdout();
+            pre_tool_use::run(&mut stdin.lock(), &mut stdout.lock())
+        }
         HookEvent::PostToolUse => {
             let stdin = io::stdin();
             let stdout = io::stdout();
@@ -195,13 +200,6 @@ fn run_doctor() -> ExitCode {
             println!("  Go: go install github.com/zricethezav/gitleaks/v8@latest");
         }
     }
-    ExitCode::SUCCESS
-}
-
-/// Stub for a not-yet-implemented lifecycle event. Fails safe by exiting with
-/// success so a stub never blocks an agent session.
-fn run_hook_stub(event_name: &str) -> ExitCode {
-    eprintln!("not yet implemented: hook {event_name}");
     ExitCode::SUCCESS
 }
 
