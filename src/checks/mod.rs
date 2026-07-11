@@ -8,6 +8,7 @@
 //! idea.md §Enforcement Result exactly so the JSON on the wire is stable across
 //! every producer and consumer.
 
+#[path = "gitleaks/api.rs"]
 pub mod gitleaks;
 
 use serde::{Deserialize, Serialize};
