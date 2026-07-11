@@ -1,5 +1,6 @@
 //! PostToolUse hook: run fast checks on the file an edit just touched.
 
+use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -81,6 +82,16 @@ fn scan_target(root: &Path, file_path: &str) -> Vec<EnforcementResult> {
         results.extend(ruff::scan(std::slice::from_ref(&resolved)));
         results.extend(semgrep::scan(std::slice::from_ref(&resolved)));
     }
+    let touched = Path::new(&resolved)
+        .strip_prefix(root)
+        .ok()
+        .map(|path| BTreeSet::from([path.to_string_lossy().into_owned()]))
+        .unwrap_or_default();
+    results.extend(
+        crate::checks::diff::evaluate(root, &touched, None, None)
+            .into_iter()
+            .filter(|result| result.status == Status::Warning),
+    );
     results
 }
 
@@ -99,6 +110,12 @@ fn handle_results(output: &mut impl Write, results: &[EnforcementResult]) -> Exi
             "check unverified; not blocking",
             false,
         );
+    }
+    for result in results
+        .iter()
+        .filter(|result| result.status == Status::Warning)
+    {
+        diagnostic("review", &result.rule_id, &result.message, false);
     }
     if failures.is_empty() {
         ExitCode::SUCCESS

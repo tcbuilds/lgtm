@@ -69,7 +69,19 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
     let paths = touched_paths(&root, hook_input.session_id.as_deref())?;
-    let results = rerun_checks(&paths);
+    let mut results = rerun_checks(&paths);
+    let touched: BTreeSet<String> = paths
+        .iter()
+        .filter_map(|path| relative_path(&root, path))
+        .collect();
+    let intent = read_intent(&root, hook_input.session_id.as_deref());
+    let baseline = read_diff_baseline(&root, hook_input.session_id.as_deref());
+    results.extend(crate::checks::diff::evaluate(
+        &root,
+        &touched,
+        baseline.as_ref(),
+        intent.as_deref(),
+    ));
     append_task_evidence(&root, hook_input.session_id.as_deref(), &results)?;
 
     let failures: Vec<&EnforcementResult> = results
@@ -82,6 +94,39 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     }
     write_block_decision(&failures)?;
     Ok(ExitCode::from(2))
+}
+
+fn read_diff_baseline(root: &Path, session_id: Option<&str>) -> Option<BTreeSet<String>> {
+    let path = root.join(".lgtm/evidence/current-task.baseline.json");
+    let raw = crate::fsutil::read_optional_bounded(&path, 256 * 1_024);
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let recorded = value.get("session_id").and_then(|value| value.as_str());
+    if recorded != session_id {
+        return None;
+    }
+    value
+        .get("diff_files_before")?
+        .as_array()?
+        .iter()
+        .map(|file| file.as_str().map(str::to_string))
+        .collect()
+}
+
+fn relative_path(root: &Path, path: &str) -> Option<String> {
+    Path::new(path)
+        .strip_prefix(root)
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+fn read_intent(root: &Path, session_id: Option<&str>) -> Option<String> {
+    let path = root.join(".lgtm/evidence/current-task.intent.json");
+    let raw = crate::fsutil::read_optional_bounded(&path, 4 * 1_024);
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let recorded = value.get("session_id").and_then(|value| value.as_str());
+    (recorded == session_id)
+        .then(|| value.get("intent")?.as_str().map(str::to_string))
+        .flatten()
 }
 
 fn read_input(input: &mut impl Read) -> Result<HookInput, String> {
@@ -274,8 +319,8 @@ fn write_summary(output: &mut impl Write, results: &[EnforcementResult]) -> Resu
     let counts = count_results(results);
     writeln!(
         output,
-        "lgtm Stop: passed={} unverified={} failed=0",
-        counts.passed, counts.unverified
+        "lgtm Stop: passed={} warning={} unverified={} failed=0",
+        counts.passed, counts.warning, counts.unverified
     )
     .map_err(|error| format!("write summary ({error})"))?;
     for result in results
@@ -283,6 +328,13 @@ fn write_summary(output: &mut impl Write, results: &[EnforcementResult]) -> Resu
         .filter(|result| result.status == Status::Unverified)
     {
         writeln!(output, "UNVERIFIED {}: {}", result.rule_id, result.message)
+            .map_err(|error| format!("write summary ({error})"))?;
+    }
+    for result in results
+        .iter()
+        .filter(|result| result.status == Status::Warning)
+    {
+        writeln!(output, "REVIEW {}: {}", result.rule_id, result.message)
             .map_err(|error| format!("write summary ({error})"))?;
     }
     Ok(())

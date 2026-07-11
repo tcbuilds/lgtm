@@ -19,6 +19,11 @@ fn embedded_registry_validates_against_schema() {
             "sql-parameterization",
             "bounded-retries-loops",
             "destructive-operation-safeguards",
+            "regression-test-required",
+            "new-behavior-tests-required",
+            "preserve-unrelated-user-changes",
+            "new-dependency-review",
+            "auth-change-security-review",
         ]
     );
 }

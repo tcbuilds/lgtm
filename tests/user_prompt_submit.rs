@@ -3,10 +3,15 @@ use std::process::{Command, Stdio};
 
 use serde_json::json;
 
+mod common;
+use common::TempRepo;
+
 #[test]
 fn cli_emits_user_prompt_submit_context() {
-    let root =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context-python");
+    let repo = TempRepo::new();
+    repo.write("pyproject.toml", "[project]\nname = \"fixture\"\n");
+    repo.write("src/routes/events.py", "def route():\n    pass\n");
+    let root = repo.path();
     let payload = json!({
         "cwd": root,
         "user_prompt": "fix src/routes/events.py using requests.post",

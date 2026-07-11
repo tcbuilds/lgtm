@@ -145,5 +145,40 @@
     "enforcement": {"mode": "static", "checks": ["semgrep.destructive-operation-safeguards"]},
     "overridable": false, "evidence": {"required": ["check_result"]},
     "references": ["codingStandards.md#security-standards"]
+  },
+  {
+    "id": "regression-test-required", "title": "Regression tests required", "description": "Observable bug fixes require regression coverage.",
+    "severity": "error", "level": "must", "category": "testing",
+    "applies_to": {"languages": ["python"], "domains": [], "file_patterns": ["**/*.py"]}, "activation": {"change_types": ["modify"], "signals": ["bug-fix"]},
+    "instruction": "Add a deterministic regression test for observable bug fixes.", "enforcement": {"mode": "diff", "checks": ["git.diff"]},
+    "overridable": false, "evidence": {"required": ["check_result", "changed_locations"]}, "references": ["codingStandards.md#testing-standards"]
+  },
+  {
+    "id": "new-behavior-tests-required", "title": "New behavior tests required", "description": "Source behavior changes require corresponding tests.",
+    "severity": "error", "level": "must", "category": "testing",
+    "applies_to": {"languages": ["python"], "domains": [], "file_patterns": ["**/*.py"]}, "activation": {"change_types": ["create", "modify"], "signals": []},
+    "instruction": "Add deterministic tests for new or changed source behavior.", "enforcement": {"mode": "diff", "checks": ["git.diff"]},
+    "overridable": false, "evidence": {"required": ["check_result", "changed_locations"]}, "references": ["codingStandards.md#testing-standards"]
+  },
+  {
+    "id": "preserve-unrelated-user-changes", "title": "Preserve unrelated user changes", "description": "Do not modify files outside the current task scope.",
+    "severity": "error", "level": "must", "category": "change-management",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]}, "activation": {"change_types": ["create", "modify", "delete"], "signals": []},
+    "instruction": "Preserve unrelated work and restrict edits to files recorded for this task.", "enforcement": {"mode": "evidence", "checks": ["git.diff"]},
+    "overridable": false, "evidence": {"required": ["check_result", "changed_locations"]}, "references": ["codingStandards.md#review-and-change-standards"]
+  },
+  {
+    "id": "new-dependency-review", "title": "Review new dependencies", "description": "Dependency changes require focused risk review.",
+    "severity": "warning", "level": "review", "category": "dependencies",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]}, "activation": {"change_types": ["create", "modify"], "signals": ["dependency"]},
+    "instruction": "Review necessity, license, maintenance, transitive size, and security posture.", "enforcement": {"mode": "diff", "checks": ["git.diff"]},
+    "overridable": false, "evidence": {"required": ["check_result"]}, "references": ["codingStandards.md#dependency-standards"]
+  },
+  {
+    "id": "auth-change-security-review", "title": "Review auth and security changes", "description": "Authentication and security-sensitive changes require focused review.",
+    "severity": "warning", "level": "review", "category": "security",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]}, "activation": {"change_types": ["create", "modify"], "signals": ["authentication", "authorization"]},
+    "instruction": "Perform a focused authentication, authorization, and sensitive-data review.", "enforcement": {"mode": "diff", "checks": ["git.diff"]},
+    "overridable": false, "evidence": {"required": ["check_result"]}, "references": ["codingStandards.md#security-standards"]
   }
 ]

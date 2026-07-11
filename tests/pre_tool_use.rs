@@ -45,6 +45,62 @@ fn allows_new_file_and_captures_session_baseline() {
 }
 
 #[test]
+fn first_session_diff_baseline_is_not_overwritten() {
+    let root = temp_repo("first-diff");
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-q"])
+            .status()
+            .expect("git init")
+            .success()
+    );
+    std::fs::write(root.join("tracked.py"), "value = 1\n").expect("tracked file");
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "tracked.py"])
+            .status()
+            .expect("git add")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args([
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-qm",
+                "initial"
+            ])
+            .status()
+            .expect("git commit")
+            .success()
+    );
+    std::fs::write(root.join("before.txt"), "user work\n").expect("preexisting diff");
+    assert_eq!(run(&root, "Write", "src/one.py"), json!(null));
+    std::fs::write(root.join("after.txt"), "new work\n").expect("later diff");
+    assert_eq!(run(&root, "Write", "src/two.py"), json!(null));
+    let baseline: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join(".lgtm/evidence/current-task.baseline.json"))
+            .expect("baseline readable"),
+    )
+    .expect("baseline JSON");
+    let files = baseline["diff_files_before"]
+        .as_array()
+        .expect("diff baseline array");
+    assert!(files.contains(&json!("before.txt")));
+    assert!(!files.contains(&json!("after.txt")));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn denies_traversal_and_prohibited_paths() {
     let root = temp_repo("deny");
     assert_eq!(

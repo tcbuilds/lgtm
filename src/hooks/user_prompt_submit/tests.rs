@@ -4,6 +4,10 @@ fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context-python")
 }
 
+fn remove_intent_fixture() {
+    let _ = std::fs::remove_file(fixture_root().join(".lgtm/evidence/current-task.intent.json"));
+}
+
 #[test]
 fn valid_payload_emits_claude_additional_context() {
     let payload = json!({
@@ -12,6 +16,7 @@ fn valid_payload_emits_claude_additional_context() {
     });
     let mut output = Vec::new();
     let code = run(&mut payload.to_string().as_bytes(), &mut output);
+    remove_intent_fixture();
     let value: serde_json::Value = serde_json::from_slice(&output).expect("valid response JSON");
 
     assert_eq!(code, ExitCode::SUCCESS);
@@ -32,6 +37,7 @@ fn prompt_alias_is_accepted() {
     let payload = json!({"cwd": fixture_root(), "prompt": "document README.md"});
     let mut output = Vec::new();
     run(&mut payload.to_string().as_bytes(), &mut output);
+    remove_intent_fixture();
     assert!(
         String::from_utf8(output)
             .expect("UTF-8")

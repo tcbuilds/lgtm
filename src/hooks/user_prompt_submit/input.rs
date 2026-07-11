@@ -5,6 +5,7 @@ pub(super) const MAX_PROMPT_BYTES: usize = 64 * 1_024;
 
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct HookInput {
+    pub session_id: Option<String>,
     pub cwd: Option<String>,
     pub user_prompt: Option<String>,
     pub prompt: Option<String>,
@@ -17,8 +18,13 @@ pub(super) fn parse(raw: &str) -> Result<HookInput, serde_json::Error> {
     serde_json::from_str(raw)
 }
 
-pub(super) fn bounded_prompt(input: HookInput) -> String {
-    let prompt = input.user_prompt.or(input.prompt).unwrap_or_default();
+pub(super) fn bounded_prompt(input: &HookInput) -> String {
+    let prompt = input
+        .user_prompt
+        .as_ref()
+        .or(input.prompt.as_ref())
+        .cloned()
+        .unwrap_or_default();
     let mut end = prompt.len().min(MAX_PROMPT_BYTES);
     while !prompt.is_char_boundary(end) {
         end -= 1;

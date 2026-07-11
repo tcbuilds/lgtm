@@ -22,6 +22,7 @@ pub(super) fn capture(
     let final_path = directory.join("current-task.baseline.json");
     let temp = directory.join(format!(".{name}.baseline.{}.tmp", std::process::id()));
     let content = read_optional_bounded(target, MAX_BASELINE_FILE_BYTES);
+    let diff_files_before = initial_diff_files(&final_path, root, session_id);
     let value = json!({
         "session_id": session_id,
         "target": target.strip_prefix(root).unwrap_or(target),
@@ -31,12 +32,38 @@ pub(super) fn capture(
         "context_identity": compiled.plan.context_identity,
         "rule_ids": compiled.plan.rule_ids,
         "checks": compiled.plan.checks,
+        "diff_files_before": diff_files_before,
     });
     write_atomic(
         &temp,
         &final_path,
         &serde_json::to_vec(&value).map_err(|e| e.to_string())?,
     )
+}
+
+fn initial_diff_files(path: &Path, root: &Path, session_id: Option<&str>) -> Option<Vec<String>> {
+    let raw = read_optional_bounded(path, MAX_BASELINE_FILE_BYTES);
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+        let recorded = value.get("session_id").and_then(|value| value.as_str());
+        if recorded == session_id
+            && let Some(files) = value
+                .get("diff_files_before")
+                .and_then(|value| value.as_array())
+        {
+            return files
+                .iter()
+                .map(|file| {
+                    file.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| "baseline diff file is not a string".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .ok();
+        }
+    }
+    crate::checks::diff::changed_files(root)
+        .ok()
+        .map(|files| files.into_iter().collect())
 }
 
 fn reject_symlink(path: &Path) -> Result<(), String> {
