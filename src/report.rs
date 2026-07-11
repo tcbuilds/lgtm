@@ -61,12 +61,17 @@ pub fn render(path: &Path, task: Option<&str>, output: &mut impl Write) -> Resul
 }
 
 fn evidence_root(path: &Path) -> Option<std::path::PathBuf> {
-    let evidence = path.parent()?;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let evidence = absolute.parent()?;
     let lgtm = evidence.parent()?;
     if evidence.file_name()? != "evidence" || lgtm.file_name()? != ".lgtm" {
         return None;
     }
-    lgtm.parent()?.canonicalize().ok()
+    Some(lgtm.parent()?.to_path_buf())
 }
 
 fn current_root() -> Option<std::path::PathBuf> {
