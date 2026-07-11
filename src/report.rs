@@ -46,7 +46,23 @@ pub fn render(path: &Path, task: Option<&str>, output: &mut impl Write) -> Resul
                 |task| format!("task `{}` not found", sanitize(task)),
             )
         })?;
-    write_report(&record, output)
+    let root = evidence_root(path).or_else(current_root);
+    write_report(&record, root.as_deref(), output)
+}
+
+fn evidence_root(path: &Path) -> Option<std::path::PathBuf> {
+    let evidence = path.parent()?;
+    let lgtm = evidence.parent()?;
+    if evidence.file_name()? != "evidence" || lgtm.file_name()? != ".lgtm" {
+        return None;
+    }
+    lgtm.parent()?.canonicalize().ok()
+}
+
+fn current_root() -> Option<std::path::PathBuf> {
+    std::env::current_dir()
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
 }
 
 fn read(path: &Path) -> Result<Vec<Record>, String> {
@@ -74,29 +90,48 @@ fn read(path: &Path) -> Result<Vec<Record>, String> {
         .collect()
 }
 
-fn write_report(record: &Record, output: &mut impl Write) -> Result<(), String> {
+fn write_report(
+    record: &Record,
+    root: Option<&Path>,
+    output: &mut impl Write,
+) -> Result<(), String> {
     writeln!(output, "Task: {}", sanitize(&record.task_id)).map_err(write_error)?;
     writeln!(output, "Agent: {}", sanitize(&record.agent)).map_err(write_error)?;
     writeln!(output, "Profile: {}", sanitize(&record.profile)).map_err(write_error)?;
-    write_files(record, output)?;
+    write_files(record, root, output)?;
     write_results(record, output)?;
     write_commands(record, output)?;
     write_overrides(record, output)?;
     write_risks(record, output)
 }
 
-fn write_files(record: &Record, output: &mut impl Write) -> Result<(), String> {
+fn write_files(
+    record: &Record,
+    root: Option<&Path>,
+    output: &mut impl Write,
+) -> Result<(), String> {
     let files: BTreeSet<_> = record
         .results
         .iter()
         .flat_map(|result| &result.locations)
-        .map(|location| sanitize(&location.file))
+        .map(|location| display_path(&location.file, root))
         .collect();
     writeln!(output, "Files changed ({}):", files.len()).map_err(write_error)?;
     for file in files {
         writeln!(output, "- {file}").map_err(write_error)?;
     }
     Ok(())
+}
+
+fn display_path(file: &str, root: Option<&Path>) -> String {
+    let path = Path::new(file);
+    if path.is_absolute()
+        && let Some(root) = root
+        && let Ok(relative) = path.strip_prefix(root)
+    {
+        return sanitize(&relative.to_string_lossy());
+    }
+    sanitize(file)
 }
 
 fn write_results(record: &Record, output: &mut impl Write) -> Result<(), String> {

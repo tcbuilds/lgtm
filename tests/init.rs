@@ -75,6 +75,26 @@ fn fresh_python_repo_creates_all_files() {
 }
 
 #[test]
+fn uv_repo_gets_uv_pytest_while_plain_repo_gets_bare_pytest() {
+    let uv_repo = TempRepo::new();
+    uv_repo.write("pyproject.toml", "[tool.pytest.ini_options]\n");
+    uv_repo.write("uv.lock", "version = 1\n");
+    assert!(run_init(&uv_repo).status.success());
+    assert_eq!(
+        uv_repo.read_json(".lgtm/config.json")["required_commands"]["python"],
+        serde_json::json!(["uv run pytest"])
+    );
+
+    let plain_repo = TempRepo::new();
+    plain_repo.write("pyproject.toml", "[tool.pytest.ini_options]\n");
+    assert!(run_init(&plain_repo).status.success());
+    assert_eq!(
+        plain_repo.read_json(".lgtm/config.json")["required_commands"]["python"],
+        serde_json::json!(["pytest"])
+    );
+}
+
+#[test]
 fn merge_preserves_existing_unrelated_hook() {
     let repo = TempRepo::new();
     repo.write("requirements.txt", "httpx\n");

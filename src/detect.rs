@@ -101,6 +101,11 @@ fn has_top_level_python_file(root: &Path) -> bool {
 /// directory exists, otherwise `.`.
 fn python_commands(root: &Path) -> Vec<String> {
     let config_text = read_optional_bounded(&root.join("pyproject.toml"), MAX_METADATA_BYTES);
+    let pytest_command = if uses_uv(root, &config_text) {
+        "uv run pytest"
+    } else {
+        "pytest"
+    };
     let mypy_command = if root.join("src").is_dir() {
         "mypy --strict src".to_string()
     } else {
@@ -115,17 +120,22 @@ fn python_commands(root: &Path) -> Vec<String> {
         commands.push(mypy_command.clone());
     }
     if has_pytest_table(&config_text) {
-        commands.push("pytest".to_string());
+        commands.push(pytest_command.to_string());
     }
 
     if commands.is_empty() {
         return vec![
             "ruff check .".to_string(),
             mypy_command,
-            "pytest".to_string(),
+            pytest_command.to_string(),
         ];
     }
     commands
+}
+
+fn uses_uv(root: &Path, pyproject: &str) -> bool {
+    std::fs::symlink_metadata(root.join("uv.lock")).is_ok_and(|metadata| metadata.is_file())
+        || has_toml_table(pyproject, "tool.uv")
 }
 
 /// True when `text` contains a TOML table header for exactly `name`, i.e. a
@@ -190,5 +200,17 @@ mod tests {
                 "pytest".to_string(),
             ],
         );
+    }
+
+    #[test]
+    fn uv_repo_prefers_uv_run_pytest_but_plain_repo_keeps_pytest() {
+        let root = std::env::temp_dir().join(format!("lgtm-detect-uv-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temp dir");
+        std::fs::write(root.join("pyproject.toml"), "[tool.pytest.ini_options]\n")
+            .expect("pyproject");
+        assert_eq!(python_commands(&root), ["pytest"]);
+        std::fs::write(root.join("uv.lock"), "version = 1\n").expect("uv lock");
+        assert_eq!(python_commands(&root), ["uv run pytest"]);
+        std::fs::remove_dir_all(root).ok();
     }
 }

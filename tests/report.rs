@@ -25,8 +25,8 @@ fn report_renders_latest_evidence_without_finding_descriptions() {
         ),
     );
     let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .arg("report")
-        .current_dir(repo.path())
+        .args(["report", "--evidence"])
+        .arg(repo.path().join(".lgtm/evidence/evidence.jsonl"))
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -54,4 +54,32 @@ fn malformed_evidence_fails_clearly() {
             .unwrap()
             .contains("malformed evidence line 1")
     );
+}
+
+#[test]
+fn report_dedupes_absolute_and_relative_repo_paths() {
+    let repo = TempRepo::new();
+    let absolute = repo.path().join("src/app.py");
+    let outside = std::env::temp_dir().join("outside-report.py");
+    let results = [
+        json!({"rule_id":"one","status":"passed","severity":"error","message":"ok","locations":[{"file":"src/app.py"}],"evidence":{"check":"x"}}),
+        json!({"rule_id":"two","status":"passed","severity":"error","message":"ok","locations":[{"file":absolute},{"file":outside}],"evidence":{"check":"x"}}),
+    ];
+    repo.write(
+        ".lgtm/evidence/evidence.jsonl",
+        &format!(
+            "{}\n",
+            json!({"task_id":"paths","agent":"claude-code","profile":"default","results":results})
+        ),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["report", "--evidence"])
+        .arg(repo.path().join(".lgtm/evidence/evidence.jsonl"))
+        .output()
+        .expect("report runs");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
+    assert!(stdout.contains("Files changed (2):"));
+    assert_eq!(stdout.matches("- src/app.py").count(), 1);
+    assert!(stdout.contains(&outside.to_string_lossy().to_string()));
 }
