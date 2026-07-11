@@ -1,0 +1,8 @@
+[project]
+dependencies = ["fastapi"]
+
+[tool.ruff]
+
+[tool.mypy]
+
+[tool.pytest.ini_options]
