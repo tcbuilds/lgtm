@@ -33,7 +33,7 @@ fn compiles_compact_deduplicated_packet_in_stable_order() {
     assert_eq!(
         compiled.plan.rule_ids,
         [
-            "external-call-timeout",
+            "no-broad-exception-handling",
             "no-swallowed-errors",
             "review-fixture"
         ]

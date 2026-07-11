@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 3);
+        assert_eq!(rules.len(), 4);
     }
 
     #[test]
@@ -360,6 +360,7 @@ mod tests {
             vec![
                 "no-committed-secrets",
                 "no-swallowed-errors",
+                "no-broad-exception-handling",
                 "external-call-timeout",
             ]
         );
