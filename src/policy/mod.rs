@@ -10,6 +10,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod config_version;
 pub mod overrides;
 pub mod profile;
 
@@ -349,12 +350,20 @@ pub fn load_embedded_registry() -> Result<Vec<Rule>, RegistryError> {
 
 pub fn load_profiled_registry(
     root: &std::path::Path,
-) -> Result<(String, Vec<Rule>, Vec<overrides::OverrideRecord>), String> {
+) -> Result<
+    (
+        String,
+        Vec<Rule>,
+        Vec<overrides::OverrideRecord>,
+        config_version::Compatibility,
+    ),
+    String,
+> {
     let rules = load_embedded_registry().map_err(|error| error.to_string())?;
-    let name = profile::load_name(root)?;
+    let (name, compatibility) = profile::load_name(root)?;
     let mut resolved = profile::resolve(&name, &rules)?;
     let overrides = overrides::apply(root, &mut resolved)?;
-    Ok((name, resolved, overrides))
+    Ok((name, resolved, overrides, compatibility))
 }
 
 #[cfg(test)]

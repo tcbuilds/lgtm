@@ -205,6 +205,30 @@ fn config_missing_profile_defaults_to_default() {
 }
 
 #[test]
+fn version_mismatch_is_reported_as_malformed() {
+    let temp = TempDir::new();
+    temp.write(
+        ".lgtm/config.json",
+        &json!({ "version": "2", "profile": "default" }).to_string(),
+    );
+    let stdin = json!({ "cwd": temp.path.to_string_lossy() }).to_string();
+    let context = additional_context(&run_capture(&stdin));
+    assert!(context.contains("config version mismatch: expected `1`, found `2`"));
+}
+
+#[test]
+fn missing_version_is_accepted_but_surfaced() {
+    let temp = TempDir::new();
+    temp.write(
+        ".lgtm/config.json",
+        &json!({ "profile": "default" }).to_string(),
+    );
+    let stdin = json!({ "cwd": temp.path.to_string_lossy() }).to_string();
+    let context = additional_context(&run_capture(&stdin));
+    assert!(context.contains("legacy compatibility accepted"));
+}
+
+#[test]
 fn unknown_profile_is_rejected_as_malformed() {
     let temp = TempDir::new();
     temp.write(

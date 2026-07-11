@@ -7,6 +7,7 @@ pub fn build_config(detection: &Detection) -> Value {
         required.insert(language.clone(), json!(commands));
     }
     json!({
+        "version": crate::policy::config_version::CONFIG_COMPATIBILITY_VERSION,
         "profile": "default",
         "languages": detection.languages,
         "disabled_rules": [],

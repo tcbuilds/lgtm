@@ -42,6 +42,7 @@ fn fresh_python_repo_creates_all_files() {
 
     let config = repo.read_json(".lgtm/config.json");
     assert_eq!(config["profile"], "default");
+    assert_eq!(config["version"], "1");
     assert_eq!(config["languages"], serde_json::json!(["python"]));
     let commands = &config["required_commands"]["python"];
     assert!(
@@ -387,6 +388,30 @@ fn config_is_preserved_on_reinit() {
     assert!(
         stdout.contains("preserved existing .lgtm/config.json"),
         "summary must report that config was preserved, got: {stdout}"
+    );
+}
+
+#[test]
+fn reinit_adds_missing_version_but_refuses_mismatch() {
+    let repo = TempRepo::new();
+    repo.write(
+        ".lgtm/config.json",
+        r#"{"profile":"strict","languages":[],"required_commands":{}}"#,
+    );
+    assert!(run_init(&repo).status.success());
+    let migrated = repo.read_json(".lgtm/config.json");
+    assert_eq!(migrated["version"], "1");
+    assert_eq!(migrated["profile"], "strict");
+
+    repo.write(".lgtm/config.json", r#"{"version":"2","profile":"strict"}"#);
+    let before = repo.read(".lgtm/config.json");
+    let output = run_init(&repo);
+    assert!(!output.status.success());
+    assert_eq!(repo.read(".lgtm/config.json"), before);
+    assert!(
+        String::from_utf8(output.stderr)
+            .expect("UTF-8 stderr")
+            .contains("config version mismatch")
     );
 }
 

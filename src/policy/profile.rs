@@ -48,12 +48,15 @@ fn default_name() -> String {
     "default".to_string()
 }
 
-pub fn load_name(root: &Path) -> Result<String, String> {
+pub fn load_name(root: &Path) -> Result<(String, super::config_version::Compatibility), String> {
     let path = root.join(".lgtm/config.json");
     let Some(file) = crate::fsutil::open_regular_file(&path)
         .map_err(|error| format!("open profile config ({error})"))?
     else {
-        return Ok(default_name());
+        return Ok((
+            default_name(),
+            super::config_version::Compatibility::LegacyMissing,
+        ));
     };
     let mut raw = String::new();
     file.take(MAX_CONFIG_BYTES + 1)
@@ -63,12 +66,21 @@ pub fn load_name(root: &Path) -> Result<String, String> {
         return Err("profile config exceeds maximum size".to_string());
     }
     if raw.trim().is_empty() {
-        return Ok(default_name());
+        return Ok((
+            default_name(),
+            super::config_version::Compatibility::LegacyMissing,
+        ));
     }
-    let config: RepoConfig = serde_json::from_str(&raw)
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("malformed profile config ({error})"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "malformed profile config (root must be an object)".to_string())?;
+    let compatibility = super::config_version::validate(object)?;
+    let config: RepoConfig = serde_json::from_value(value)
         .map_err(|error| format!("malformed profile config ({error})"))?;
     parse(&config.profile)?;
-    Ok(config.profile)
+    Ok((config.profile, compatibility))
 }
 
 pub fn validate_name(name: &str) -> Result<(), String> {

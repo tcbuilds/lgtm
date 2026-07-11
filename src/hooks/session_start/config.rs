@@ -13,6 +13,8 @@ pub(super) struct Config {
     pub(super) profile: String,
     #[serde(default)]
     pub(super) languages: Vec<String>,
+    #[serde(skip)]
+    pub(super) is_legacy_version: bool,
 }
 
 fn default_profile() -> String {
@@ -57,11 +59,26 @@ fn parse_config(mut file: std::fs::File) -> ConfigState {
     if contents.trim().is_empty() {
         return ConfigState::NotInitialized;
     }
-    match serde_json::from_str::<Config>(&contents) {
-        Ok(config) => match crate::policy::profile::validate_name(&config.profile) {
-            Ok(()) => ConfigState::Present(config),
+    let value: serde_json::Value = match serde_json::from_str(&contents) {
+        Ok(value) => value,
+        Err(error) => return ConfigState::Malformed(format!("invalid JSON ({error})")),
+    };
+    let Some(object) = value.as_object() else {
+        return ConfigState::Malformed("root must be an object".to_string());
+    };
+    let compatibility = match crate::policy::config_version::validate(object) {
+        Ok(compatibility) => compatibility,
+        Err(error) => return ConfigState::Malformed(error),
+    };
+    match serde_json::from_value::<Config>(value) {
+        Ok(mut config) => match crate::policy::profile::validate_name(&config.profile) {
+            Ok(()) => {
+                config.is_legacy_version =
+                    compatibility == crate::policy::config_version::Compatibility::LegacyMissing;
+                ConfigState::Present(config)
+            }
             Err(error) => ConfigState::Malformed(error),
         },
-        Err(error) => ConfigState::Malformed(format!("invalid JSON ({error})")),
+        Err(error) => ConfigState::Malformed(format!("invalid config ({error})")),
     }
 }

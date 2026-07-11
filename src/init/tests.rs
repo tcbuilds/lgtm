@@ -9,6 +9,7 @@ fn build_config_uses_default_profile_and_empty_overrides() {
     };
     let config = build_config(&detection);
     assert_eq!(config["profile"], json!("default"));
+    assert_eq!(config["version"], json!("1"));
     assert_eq!(config["languages"], json!(["python"]));
     assert_eq!(config["disabled_rules"], json!([]));
     assert_eq!(config["severity_overrides"], json!({}));

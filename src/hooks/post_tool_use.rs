@@ -46,13 +46,22 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
         return ExitCode::SUCCESS;
     };
     let mut results = scan_target(&root, &file_path);
-    let (_, registry, overrides) = match crate::policy::load_profiled_registry(&root) {
+    let (_, registry, overrides, compatibility) = match crate::policy::load_profiled_registry(&root)
+    {
         Ok(profile) => profile,
         Err(reason) => {
             diagnostic("load", "profile", &reason, false);
             return ExitCode::SUCCESS;
         }
     };
+    if compatibility == crate::policy::config_version::Compatibility::LegacyMissing {
+        diagnostic(
+            "validate",
+            "config-version",
+            "version missing; legacy compatibility accepted, run lgtm init",
+            false,
+        );
+    }
     crate::policy::profile::apply_resolved_results(&registry, &mut results);
     crate::policy::overrides::apply_results(&overrides, &mut results);
     for result in &results {

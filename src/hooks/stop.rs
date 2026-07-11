@@ -72,7 +72,8 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Full);
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
-    let (profile, registry, overrides) = crate::policy::load_profiled_registry(&root)?;
+    let (profile, registry, overrides, compatibility) =
+        crate::policy::load_profiled_registry(&root)?;
     let paths = touched_paths(&root, hook_input.session_id.as_deref())?;
     let mut results = rerun_checks(&paths);
     let touched: BTreeSet<String> = paths
@@ -94,6 +95,9 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         hook_input.transcript_path.as_deref().map(Path::new),
         &command_run.evidence,
     ));
+    if compatibility == crate::policy::config_version::Compatibility::LegacyMissing {
+        results.push(legacy_version_result());
+    }
     crate::policy::profile::apply_resolved_results(&registry, &mut results);
     crate::policy::overrides::apply_results(&overrides, &mut results);
     append_task_evidence(
@@ -115,6 +119,23 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     }
     write_block_decision(&failures)?;
     Ok(ExitCode::from(2))
+}
+
+fn legacy_version_result() -> EnforcementResult {
+    EnforcementResult {
+        rule_id: "config-version-compatible".to_string(),
+        status: Status::Unverified,
+        severity: Severity::Error,
+        message: "Config version is missing; legacy compatibility was accepted. Run `lgtm init`."
+            .to_string(),
+        locations: Vec::new(),
+        remediation: Some("Run `lgtm init` to add the current config version pin.".to_string()),
+        evidence: ResultEvidence {
+            check: "config.version".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    }
 }
 
 fn run_repository_commands(root: &Path) -> commands::RunResults {

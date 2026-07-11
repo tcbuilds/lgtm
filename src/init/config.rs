@@ -90,6 +90,13 @@ pub(super) fn validate_config(path: &Path) -> Result<ValidatedConfig, InitError>
     };
 
     validate_optional_field(path, &object, "profile", Value::is_string)?;
+    validate_optional_field(path, &object, "version", Value::is_string)?;
+    crate::policy::config_version::validate(&object).map_err(|reason| {
+        InitError::MalformedConfig {
+            path: path.to_path_buf(),
+            reason,
+        }
+    })?;
     validate_optional_field(path, &object, "languages", is_string_array)?;
     validate_optional_field(path, &object, "disabled_rules", is_string_array)?;
     validate_optional_field(path, &object, "severity_overrides", is_string_valued_object)?;
@@ -194,6 +201,9 @@ pub(super) fn render_config(
 /// are added under `required_commands` only when that language has no entry yet.
 /// Everything else in the existing object is left exactly as authored.
 fn merge_config(mut existing: Map<String, Value>, detection: &Detection) -> Map<String, Value> {
+    existing
+        .entry("version".to_string())
+        .or_insert_with(|| json!(crate::policy::config_version::CONFIG_COMPATIBILITY_VERSION));
     let languages_empty = existing
         .get("languages")
         .and_then(Value::as_array)

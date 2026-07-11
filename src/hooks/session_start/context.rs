@@ -66,6 +66,9 @@ fn append_present(lines: &mut Vec<String>, detection: &Detection, config: &Confi
     append_detected_languages(lines, detection);
     lines.push(config_languages_line(config));
     lines.push(commands_summary(detection));
+    if config.is_legacy_version {
+        lines.push("Config version missing; legacy compatibility accepted. Run `lgtm init` to add the current version pin.".to_string());
+    }
 }
 
 fn append_detected_languages(lines: &mut Vec<String>, detection: &Detection) {

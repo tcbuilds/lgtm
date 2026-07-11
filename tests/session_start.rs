@@ -115,6 +115,21 @@ fn present_config_reflects_profile_and_commands() {
 }
 
 #[test]
+fn mismatched_config_version_is_surfaced_by_binary_hook() {
+    let repo = TempRepo::new();
+    repo.write(
+        ".lgtm/config.json",
+        r#"{"version":"99","profile":"default"}"#,
+    );
+    let stdin = json!({ "cwd": repo.path() }).to_string();
+    let (code, stdout, _stderr) = run_hook(&stdin);
+    assert_eq!(code, 0, "hook mismatch must fail safe");
+    assert!(
+        additional_context(&stdout).contains("config version mismatch: expected `1`, found `99`")
+    );
+}
+
+#[test]
 fn malformed_config_still_emits_contract_with_note() {
     let repo = TempRepo::new();
     repo.write(".lgtm/config.json", "{ not valid");
