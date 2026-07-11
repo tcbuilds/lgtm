@@ -762,5 +762,5 @@ lgtm coordinates existing tools, adds missing policy checks, selects relevant ru
 ## Open Questions
 
 - **Dogfood repo final pick (resolved 2026-07-11):** internal-python-repo, based on its more active recent Python agent work.
-- **Binary distribution channel:** GitHub releases with an install script vs cargo-only — decide at first release.
+- **Binary distribution channel (resolved 2026-07-11):** private GitHub Releases with authenticated `gh` installer; see ADR-0006.
 - **Prompt-keyword intent taxonomy:** exact keyword → intent mapping table to be defined during build (bug-fix, feature, refactor, infra, docs).
