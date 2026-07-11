@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:lgtm:schema:evidence",
+  "title": "lgtm task evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "agent", "profile", "commit", "rules", "results", "commands", "overrides", "waivers"],
+  "properties": {
+    "task_id": { "type": "string", "minLength": 1 },
+    "agent": { "const": "claude-code" },
+    "profile": { "type": "string", "minLength": 1 },
+    "commit": { "type": ["string", "null"] },
+    "rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "warning", "skipped", "not_applicable", "unverified", "overridden", "waived"],
+      "properties": {
+        "passed": { "type": "integer", "minimum": 0 }, "failed": { "type": "integer", "minimum": 0 },
+        "warning": { "type": "integer", "minimum": 0 }, "skipped": { "type": "integer", "minimum": 0 },
+        "not_applicable": { "type": "integer", "minimum": 0 }, "unverified": { "type": "integer", "minimum": 0 },
+        "overridden": { "type": "integer", "minimum": 0 }, "waived": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "results": { "type": "array", "items": { "$ref": "#/$defs/result" } },
+    "commands": { "type": "array", "items": { "$ref": "#/$defs/command" } },
+    "overrides": { "type": "array", "items": { "$ref": "#/$defs/override" } },
+    "waivers": { "type": "array", "items": { "$ref": "#/$defs/waiver" } }
+  },
+  "$defs": {
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rule_id", "status", "severity", "message", "locations", "evidence"],
+      "properties": {
+        "rule_id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["passed", "failed", "warning", "skipped", "not_applicable", "unverified", "overridden", "waived"] },
+        "severity": { "enum": ["error", "warning", "info"] },
+        "message": { "type": "string" },
+        "locations": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["file"], "properties": { "file": { "type": "string" }, "line": { "type": "integer", "minimum": 1 } } } },
+        "remediation": { "type": "string" },
+        "evidence": { "type": "object", "additionalProperties": false, "required": ["check"], "properties": { "check": { "type": "string", "minLength": 1 }, "tool_version": { "type": "string" }, "finding_descriptions": { "type": "array", "items": { "type": "string" } } } }
+      }
+    },
+    "command": { "type": "object", "additionalProperties": false, "required": ["command", "exit_code", "duration_ms"], "properties": { "command": { "type": "string" }, "exit_code": { "type": ["integer", "null"] }, "duration_ms": { "type": "integer", "minimum": 0 } } },
+    "override": { "type": "object", "additionalProperties": false, "required": ["rule_id", "action", "severity"], "properties": { "rule_id": { "type": "string" }, "action": { "type": "string" }, "severity": { "enum": ["error", "warning", "info", null] } } },
+    "waiver": { "type": "object", "additionalProperties": false, "required": ["rule_id", "reason", "owner", "expires"], "properties": { "rule_id": { "type": "string" }, "reason": { "type": "string" }, "owner": { "type": "string" }, "expires": { "type": "string", "format": "date" } } }
+  }
+}

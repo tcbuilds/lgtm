@@ -15,6 +15,7 @@ use crate::policy::Severity;
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024;
 const MAX_LEDGER_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_TASK_EVIDENCE_BYTES: u64 = 5 * 1024 * 1024;
+const EVIDENCE_SCHEMA_JSON: &str = include_str!("../../schemas/evidence.schema.json");
 
 #[derive(Debug, Default, Deserialize)]
 struct HookInput {
@@ -324,8 +325,27 @@ fn append_task_evidence(
     };
     let mut line =
         serde_json::to_string(&record).map_err(|error| format!("serialize evidence ({error})"))?;
+    validate_evidence(&line)?;
     line.push('\n');
     append_bounded_regular(&directory.join("evidence.jsonl"), line.as_bytes())
+}
+
+fn validate_evidence(record: &str) -> Result<(), String> {
+    let schema = serde_json::from_str(EVIDENCE_SCHEMA_JSON)
+        .map_err(|error| format!("parse embedded evidence schema ({error})"))?;
+    let artifact = serde_json::from_str(record)
+        .map_err(|error| format!("parse serialized evidence ({error})"))?;
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| format!("compile embedded evidence schema ({error})"))?;
+    let errors: Vec<_> = validator
+        .iter_errors(&artifact)
+        .map(|error| error.to_string())
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("evidence schema violations: {}", errors.join("; ")))
+    }
 }
 
 fn append_bounded_regular(path: &Path, line: &[u8]) -> Result<(), String> {

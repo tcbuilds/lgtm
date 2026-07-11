@@ -18,6 +18,9 @@ use crate::select::select_rules;
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     let Some(parsed) = read_input(input) else {
+        eprintln!(
+            "pre-tool-use failed: entity=stdin reason=malformed or oversized payload retryable=false"
+        );
         return ExitCode::SUCCESS;
     };
     let Some(file) = input::edited_file(&parsed) else {

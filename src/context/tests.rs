@@ -36,6 +36,26 @@ fn derives_context_from_fixture_repo_and_diff() {
 }
 
 #[test]
+fn real_emitted_context_validates_against_schema() {
+    let context = build(
+        &fixture_root(),
+        &["src/routes/events.py".to_string()],
+        "+requests.post(url)\n",
+    );
+    let schema = serde_json::from_str(TASK_CONTEXT_SCHEMA_JSON).expect("schema JSON valid");
+    let artifact = serde_json::to_value(context).expect("context serializable");
+    let validator = jsonschema::validator_for(&schema).expect("schema valid");
+    let errors: Vec<_> = validator
+        .iter_errors(&artifact)
+        .map(|error| error.to_string())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "task context schema violations: {errors:?}"
+    );
+}
+
+#[test]
 fn rejects_hostile_paths_and_bounds_diff_without_panicking() {
     let huge_diff = format!("{}é", "x".repeat(MAX_DIFF_BYTES));
     let paths = vec![

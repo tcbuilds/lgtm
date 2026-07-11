@@ -112,9 +112,17 @@ fn secret_blocks_then_clean_stop_writes_well_formed_evidence() {
     assert!(String::from_utf8_lossy(&clean_stop.stdout).contains("failed=0"));
 
     let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
+    let schema: Value = serde_json::from_str(include_str!("../schemas/evidence.schema.json"))
+        .expect("evidence schema is valid JSON");
+    let validator = jsonschema::validator_for(&schema).expect("evidence schema compiles");
     assert!(evidence.lines().count() >= 2);
     for line in evidence.lines() {
         let record: Value = serde_json::from_str(line).expect("each evidence line is JSON");
+        let errors: Vec<_> = validator
+            .iter_errors(&record)
+            .map(|error| error.to_string())
+            .collect();
+        assert!(errors.is_empty(), "evidence schema violations: {errors:?}");
         assert_eq!(record["task_id"], "m1-e2e");
         assert!(record["rules"].is_object());
         assert!(record["results"].is_array());

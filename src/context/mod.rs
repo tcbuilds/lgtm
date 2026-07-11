@@ -7,7 +7,7 @@ mod signals;
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
-pub use model::TaskContext;
+pub use model::{TASK_CONTEXT_SCHEMA_JSON, TaskContext};
 
 use crate::detect::detect;
 use crate::fsutil::read_optional_bounded;

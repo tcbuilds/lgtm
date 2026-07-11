@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:lgtm:schema:task-context",
+  "title": "lgtm task context",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["languages", "domains", "files_touched", "risk_signals", "repository_commands"],
+  "properties": {
+    "languages": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "domains": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "files_touched": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "risk_signals": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "repository_commands": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 },
+        "uniqueItems": true
+      }
+    }
+  }
+}
