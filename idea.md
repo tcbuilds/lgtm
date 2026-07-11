@@ -80,7 +80,7 @@ The system separates:
 | Missing wrapped tools | **Degrade → `unverified`** | Never silently pass. Surfaced in evidence and Stop report. `lgtm doctor` lists missing tools with install commands. |
 | Profiles (MVP) | **All four** | default, strict, prototype, infrastructure. |
 | Waivers (MVP) | **None** | MUST = must. Waiver machinery post-MVP. |
-| Dogfood target | **One active Python revenue repo** | e.g. internal-python-repo or alternate-python-repo as guinea pig. |
+| Dogfood target | **internal-python-repo** | Selected for its more active Python agent work; initialized with all five hooks on 2026-07-11. |
 | Codex adapter | **Post-MVP** | Only after Claude Code loop proven. |
 
 **Accepted risk:** hard block + no waivers means a legitimate MUST exception has no escape hatch in MVP. Fallback for genuine emergencies: `.lgtm/config.json` severity override (recorded in evidence, security-critical rules non-overridable). If this bites more than once during dogfooding, the waiver flow gets pulled forward.
@@ -761,6 +761,6 @@ lgtm coordinates existing tools, adds missing policy checks, selects relevant ru
 
 ## Open Questions
 
-- **Dogfood repo final pick:** internal-python-repo vs alternate-python-repo (whichever has the most active Python agent work when build starts).
+- **Dogfood repo final pick (resolved 2026-07-11):** internal-python-repo, based on its more active recent Python agent work.
 - **Binary distribution channel:** GitHub releases with an install script vs cargo-only — decide at first release.
 - **Prompt-keyword intent taxonomy:** exact keyword → intent mapping table to be defined during build (bug-fix, feature, refactor, infra, docs).
