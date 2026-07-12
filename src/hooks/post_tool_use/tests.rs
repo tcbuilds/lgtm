@@ -76,6 +76,20 @@ fn post_tool_native_language_check_reports_typescript_violation() {
 }
 
 #[test]
+fn post_tool_native_language_check_reports_rust_violation() {
+    let temp = TempDir::new();
+    let file = temp.path.join("lib.rs");
+    std::fs::write(&file, "fn value() { let _ = input.unwrap(); }\n").expect("fixture source");
+    let results = scan_target(&temp.path, &file.to_string_lossy());
+    let finding = results
+        .iter()
+        .find(|result| result.rule_id == "rust-no-unwrap-expect")
+        .expect("native Rust rule result");
+    assert_eq!(finding.status, Status::Failed);
+    assert_eq!(finding.locations[0].line, Some(1));
+}
+
+#[test]
 fn edited_file_only_matches_edit_tools() {
     let mut input = HookInput {
         tool_name: Some("Read".to_string()),
