@@ -10,6 +10,10 @@ pub struct CommandEvidence {
     pub command: String,
     pub exit_code: Option<i32>,
     pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 pub struct RunResults {

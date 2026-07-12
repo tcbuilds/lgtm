@@ -219,6 +219,8 @@ mod tests {
             command: "cargo   test".to_string(),
             exit_code: Some(0),
             duration_ms: 1,
+            argv: Vec::new(),
+            cwd: None,
         }];
         assert!(claims.iter().all(|claim| is_proven(claim, &evidence)));
     }
@@ -230,6 +232,8 @@ mod tests {
             command: "cargo test".to_string(),
             exit_code: Some(1),
             duration_ms: 1,
+            argv: Vec::new(),
+            cwd: None,
         }];
         assert!(!is_proven(&claim, &evidence));
         assert!(!is_proven(&claim, &[]));
@@ -243,6 +247,8 @@ mod tests {
             command: "cargo test".to_string(),
             exit_code: Some(0),
             duration_ms: 1,
+            argv: Vec::new(),
+            cwd: None,
         }];
         assert!(claims.iter().all(|claim| is_proven(claim, &evidence)));
     }
@@ -253,6 +259,8 @@ mod tests {
             command: "echo contest".to_string(),
             exit_code: Some(0),
             duration_ms: 1,
+            argv: Vec::new(),
+            cwd: None,
         }];
         assert!(!is_proven(&Claim::TestsPassed, &evidence));
     }

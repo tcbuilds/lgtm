@@ -40,7 +40,7 @@
         "evidence": { "type": "object", "additionalProperties": false, "required": ["check"], "properties": { "check": { "type": "string", "minLength": 1 }, "tool_version": { "type": "string" }, "finding_descriptions": { "type": "array", "items": { "type": "string" } } } }
       }
     },
-    "command": { "type": "object", "additionalProperties": false, "required": ["command", "exit_code", "duration_ms"], "properties": { "command": { "type": "string" }, "exit_code": { "type": ["integer", "null"] }, "duration_ms": { "type": "integer", "minimum": 0 } } },
+    "command": { "type": "object", "additionalProperties": false, "required": ["command", "exit_code", "duration_ms"], "properties": { "command": { "type": "string" }, "exit_code": { "type": ["integer", "null"] }, "duration_ms": { "type": "integer", "minimum": 0 }, "argv": { "type": "array", "items": { "type": "string" } }, "cwd": { "type": ["string", "null"] } } },
     "override": { "type": "object", "additionalProperties": false, "required": ["rule_id", "action", "severity"], "properties": { "rule_id": { "type": "string" }, "action": { "type": "string" }, "severity": { "enum": ["error", "warning", "info", null] } } },
     "waiver": { "type": "object", "additionalProperties": false, "required": ["rule_id", "reason", "owner", "expires"], "properties": { "rule_id": { "type": "string" }, "reason": { "type": "string" }, "owner": { "type": "string" }, "expires": { "type": "string", "format": "date" } } }
   }

@@ -139,6 +139,9 @@ fn config_v2_loads_structured_argv_and_workspace_cwd() {
     assert_eq!(settings.structured.len(), 1);
     let output = run_structured(&fixture.root, &settings.structured);
     assert_eq!(output.results[0].status, Status::Passed);
+    let evidence = serde_json::to_value(&output.evidence).expect("evidence JSON");
+    assert_eq!(evidence[0]["argv"][0], script);
+    assert_eq!(evidence[0]["cwd"], ".");
 }
 
 #[test]
