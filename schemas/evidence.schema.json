@@ -25,6 +25,9 @@
     "commands": { "type": "array", "items": { "$ref": "#/$defs/command" } },
     "overrides": { "type": "array", "items": { "$ref": "#/$defs/override" } },
     "waivers": { "type": "array", "items": { "$ref": "#/$defs/waiver" } }
+    ,"policy_version": { "type": "string" },
+    "policy_digest": { "type": "string" },
+    "binary_version": { "type": "string" }
   },
   "$defs": {
     "result": {

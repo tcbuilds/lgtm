@@ -56,6 +56,9 @@ struct TaskEvidence<'a> {
     commands: &'a [commands::CommandEvidence],
     overrides: &'a [crate::policy::overrides::OverrideRecord],
     waivers: &'a [crate::policy::waivers::Waiver],
+    policy_version: &'static str,
+    policy_digest: String,
+    binary_version: &'static str,
 }
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
@@ -326,6 +329,9 @@ fn append_task_evidence(
         commands,
         overrides,
         waivers,
+        policy_version: crate::policy::POLICY_BUNDLE_VERSION,
+        policy_digest: crate::policy::bundle_digest(),
+        binary_version: env!("CARGO_PKG_VERSION"),
     };
     let mut line =
         serde_json::to_string(&record).map_err(|error| format!("serialize evidence ({error})"))?;

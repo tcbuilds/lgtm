@@ -12,6 +12,7 @@ use thiserror::Error;
 
 pub mod config_version;
 pub mod coverage;
+pub mod export;
 pub mod overrides;
 pub mod profile;
 pub mod waivers;
@@ -21,6 +22,18 @@ pub const RULE_SCHEMA_JSON: &str = include_str!("../../policy/rule.schema.json")
 
 /// The canonical rule registry, embedded at build time.
 pub const RULES_JSON: &str = include_str!("../../policy/rules.json");
+pub const POLICY_BUNDLE_VERSION: &str = "V2";
+
+pub fn bundle_digest() -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(RULES_JSON.as_bytes());
+    hasher.update(RULE_SCHEMA_JSON.as_bytes());
+    hasher.update(coverage::COVERAGE_JSON.as_bytes());
+    hasher.update(coverage::COVERAGE_SCHEMA_JSON.as_bytes());
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+    format!("{:x}", hasher.finalize())
+}
 
 /// How a rule violation is reported by the enforcement runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]

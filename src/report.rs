@@ -20,6 +20,12 @@ struct Record {
     overrides: Vec<OverrideRecord>,
     #[serde(default)]
     waivers: Vec<WaiverRecord>,
+    #[serde(default)]
+    policy_version: Option<String>,
+    #[serde(default)]
+    policy_digest: Option<String>,
+    #[serde(default)]
+    binary_version: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -113,6 +119,15 @@ fn write_report(
     writeln!(output, "Task: {}", sanitize(&record.task_id)).map_err(write_error)?;
     writeln!(output, "Agent: {}", sanitize(&record.agent)).map_err(write_error)?;
     writeln!(output, "Profile: {}", sanitize(&record.profile)).map_err(write_error)?;
+    if let Some(version) = &record.policy_version {
+        writeln!(output, "Policy bundle: {}", sanitize(version)).map_err(write_error)?;
+    }
+    if let Some(digest) = &record.policy_digest {
+        writeln!(output, "Policy digest: {}", sanitize(digest)).map_err(write_error)?;
+    }
+    if let Some(version) = &record.binary_version {
+        writeln!(output, "Binary version: {}", sanitize(version)).map_err(write_error)?;
+    }
     write_files(record, root, output)?;
     write_results(record, output)?;
     write_commands(record, output)?;
