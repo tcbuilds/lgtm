@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 34);
+        assert_eq!(rules.len(), 35);
     }
 
     #[test]
@@ -595,6 +595,7 @@ mod tests {
                 "go-mutable-global",
                 "go-error-wrapping",
                 "go-context-first-review",
+                "function-size",
             ]
         );
     }
@@ -621,6 +622,7 @@ mod tests {
                     | "go-mutable-global"
                     | "go-error-wrapping"
                     | "go-context-first-review"
+                    | "function-size"
                     | "typescript-no-any"
                     | "typescript-unsafe-unknown"
                     | "typescript-api-response-validation"

@@ -45,6 +45,7 @@ fn embedded_registry_validates_against_schema() {
             "go-mutable-global",
             "go-error-wrapping",
             "go-context-first-review",
+            "function-size",
         ]
     );
 }

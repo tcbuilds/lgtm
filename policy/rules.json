@@ -1825,5 +1825,53 @@
     "references": [
       "codingStandards.md#go"
     ]
+  },
+  {
+    "id": "function-size",
+    "title": "Review oversized functions",
+    "description": "Functions over 50 lines require extraction or a documented parser/table/state-machine exemption.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [
+      "good: split cohesive responsibilities; bad: grow one multi-concern function"
+    ],
+    "limitations": [
+      "Lexical spans do not prove semantic cohesion; untouched legacy debt is not baselined yet."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "architecture",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Keep functions near 20\u201330 lines and split before 50 unless a documented exemption applies.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.function-size"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result",
+        "changed_locations"
+      ]
+    },
+    "references": [
+      "codingStandards.md#code-organization"
+    ]
   }
 ]

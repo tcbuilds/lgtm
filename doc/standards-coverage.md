@@ -6,7 +6,7 @@
 | --- | --- | --- | --- | --- |
 | Core Principles | partial | instruction | all | Principles are contextual guidance, not static semantic proof. |
 | Non-Negotiable Rules | partial | native | all | Only listed rules have deterministic checks; remaining bullets require review. |
-| Code Organization | partial | review | all | Module and size semantics await structural analysis. |
+| Code Organization | partial | native | all | Function spans are lexical and review-tier; file/type size and module-boundary semantics remain planned. |
 | Naming Standards | unsupported | unsupported | all | No universal naming proof is implemented. |
 | Design For Debugging | partial | review | all | Observability semantics remain review guidance. |
 | Error Handling | partial | wrapped | python | Wrappers cover selected Python patterns only. |

@@ -16,6 +16,7 @@ pub mod gitleaks;
 pub mod languages;
 pub mod ruff;
 pub mod semgrep;
+pub mod structure;
 pub mod tiers;
 
 use serde::{Deserialize, Serialize};

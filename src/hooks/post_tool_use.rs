@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::checks::tiers::{self, Check, Hook};
 use crate::checks::{EnforcementResult, Status};
-use crate::checks::{gitleaks, languages, ruff};
+use crate::checks::{gitleaks, languages, ruff, structure};
 
 mod evidence;
 mod input;
@@ -101,6 +101,7 @@ fn scan_target(root: &Path, file_path: &str) -> Vec<EnforcementResult> {
             Check::Ruff => {}
             Check::NativeLanguages => {
                 results.extend(languages::scan(std::slice::from_ref(&resolved)));
+                results.extend(structure::scan(std::slice::from_ref(&resolved)));
             }
             _ => unreachable!("fast tier contains only fast checks"),
         }
