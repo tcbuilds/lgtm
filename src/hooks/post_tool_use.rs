@@ -46,7 +46,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
         return ExitCode::SUCCESS;
     };
     let mut results = scan_target(&root, &file_path);
-    let (_, registry, overrides, waivers, compatibility) =
+    let (_, registry, overrides, waivers, compatibility, _) =
         match crate::policy::load_profiled_registry(&root) {
             Ok(profile) => profile,
             Err(reason) => {

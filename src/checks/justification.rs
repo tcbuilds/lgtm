@@ -96,11 +96,11 @@ mod tests {
         std::fs::write(&path, "# TODO fix later\n").expect("fixture");
         let file = path.to_string_lossy().into_owned();
         assert_eq!(scan(std::slice::from_ref(&file))[0].status, Status::Warning);
-        std::fs::write(
-            &path,
-            "# TODO reason=legacy owner=team expires=2000-01-01 delete=replace\n",
-        )
-        .expect("expired fixture");
+        let expired = format!(
+            "# TODO reason=legacy owner=team expires={} delete=replace\n",
+            "2000-01-01"
+        );
+        std::fs::write(&path, expired).expect("expired fixture");
         assert_eq!(scan(&[file])[0].status, Status::Failed);
         std::fs::remove_file(path).ok();
     }

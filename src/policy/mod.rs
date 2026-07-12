@@ -15,6 +15,7 @@ pub mod config_version;
 pub mod coverage;
 pub mod docs;
 pub mod export;
+pub mod org_bundle;
 pub mod overlay;
 pub mod overrides;
 pub mod profile;
@@ -34,6 +35,7 @@ pub fn bundle_digest() -> String {
     hasher.update(RULE_SCHEMA_JSON.as_bytes());
     hasher.update(coverage::COVERAGE_JSON.as_bytes());
     hasher.update(coverage::COVERAGE_SCHEMA_JSON.as_bytes());
+    hasher.update(org_bundle::SCHEMA_JSON.as_bytes());
     hasher.update(overlay::SCHEMA_JSON.as_bytes());
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
     format!("{:x}", hasher.finalize())
@@ -546,16 +548,21 @@ pub type ResolvedRegistry = (
     Vec<overrides::OverrideRecord>,
     Vec<waivers::Waiver>,
     config_version::Compatibility,
+    Vec<String>,
 );
 
 pub fn load_profiled_registry(root: &std::path::Path) -> Result<ResolvedRegistry, String> {
     let rules = load_embedded_registry().map_err(|error| error.to_string())?;
     let (name, compatibility) = profile::load_name(root)?;
     let mut resolved = profile::resolve(&name, &rules)?;
+    let mut sources = vec![format!("embedded:{}", bundle_digest())];
+    if let Some(source) = org_bundle::apply(root, &mut resolved)? {
+        sources.push(source);
+    }
     overlay::apply(root, &mut resolved)?;
     let overrides = overrides::apply(root, &mut resolved)?;
     let waivers = waivers::load_active(root, &resolved)?;
-    Ok((name, resolved, overrides, waivers, compatibility))
+    Ok((name, resolved, overrides, waivers, compatibility, sources))
 }
 
 #[cfg(test)]

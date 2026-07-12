@@ -64,6 +64,7 @@ struct TaskEvidence<'a> {
     overrides: &'a [crate::policy::overrides::OverrideRecord],
     waivers: &'a [crate::policy::waivers::Waiver],
     coverage: Vec<commands::CoverageEvidence>,
+    policy_sources: &'a [String],
     policy_version: &'static str,
     policy_digest: String,
     binary_version: &'static str,
@@ -100,7 +101,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
-    let (profile, registry, overrides, waivers, compatibility) =
+    let (profile, registry, overrides, waivers, compatibility, policy_sources) =
         crate::policy::load_profiled_registry(&root)?;
     let paths = if hook_input.check {
         check_paths(&root)?
@@ -166,6 +167,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         &results,
         &command_run.evidence,
         &coverage,
+        &policy_sources,
         &overrides,
         &waivers,
     )?;
@@ -464,6 +466,7 @@ fn append_task_evidence(
     results: &[EnforcementResult],
     commands: &[commands::CommandEvidence],
     coverage: &[commands::CoverageEvidence],
+    policy_sources: &[String],
     overrides: &[crate::policy::overrides::OverrideRecord],
     waivers: &[crate::policy::waivers::Waiver],
 ) -> Result<(), String> {
@@ -483,6 +486,7 @@ fn append_task_evidence(
         overrides,
         waivers,
         coverage: coverage.to_vec(),
+        policy_sources,
         policy_version: crate::policy::POLICY_BUNDLE_VERSION,
         policy_digest: crate::policy::bundle_digest(),
         binary_version: env!("CARGO_PKG_VERSION"),
