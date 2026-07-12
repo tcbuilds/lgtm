@@ -14,6 +14,7 @@ pub mod commands;
 pub mod construction;
 pub mod determinism;
 pub mod diff;
+pub mod endpoints;
 #[path = "gitleaks/api.rs"]
 pub mod gitleaks;
 pub mod justification;

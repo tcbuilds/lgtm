@@ -13,7 +13,7 @@
 | Testing Standards | partial | evidence | all | Coverage metrics and nuanced assertion-strength proof remain planned; high-confidence test-quality, naming, and determinism signals are review findings. |
 | Observability Standards | partial | review | all | No universal log, metric, or trace proof is implemented. |
 | Performance Standards | unsupported | unsupported | all | Performance claims require measured evidence not yet automated. |
-| Security Standards | partial | review | all | Secure defaults and authorization remain language/framework work; contextual builders remain review. |
+| Security Standards | partial | review | all | Secure defaults and authorization remain language/framework work; endpoint and contextual builder findings remain review. |
 | Dependency Standards | partial | review | all | License, maintenance, transitive, and runtime analysis is planned. |
 | Documentation Standards | partial | review | all | Documentation drift detection is planned. |
 | Review And Change Standards | partial | evidence | all | PR metadata generation remains planned. |

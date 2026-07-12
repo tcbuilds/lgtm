@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "public-endpoint-review",
+    "title": "Review public endpoint controls",
+    "description": "Detected public endpoints require boundary validation, server-side authentication/authorization, rate limits, and secure cookie/CORS/CSRF/debug defaults.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [{"language": "all", "text": "good: validate and authorize at the route boundary; bad: expose raw request data with debug defaults", "provenance": "codingStandards.md#security-standards", "schematic": true}],
+    "limitations": ["Signals cover common FastAPI, Express, and Next-style routes; unknown frameworks remain unverified rather than silently passing."],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "security",
+    "applies_to": {"languages": ["python", "typescript", "javascript"], "domains": ["api"], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["endpoint", "route", "api", "public"]},
+    "instruction": "For public endpoints, require boundary validation, server-side auth/authorization, rate limits for expensive/public routes, secure cookies/CORS/CSRF, and non-debug defaults.",
+    "enforcement": {"mode": "static", "checks": ["native.public-endpoints"]},
+    "overridable": true,
+    "evidence": {"required": ["check_result", "changed_locations"]},
+    "references": ["codingStandards.md#security-standards"]
+  },
+  {
     "id": "safe-construction-review",
     "title": "Review safe construction boundaries",
     "description": "Avoid concatenating untrusted values into shell, HTML, URL, JSON, regex, or SQL strings; use contextual builders and escaping.",
