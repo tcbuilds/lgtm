@@ -53,6 +53,17 @@ struct RuleCounts {
 }
 
 #[derive(Debug, Serialize)]
+struct CoverageEvidence {
+    workspace_id: String,
+    status: &'static str,
+    tool: Option<String>,
+    scope: Option<String>,
+    line_percent: Option<f64>,
+    branch_percent: Option<f64>,
+    measured_at_ms: Option<u128>,
+}
+
+#[derive(Debug, Serialize)]
 struct TaskEvidence<'a> {
     task_id: &'a str,
     agent: &'static str,
@@ -63,6 +74,7 @@ struct TaskEvidence<'a> {
     commands: &'a [commands::CommandEvidence],
     overrides: &'a [crate::policy::overrides::OverrideRecord],
     waivers: &'a [crate::policy::waivers::Waiver],
+    coverage: Vec<CoverageEvidence>,
     policy_version: &'static str,
     policy_digest: String,
     binary_version: &'static str,
@@ -453,6 +465,15 @@ fn append_task_evidence(
         commands,
         overrides,
         waivers,
+        coverage: vec![CoverageEvidence {
+            workspace_id: "repository".to_string(),
+            status: "not_applicable",
+            tool: None,
+            scope: None,
+            line_percent: None,
+            branch_percent: None,
+            measured_at_ms: None,
+        }],
         policy_version: crate::policy::POLICY_BUNDLE_VERSION,
         policy_digest: crate::policy::bundle_digest(),
         binary_version: env!("CARGO_PKG_VERSION"),

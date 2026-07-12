@@ -126,6 +126,7 @@ fn secret_blocks_then_clean_stop_writes_well_formed_evidence() {
         assert_eq!(record["task_id"], "m1-e2e");
         assert!(record["rules"].is_object());
         assert!(record["results"].is_array());
+        assert_eq!(record["coverage"][0]["status"], "not_applicable");
         assert!(
             record["policy_digest"]
                 .as_str()
