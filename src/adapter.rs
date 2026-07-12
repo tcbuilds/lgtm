@@ -41,13 +41,15 @@ mod tests {
 
     #[test]
     fn preserves_claude_decision_contract() {
-        assert_eq!(
+        let schema: Value = serde_json::from_str(include_str!("../schemas/adapter.schema.json"))
+            .expect("adapter schema");
+        let validator = jsonschema::validator_for(&schema).expect("adapter validator");
+        for response in [
             pre_tool_deny("reason"),
-            json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"reason"},"systemMessage":"reason"})
-        );
-        assert_eq!(
             block("reason"),
-            json!({"decision":"block","reason":"reason"})
-        );
+            user_prompt_context("intent", "packet"),
+        ] {
+            assert!(validator.is_valid(&response));
+        }
     }
 }
