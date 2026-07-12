@@ -15,7 +15,7 @@ struct RuleSpec {
     message: &'static str,
 }
 
-const RULES: [RuleSpec; 5] = [
+const RULES: [RuleSpec; 7] = [
     RuleSpec {
         id: "rust-no-unsafe",
         extensions: &["rs"],
@@ -33,6 +33,18 @@ const RULES: [RuleSpec; 5] = [
         extensions: &["ts", "tsx", "js", "jsx"],
         needles: &[": any", "as any", "<any>"],
         message: "TypeScript boundaries should use unknown or a precise type instead of any.",
+    },
+    RuleSpec {
+        id: "typescript-unsafe-unknown",
+        extensions: &["ts", "tsx", "js", "jsx"],
+        needles: &["JSON.parse(", "response.json()"],
+        message: "External JSON must be parsed as unknown and narrowed before use.",
+    },
+    RuleSpec {
+        id: "typescript-api-response-validation",
+        extensions: &["ts", "tsx", "js", "jsx"],
+        needles: &["fetch("],
+        message: "API responses require explicit runtime validation before use.",
     },
     RuleSpec {
         id: "react-no-state-mutation",
@@ -153,6 +165,34 @@ mod tests {
                 .unwrap()
                 .status,
             Status::NotApplicable
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn unsafe_typescript_boundary_patterns_are_localized() {
+        let path = std::env::temp_dir().join(format!("lgtm-ts-boundary-{}.ts", std::process::id()));
+        std::fs::write(
+            &path,
+            "const value = JSON.parse(raw);\nconst response = fetch(url);\n",
+        )
+        .expect("source");
+        let results = scan(&[path.to_string_lossy().into_owned()]);
+        assert_eq!(
+            results
+                .iter()
+                .find(|result| result.rule_id == "typescript-unsafe-unknown")
+                .unwrap()
+                .status,
+            Status::Failed
+        );
+        assert_eq!(
+            results
+                .iter()
+                .find(|result| result.rule_id == "typescript-api-response-validation")
+                .unwrap()
+                .status,
+            Status::Failed
         );
         std::fs::remove_file(path).ok();
     }

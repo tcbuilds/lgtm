@@ -1146,5 +1146,105 @@
     "references": [
       "codingStandards.md#react"
     ]
+  },
+  {
+    "id": "typescript-unsafe-unknown",
+    "title": "Narrow external JSON",
+    "description": "External JSON must be parsed as unknown and narrowed before use.",
+    "mechanism": "native",
+    "confidence": "low",
+    "examples": [
+      "good: validate at the boundary; bad: trust raw JSON"
+    ],
+    "limitations": [
+      "The lexical check identifies common boundary calls and requires review for wrappers and schema libraries."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "validation",
+    "applies_to": {
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "External JSON must be parsed as unknown and narrowed before use.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.typescript-unsafe-unknown"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#typescript-and-javascript"
+    ]
+  },
+  {
+    "id": "typescript-api-response-validation",
+    "title": "Validate API responses",
+    "description": "API responses require explicit runtime validation before use.",
+    "mechanism": "native",
+    "confidence": "low",
+    "examples": [
+      "good: validate at the boundary; bad: trust raw JSON"
+    ],
+    "limitations": [
+      "The lexical check identifies common boundary calls and requires review for wrappers and schema libraries."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "validation",
+    "applies_to": {
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "API responses require explicit runtime validation before use.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.typescript-api-response-validation"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#typescript-and-javascript"
+    ]
   }
 ]

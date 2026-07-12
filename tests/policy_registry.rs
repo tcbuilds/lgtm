@@ -31,6 +31,8 @@ fn embedded_registry_validates_against_schema() {
             "typescript-no-any",
             "react-no-state-mutation",
             "react-unstable-key",
+            "typescript-unsafe-unknown",
+            "typescript-api-response-validation",
         ]
     );
 }

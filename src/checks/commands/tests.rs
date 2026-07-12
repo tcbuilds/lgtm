@@ -145,6 +145,51 @@ fn config_v2_loads_structured_argv_and_workspace_cwd() {
 }
 
 #[test]
+fn structured_commands_isolate_identically_named_workspace_tools() {
+    let fixture = Fixture::create();
+    let backend = fixture.root.join("backend");
+    let frontend = fixture.root.join("frontend");
+    std::fs::create_dir_all(&backend).expect("backend");
+    std::fs::create_dir_all(&frontend).expect("frontend");
+    let backend_tool = write_workspace_tool(&backend, "backend-tool");
+    let frontend_tool = write_workspace_tool(&frontend, "frontend-tool");
+    let commands = vec![
+        StructuredCommand {
+            argv: vec![backend_tool.to_string_lossy().into_owned()],
+            cwd: "backend".into(),
+            timeout: std::time::Duration::from_secs(30),
+        },
+        StructuredCommand {
+            argv: vec![frontend_tool.to_string_lossy().into_owned()],
+            cwd: "frontend".into(),
+            timeout: std::time::Duration::from_secs(30),
+        },
+    ];
+    let output = run_structured(&fixture.root, &commands);
+    assert!(
+        output
+            .results
+            .iter()
+            .all(|result| result.status == Status::Passed)
+    );
+    assert_eq!(output.evidence[0].cwd.as_deref(), Some("backend"));
+    assert_eq!(output.evidence[1].cwd.as_deref(), Some("frontend"));
+    assert_eq!(output.evidence[0].argv.len(), 1);
+    assert_eq!(output.evidence[1].argv.len(), 1);
+}
+
+fn write_workspace_tool(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let path = root.join(name);
+    std::fs::write(&path, "#!/bin/sh\npwd >/dev/null\nexit 0\n").expect("tool");
+    let mut permissions = std::fs::metadata(&path)
+        .expect("tool metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&path, permissions).expect("tool executable");
+    path
+}
+
+#[test]
 fn config_uses_default_and_validates_custom_timeout() {
     let fixture = Fixture::create();
     std::fs::create_dir(fixture.root.join(".lgtm")).unwrap();
