@@ -17,6 +17,18 @@ pub fn build_config(detection: &Detection) -> Value {
     })
 }
 
+/// Build fresh V2 config from detected workspace-scoped commands.
+pub fn build_v2_config(workspaces: &[Workspace]) -> Value {
+    serde_json::to_value(crate::config_v2::ConfigV2 {
+        version: crate::config_v2::VERSION.to_string(),
+        profile: "default".to_string(),
+        workspaces: workspaces.to_vec(),
+        disabled_rules: Vec::new(),
+        severity_overrides: std::collections::BTreeMap::new(),
+    })
+    .expect("V2 config model serializes")
+}
+
 /// Merge the five lgtm hook entries into an existing settings object.
 ///
 /// `existing` is the parsed settings object (an empty object for a fresh repo).

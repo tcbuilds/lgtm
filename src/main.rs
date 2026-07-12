@@ -260,6 +260,7 @@ fn run(command: Command) -> ExitCode {
 }
 
 fn run_check(workspace: Option<&str>, tier: Option<CheckTier>) -> ExitCode {
+    let tier = tier.or(Some(CheckTier::Full));
     let root = match std::env::current_dir() {
         Ok(root) => root,
         Err(error) => {

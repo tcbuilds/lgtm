@@ -179,6 +179,25 @@ pub fn migrate_v1(value: &Value) -> Result<ConfigV2, ConfigV2Error> {
     Ok(config)
 }
 
+/// Migrate legacy commands while replacing guessed root gates with detected
+/// workspace-scoped commands. User policy fields remain preserved.
+pub fn migrate_v1_with_workspaces(
+    value: &Value,
+    detected: &[Workspace],
+) -> Result<ConfigV2, ConfigV2Error> {
+    let mut config = migrate_v1(value)?;
+    if !detected.is_empty() {
+        config.workspaces = detected.to_vec();
+        for workspace in &mut config.workspaces {
+            for command in &mut workspace.commands {
+                command.source = "discovery-migration".to_string();
+            }
+        }
+    }
+    validate(&config)?;
+    Ok(config)
+}
+
 pub fn render(config: &ConfigV2) -> Result<Vec<u8>, ConfigV2Error> {
     validate(config)?;
     let mut rendered = serde_json::to_string_pretty(config)?;

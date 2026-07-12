@@ -137,12 +137,17 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     let mut command_run = run_repository_commands(
         &root,
         hook_input.workspace.as_deref(),
-        hook_input.tier.as_deref(),
+        hook_input.tier.as_deref().or(Some("fast")),
+        &paths,
     );
     bind_command_provenance(&root, &paths, &mut command_run.evidence);
-    let coverage = commands::load(&root)
-        .map(|settings| commands::run_coverage(&root, &settings.coverage))
-        .unwrap_or_else(|_| commands::run_coverage(&root, &[]));
+    let coverage = if hook_input.tier.as_deref() == Some("full") {
+        commands::load(&root)
+            .map(|settings| commands::run_coverage(&root, &settings.coverage))
+            .unwrap_or_else(|_| commands::run_coverage(&root, &[]))
+    } else {
+        commands::run_coverage(&root, &[])
+    };
     results.extend(command_run.results);
     if !hook_input.check {
         results.push(crate::checks::claims::evaluate(
@@ -206,6 +211,7 @@ fn run_repository_commands(
     root: &Path,
     workspace: Option<&str>,
     tier: Option<&str>,
+    touched_paths: &[String],
 ) -> commands::RunResults {
     match commands::load(root) {
         Ok(configured) if !configured.structured.is_empty() => {
@@ -214,16 +220,33 @@ fn run_repository_commands(
                 .iter()
                 .filter(|command| workspace.is_none_or(|id| command.workspace_id == id))
                 .filter(|command| tier.is_none_or(|selected| command.tier == selected))
+                .filter(|command| workspace_touched(root, &command.cwd, touched_paths))
                 .cloned()
                 .collect();
             commands::run_structured(root, &selected)
         }
-        Ok(configured) => commands::run(root, &configured.commands, configured.timeout),
+        Ok(configured) if !configured.commands.is_empty() => commands::RunResults {
+            results: vec![commands::config_unverified(
+                "legacy config requires `lgtm init --migrate-config`",
+            )],
+            evidence: Vec::new(),
+        },
+        Ok(_) => commands::run_structured(root, &[]),
         Err(reason) => commands::RunResults {
             results: vec![commands::config_unverified(&reason)],
             evidence: Vec::new(),
         },
     }
+}
+
+fn workspace_touched(root: &Path, cwd: &Path, touched_paths: &[String]) -> bool {
+    if touched_paths.is_empty() {
+        return true;
+    }
+    let workspace = root.join(cwd);
+    touched_paths
+        .iter()
+        .any(|path| Path::new(path).starts_with(&workspace))
 }
 
 fn bind_command_provenance(
@@ -293,18 +316,7 @@ fn read_input(input: &mut impl Read) -> Result<HookInput, String> {
 }
 
 fn resolve_root(cwd: Option<&str>) -> Result<PathBuf, String> {
-    let candidate = cwd
-        .filter(|value| !value.trim().is_empty())
-        .map(PathBuf::from)
-        .map(Ok)
-        .unwrap_or_else(std::env::current_dir)
-        .map_err(|error| format!("resolve cwd ({error})"))?;
-    let root =
-        std::fs::canonicalize(candidate).map_err(|error| format!("canonicalize cwd ({error})"))?;
-    if !root.is_dir() {
-        return Err("cwd is not a directory".to_string());
-    }
-    Ok(root)
+    crate::hooks::root::resolve(cwd)
 }
 
 fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<Vec<String>, String> {

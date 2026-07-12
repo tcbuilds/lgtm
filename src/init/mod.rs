@@ -45,7 +45,7 @@ use settings::{commands_match, entry_runs_command};
 mod tests;
 
 /// The single line appended to `.gitignore` to exclude evidence records.
-const EVIDENCE_GITIGNORE_LINE: &str = ".lgtm/evidence/";
+const EVIDENCE_GITIGNORE_LINE: &str = "**/.lgtm/evidence/";
 
 /// The maximum size init will read from an existing config, settings, or
 /// `.gitignore` file. These are small hand- or tool-authored text files; capping

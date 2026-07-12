@@ -7,7 +7,7 @@
 
 use std::process::Command;
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 mod common;
 use common::TempRepo;
@@ -62,14 +62,18 @@ fn fresh_python_repo_creates_all_files() {
 
     let config = repo.read_json(".lgtm/config.json");
     assert_eq!(config["profile"], "default");
-    assert_eq!(config["version"], "1");
-    assert_eq!(config["languages"], serde_json::json!(["python"]));
-    let commands = &config["required_commands"]["python"];
+    assert_eq!(config["version"], "2");
+    let python = config["workspaces"]
+        .as_array()
+        .expect("workspaces")
+        .iter()
+        .find(|workspace| workspace["language"] == "python")
+        .expect("python workspace");
+    let commands = python["commands"].as_array().expect("commands");
     assert!(
         commands
-            .as_array()
-            .expect("commands array")
-            .contains(&Value::String("ruff check .".to_string())),
+            .iter()
+            .any(|command| command["argv"] == serde_json::json!(["ruff", "check"])),
         "detected ruff config must yield a ruff command"
     );
 
@@ -121,7 +125,10 @@ fn init_accepts_declared_pytest_without_guessing_other_tools() {
         "declared pytest should be accepted"
     );
     let config = repo.read_json(".lgtm/config.json");
-    assert_eq!(config["required_commands"]["python"], json!(["pytest"]));
+    assert_eq!(
+        config["workspaces"][0]["commands"][0]["argv"],
+        json!(["pytest"])
+    );
 }
 
 #[test]
@@ -187,15 +194,15 @@ fn uv_repo_gets_uv_pytest_while_plain_repo_gets_bare_pytest() {
     uv_repo.write("uv.lock", "version = 1\n");
     assert!(run_init(&uv_repo).status.success());
     assert_eq!(
-        uv_repo.read_json(".lgtm/config.json")["required_commands"]["python"],
-        serde_json::json!(["uv run pytest"])
+        uv_repo.read_json(".lgtm/config.json")["workspaces"][0]["commands"][0]["argv"],
+        serde_json::json!(["uv", "run", "pytest"])
     );
 
     let plain_repo = TempRepo::new();
     plain_repo.write("pyproject.toml", "[tool.pytest.ini_options]\n");
     assert!(run_init(&plain_repo).status.success());
     assert_eq!(
-        plain_repo.read_json(".lgtm/config.json")["required_commands"]["python"],
+        plain_repo.read_json(".lgtm/config.json")["workspaces"][0]["commands"][0]["argv"],
         serde_json::json!(["pytest"])
     );
 }
@@ -457,7 +464,7 @@ fn gitignore_without_trailing_newline_gets_clean_append() {
 
     let gitignore = repo.read(".gitignore");
     assert_eq!(
-        gitignore, "target/\n.lgtm/evidence/\n",
+        gitignore, "target/\n**/.lgtm/evidence/\n",
         "the evidence line must be appended on its own line after a missing newline"
     );
 }
@@ -526,7 +533,7 @@ fn reinit_adds_missing_version_but_refuses_mismatch() {
     );
     assert!(run_init(&repo).status.success());
     let migrated = repo.read_json(".lgtm/config.json");
-    assert_eq!(migrated["version"], "1");
+    assert_eq!(migrated["version"], "2");
     assert_eq!(migrated["profile"], "strict");
 
     repo.write(".lgtm/config.json", r#"{"version":"3","profile":"strict"}"#);
@@ -805,7 +812,7 @@ fn negated_evidence_gitignore_rule_triggers_append() {
 
     let gitignore = repo.read(".gitignore");
     assert_eq!(
-        gitignore, ".lgtm/\n!.lgtm/evidence/\n.lgtm/evidence/\n",
+        gitignore, ".lgtm/\n!.lgtm/evidence/\n**/.lgtm/evidence/\n",
         "a wholesale ignore later negated for evidence must get an explicit re-ignore appended"
     );
 }
@@ -851,7 +858,6 @@ fn repo_with_no_language_still_scaffolds() {
     );
 
     let config = repo.read_json(".lgtm/config.json");
-    assert_eq!(config["languages"], serde_json::json!([]));
-    assert_eq!(config["required_commands"], serde_json::json!({}));
+    assert_eq!(config["workspaces"], serde_json::json!([]));
     assert!(repo.exists(".claude/settings.json"), "hooks still wired");
 }

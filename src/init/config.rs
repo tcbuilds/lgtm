@@ -180,12 +180,23 @@ fn is_string_valued_object(value: &Value) -> bool {
 /// swap-between-validate-and-render race.
 pub(super) fn render_config(
     detection: &Detection,
+    workspaces: &[Workspace],
     existing_config: Option<Map<String, Value>>,
     existing_contents: &str,
     notes: &mut Vec<String>,
-) -> Option<Vec<u8>> {
+) -> Result<Option<Vec<u8>>, InitError> {
     let desired = match existing_config {
-        None => build_config(detection),
+        None => settings::build_v2_config(workspaces),
+        Some(existing) if existing.get("version").and_then(Value::as_str) != Some("2") => {
+            notes.push("migrated legacy config using detected workspace gates".to_string());
+            let migrated =
+                crate::config_v2::migrate_v1_with_workspaces(&Value::Object(existing), workspaces)
+                    .map_err(|error| InitError::MalformedConfig {
+                        path: PathBuf::from(".lgtm/config.json"),
+                        reason: error.to_string(),
+                    })?;
+            serde_json::to_value(migrated).expect("V2 config model serializes")
+        }
         Some(existing) => {
             notes.push("preserved existing .lgtm/config.json".to_string());
             Value::Object(merge_config(existing, detection))
@@ -197,10 +208,10 @@ pub(super) fn render_config(
     serialized.push('\n');
 
     if existing_contents == serialized {
-        return None;
+        return Ok(None);
     }
 
-    Some(serialized.into_bytes())
+    Ok(Some(serialized.into_bytes()))
 }
 
 /// Merge newly detected languages and commands into an existing config object,

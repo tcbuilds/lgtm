@@ -10,7 +10,7 @@ pub(super) fn render_gitignore(
         Some(contents) if evidence_is_ignored(&contents) => {
             if contents
                 .lines()
-                .any(|line| line.trim() == "!.lgtm/evidence/")
+                .any(|line| line.trim() == "!**/.lgtm/evidence/")
             {
                 notes.push(
                     "contradictory .gitignore negation re-includes .lgtm/evidence/; remove it"
@@ -28,7 +28,7 @@ pub(super) fn render_gitignore(
         Some(contents) => {
             if contents
                 .lines()
-                .any(|line| line.trim() == "!.lgtm/evidence/")
+                .any(|line| line.trim() == "!**/.lgtm/evidence/")
             {
                 notes.push(
                     "contradictory .gitignore negation re-includes .lgtm/evidence/; remove it"
@@ -89,7 +89,7 @@ pub(super) fn evidence_is_ignored(contents: &str) -> bool {
 /// `.lgtm/evidence/` are all recognized.
 fn gitignore_pattern_matches_evidence(pattern: &str) -> bool {
     let normalized = pattern.trim_end_matches('/');
-    normalized == ".lgtm" || normalized == ".lgtm/evidence"
+    normalized == ".lgtm" || normalized == ".lgtm/evidence" || normalized == "**/.lgtm/evidence"
 }
 
 /// True when the file carries an explicit, non-negated evidence rule (as opposed
@@ -98,7 +98,9 @@ fn gitignore_pattern_matches_evidence(pattern: &str) -> bool {
 fn gitignore_has_explicit_evidence_rule(contents: &str) -> bool {
     contents.lines().any(|line| {
         let trimmed = line.trim();
-        trimmed == EVIDENCE_GITIGNORE_LINE || trimmed == ".lgtm/evidence"
+        trimmed == EVIDENCE_GITIGNORE_LINE
+            || trimmed == ".lgtm/evidence"
+            || trimmed == "**/.lgtm/evidence"
     })
 }
 

@@ -28,9 +28,11 @@ pub fn migrate_config(root: &Path, dry_run: bool) -> Result<InitSummary, InitErr
         });
     }
     let config =
-        crate::config_v2::migrate_v1(&value).map_err(|error| InitError::MalformedConfig {
-            path: config_path.clone(),
-            reason: error.to_string(),
+        crate::config_v2::migrate_v1_with_workspaces(&value, &workspaces).map_err(|error| {
+            InitError::MalformedConfig {
+                path: config_path.clone(),
+                reason: error.to_string(),
+            }
         })?;
     let rendered =
         crate::config_v2::render(&config).map_err(|error| InitError::MalformedConfig {
@@ -73,7 +75,7 @@ pub fn preview(root: &Path) -> Result<InitSummary, InitError> {
     let mut notes = vec!["dry-run: no files changed".to_string()];
     note_unsupported_repo(&detection, &mut notes);
     notes.push(
-        "track .lgtm/config.json and .claude/settings.json; only .lgtm/evidence/ is transient"
+        "track .lgtm/config.json and .claude/settings.json; **/.lgtm/evidence/ is transient"
             .to_string(),
     );
     for workspace in &workspaces {
@@ -144,16 +146,17 @@ pub fn run_with_options(root: &Path, accept_guesses: bool) -> Result<InitSummary
 
     note_unsupported_repo(&detection, &mut notes);
     notes.push(
-        "track .lgtm/config.json and .claude/settings.json; only .lgtm/evidence/ is transient"
+        "track .lgtm/config.json and .claude/settings.json; **/.lgtm/evidence/ is transient"
             .to_string(),
     );
 
     let config_render = render_config(
         &detection,
+        &workspaces,
         existing_config,
         &existing_config_contents,
         &mut notes,
-    );
+    )?;
     let gitignore_render = render_gitignore(&gitignore_path, &mut notes)?;
     let settings_render = render_settings(validated_settings);
 

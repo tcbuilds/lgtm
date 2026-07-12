@@ -48,6 +48,9 @@ lgtm check --tier full
 See [the Codex adapter contract](doc/adapters/codex.md) for exit statuses and
 platform limits.
 
+Claude Stop hooks run fast, touched-workspace gates by default. Run
+`lgtm check --tier full` before merge to execute tests, builds, and coverage.
+
 ## Common Commands
 
 ```bash

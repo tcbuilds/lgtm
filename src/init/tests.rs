@@ -262,6 +262,7 @@ fn stage_write_creates_temp_at_0600_then_committed_new_file_is_0644() {
 fn evidence_is_ignored_honors_negation_ordering() {
     assert!(evidence_is_ignored(".lgtm/\n"));
     assert!(evidence_is_ignored(".lgtm/evidence/\n"));
+    assert!(evidence_is_ignored("**/.lgtm/evidence/\n"));
     assert!(
         !evidence_is_ignored(".lgtm/\n!.lgtm/evidence/\n"),
         "a later negation of the evidence path flips the final effect to not-ignored"

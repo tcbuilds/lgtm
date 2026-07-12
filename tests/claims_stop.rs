@@ -9,10 +9,10 @@ use serde_json::json;
 fn run_stop(repo: &TempRepo, claim: &str) -> std::process::Output {
     repo.write(
         ".lgtm/config.json",
-        r#"{"required_commands":{"verify":["true"]}}"#,
+        r#"{"version":"2","profile":"default","workspaces":[{"id":"verify","language":"shell","root":".","commands":[{"argv":["true"],"cwd":".","timeout_seconds":30,"tier":"full","purpose":"verify","source":"test","confidence":"high"}],"coverage":[]}],"disabled_rules":[],"severity_overrides":{}}"#,
     );
     repo.write("transcript.jsonl", &format!("{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":{}}}]}}}}\n", serde_json::to_string(claim).expect("claim serializes")));
-    let payload = json!({ "cwd": repo.path(), "session_id": "claims", "transcript_path": repo.path().join("transcript.jsonl") });
+    let payload = json!({ "cwd": repo.path(), "session_id": "claims", "transcript_path": repo.path().join("transcript.jsonl"), "tier": "full" });
     let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["hook", "stop"])
         .stdin(Stdio::piped())

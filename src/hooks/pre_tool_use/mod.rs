@@ -25,18 +25,16 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     let Some(file) = input::edited_file(&parsed) else {
         return ExitCode::SUCCESS;
     };
-    let root = parsed
-        .cwd
-        .as_deref()
-        .map_or_else(|| Path::new("."), Path::new);
-    let target = match target::resolve(root, file) {
+    let root = match crate::hooks::root::resolve(parsed.cwd.as_deref()) {
+        Ok(root) => root,
+        Err(reason) => return deny(output, &reason),
+    };
+    let target = match target::resolve(&root, file) {
         Ok(target) => target,
         Err(reason) => return deny(output, &reason),
     };
-    let relative = target
-        .strip_prefix(root.canonicalize().unwrap_or_default())
-        .unwrap_or(&target);
-    let patterns = match config::prohibited_patterns(root) {
+    let relative = target.strip_prefix(&root).unwrap_or(&target);
+    let patterns = match config::prohibited_patterns(&root) {
         Ok(patterns) => patterns,
         Err(reason) => {
             return deny(
@@ -48,7 +46,7 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     if config::is_prohibited(&relative.to_string_lossy(), &patterns) {
         return deny(output, "target matches prohibited_paths policy");
     }
-    if let Err(reason) = capture(root, &target, parsed.session_id.as_deref()) {
+    if let Err(reason) = capture(&root, &target, parsed.session_id.as_deref()) {
         return deny(output, &format!("verification baseline failed: {reason}"));
     }
     ExitCode::SUCCESS

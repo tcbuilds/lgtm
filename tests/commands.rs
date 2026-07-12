@@ -17,9 +17,25 @@ fn failing_required_command_blocks_stop_and_records_evidence() {
     repo.write(
         ".lgtm/config.json",
         &json!({
-            "required_commands": {
-                "tests": [executable.to_string_lossy()]
-            }
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "tests",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [executable.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "fast",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
         })
         .to_string(),
     );

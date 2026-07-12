@@ -4,12 +4,7 @@ use crate::checks::{EnforcementResult, ResultEvidence, Status};
 use crate::policy::Severity;
 
 pub(super) fn repo_root(cwd: Option<&str>) -> Option<PathBuf> {
-    let candidate = match cwd {
-        Some(cwd) if !cwd.trim().is_empty() => PathBuf::from(cwd),
-        _ => std::env::current_dir().ok()?,
-    };
-    let canonical = std::fs::canonicalize(candidate).ok()?;
-    canonical.is_dir().then_some(canonical)
+    crate::hooks::root::resolve(cwd).ok()
 }
 
 pub(super) fn resolve_target(root: &Path, file_path: &str) -> Option<String> {

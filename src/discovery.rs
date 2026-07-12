@@ -70,7 +70,15 @@ pub fn discover(root: &Path) -> Result<Vec<Workspace>, DiscoveryError> {
 
     let mut candidates = Vec::new();
     let mut entries_seen = 0_usize;
-    walk(root, root, 0, &mut entries_seen, &mut candidates)?;
+    let gitignore = read_gitignore_patterns(root);
+    walk(
+        root,
+        root,
+        0,
+        &gitignore,
+        &mut entries_seen,
+        &mut candidates,
+    )?;
     candidates.sort();
     candidates.dedup();
 
@@ -93,6 +101,7 @@ fn walk(
     root: &Path,
     current: &Path,
     depth: usize,
+    gitignore: &[String],
     entries_seen: &mut usize,
     candidates: &mut Vec<PathBuf>,
 ) -> Result<(), DiscoveryError> {
@@ -117,8 +126,10 @@ fn walk(
             return Err(DiscoveryError::SymlinkRefused { path });
         }
         if metadata.is_dir() {
-            if !ignored_dir(entry.file_name().to_string_lossy().as_ref()) {
-                walk(root, &path, depth + 1, entries_seen, candidates)?;
+            if !ignored_dir(entry.file_name().to_string_lossy().as_ref())
+                && !gitignored(root, &path, gitignore)
+            {
+                walk(root, &path, depth + 1, gitignore, entries_seen, candidates)?;
             }
         } else if metadata.is_file() && is_marker(path.file_name().and_then(|name| name.to_str())) {
             candidates.push(path.parent().unwrap_or(root).to_path_buf());
@@ -145,7 +156,40 @@ fn ignored_dir(name: &str) -> bool {
             | "__pycache__"
             | ".mypy_cache"
             | ".pytest_cache"
+            | ".next"
+            | ".open-next"
+            | ".turbo"
+            | ".cache"
+            | ".vite"
+            | ".svelte-kit"
+            | ".parcel-cache"
+            | "coverage"
+            | "out"
+            | "storybook-static"
     )
+}
+
+fn read_gitignore_patterns(root: &Path) -> Vec<String> {
+    read_optional_bounded(&root.join(".gitignore"), MAX_METADATA_BYTES)
+        .lines()
+        .filter_map(|line| {
+            let pattern = line.trim();
+            (!pattern.is_empty() && !pattern.starts_with('#') && !pattern.starts_with('!'))
+                .then(|| pattern.trim_end_matches('/').to_string())
+        })
+        .collect()
+}
+
+fn gitignored(root: &Path, path: &Path, patterns: &[String]) -> bool {
+    let relative = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
+    let basename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    patterns.iter().any(|pattern| {
+        let pattern = pattern.strip_prefix("**/").unwrap_or(pattern);
+        pattern == basename || pattern == relative || relative.ends_with(&format!("/{pattern}"))
+    })
 }
 
 fn is_marker(name: Option<&str>) -> bool {
@@ -234,7 +278,7 @@ fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
                 argv,
                 cwd: relative.clone(),
                 timeout_seconds: 300,
-                tier: "full".to_string(),
+                tier: command_tier(purpose).to_string(),
                 purpose: purpose.to_string(),
                 source: "discovery".to_string(),
                 confidence: confidence.to_string(),
@@ -242,6 +286,14 @@ fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
             .collect(),
         coverage: Vec::new(),
     })
+}
+
+fn command_tier(purpose: &str) -> &'static str {
+    match purpose {
+        "lint" | "format" => "fast",
+        "types" | "typecheck" => "targeted",
+        _ => "full",
+    }
 }
 
 fn marker_set(path: &Path) -> BTreeSet<String> {
@@ -751,6 +803,20 @@ mod tests {
             .map(|command| command.argv)
             .collect();
         assert_eq!(commands, vec![vec!["pytest".to_string()]]);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn skips_build_artifacts_and_gitignored_workspace_markers() {
+        let root =
+            std::env::temp_dir().join(format!("lgtm-discovery-ignored-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("frontend/.next")).expect("next output");
+        std::fs::create_dir_all(root.join("frontend/src")).expect("source");
+        std::fs::write(root.join(".gitignore"), "generated/\n").expect("gitignore");
+        std::fs::write(root.join("frontend/.next/package.json"), "{}").expect("artifact marker");
+        std::fs::create_dir_all(root.join("generated")).expect("ignored output");
+        std::fs::write(root.join("generated/package.json"), "{}").expect("ignored marker");
+        assert!(discover(&root).expect("discovery").is_empty());
         std::fs::remove_dir_all(root).ok();
     }
 
