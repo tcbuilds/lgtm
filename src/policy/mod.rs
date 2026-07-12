@@ -12,6 +12,7 @@ use thiserror::Error;
 
 pub mod config_version;
 pub mod coverage;
+pub mod docs;
 pub mod export;
 pub mod overrides;
 pub mod profile;

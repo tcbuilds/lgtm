@@ -95,6 +95,36 @@ enum PolicyCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Explain rule selection and preview the compact packet for a file.
+    Explain {
+        /// Repository-relative file path used as the task observable.
+        #[arg(long)]
+        file: PathBuf,
+        /// Optional intent signal added to deterministic rule selection.
+        #[arg(long)]
+        intent: Option<String>,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Export the embedded policy bundle and checksums.
+    Export {
+        /// Destination directory for the exported bundle.
+        #[arg(long)]
+        output: PathBuf,
+        /// Replace an existing destination directory.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Generate a supported-standards Markdown matrix from the ledger.
+    Docs {
+        /// Destination Markdown file.
+        #[arg(long)]
+        output: PathBuf,
+        /// Check for drift without writing.
+        #[arg(long)]
+        check: bool,
+    },
     /// Show standards coverage status.
     Coverage {
         /// Emit machine-readable JSON.
@@ -203,6 +233,39 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
             println!("references: {}", rule.references.join(", "));
             ExitCode::SUCCESS
         }
+        PolicyCommand::Explain { file, intent, json } => {
+            run_policy_explain(&rules, &file, intent.as_deref(), json)
+        }
+        PolicyCommand::Export { output, force } => {
+            match lgtm::policy::export::run(&output, force) {
+                Ok(message) => {
+                    println!("{message}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("policy export failed: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        PolicyCommand::Docs { output, check } => match lgtm::policy::docs::write(&output, check) {
+            Ok(()) => {
+                println!(
+                    "{} {}",
+                    if check {
+                        "generated docs clean:"
+                    } else {
+                        "generated docs:"
+                    },
+                    output.display()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("policy docs failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
         PolicyCommand::Coverage { json } => {
             let report = match lgtm::policy::coverage::report() {
                 Ok(report) => report,
@@ -239,6 +302,74 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
             ExitCode::SUCCESS
         }
     }
+}
+
+fn run_policy_explain(
+    rules: &[lgtm::policy::Rule],
+    file: &Path,
+    intent: Option<&str>,
+    json: bool,
+) -> ExitCode {
+    let root = match std::env::current_dir() {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("policy explain failed: resolve cwd ({error})");
+            return ExitCode::FAILURE;
+        }
+    };
+    let relative = if file.is_absolute() {
+        match file.strip_prefix(&root) {
+            Ok(path) => path.to_path_buf(),
+            Err(_) => {
+                eprintln!("policy explain failed: file must be inside the repository");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        file.to_path_buf()
+    };
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    if relative.is_empty()
+        || relative.starts_with('/')
+        || relative.split('/').any(|part| part == "..")
+    {
+        eprintln!("policy explain failed: file must be a safe repository-relative path");
+        return ExitCode::FAILURE;
+    }
+    let mut context = lgtm::context::build(&root, std::slice::from_ref(&relative), "");
+    if let Some(intent) = intent.filter(|intent| !intent.trim().is_empty()) {
+        context.risk_signals.push(intent.to_string());
+        context.risk_signals.sort();
+        context.risk_signals.dedup();
+    }
+    let decisions = lgtm::select::explain_rules(&context, rules, lgtm::policy::ChangeType::Modify);
+    let selected: Vec<_> =
+        lgtm::select::select_rules(&context, rules, lgtm::policy::ChangeType::Modify);
+    let compiled = lgtm::compile::compile_selected(&selected, &context.files_touched);
+    if json {
+        return write_json(&serde_json::json!({
+            "file": relative,
+            "intent": intent,
+            "context": context,
+            "decisions": decisions,
+            "packet": compiled.packet,
+            "plan": compiled.plan,
+        }));
+    }
+    println!("file: {relative}");
+    println!("languages: {}", context.languages.join(", "));
+    println!("domains: {}", context.domains.join(", "));
+    println!("signals: {}", context.risk_signals.join(", "));
+    println!("selected rules:");
+    for decision in decisions.iter().filter(|decision| decision.selected) {
+        println!("  + {} ({})", decision.rule_id, decision.reason);
+    }
+    println!("rejected rules:");
+    for decision in decisions.iter().filter(|decision| !decision.selected) {
+        println!("  - {} ({})", decision.rule_id, decision.reason);
+    }
+    println!("\npacket:\n{}", compiled.packet);
+    ExitCode::SUCCESS
 }
 
 fn write_json<T: serde::Serialize>(value: &T) -> ExitCode {
@@ -464,6 +595,23 @@ fn run_doctor() -> ExitCode {
             println!("semgrep: MISSING");
             println!("  Install: uv tool install semgrep");
         }
+    }
+    match lgtm::checks::commands::load(Path::new(".")) {
+        Ok(settings) if !settings.structured.is_empty() => {
+            println!(
+                "config V2: ready ({} structured commands)",
+                settings.structured.len()
+            );
+            for command in settings.structured {
+                println!(
+                    "  {} (cwd={})",
+                    command.argv.join(" "),
+                    command.cwd.display()
+                );
+            }
+        }
+        Ok(_) => println!("config gates: legacy or none detected"),
+        Err(reason) => println!("config gates: invalid ({reason})"),
     }
     ExitCode::SUCCESS
 }
