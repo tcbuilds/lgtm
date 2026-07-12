@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "cpp-review",
+    "title": "Review C and C++ safety",
+    "description": "C and C++ changes require warnings, ownership/bounds review, overflow awareness, sanitizers, and fuzz coverage where risk warrants.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [{"language": "cpp", "text": "good: enable warnings and sanitizers; bad: unchecked pointer arithmetic without a regression or fuzz case", "provenance": "codingStandards.md#c-and-c", "schematic": true}],
+    "limitations": ["Compiler, sanitizer, and fuzz semantics depend on configured CMake/Meson/Make tooling."],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {"languages": ["c", "cpp"], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["c", "cpp", "pointer", "buffer", "sanitizer"]},
+    "instruction": "Review warnings-as-errors, ownership and bounds, overflow, sanitizer, and fuzzing coverage; run configured CMake/Meson/Make gates without inventing tools.",
+    "enforcement": {"mode": "instruction", "checks": []},
+    "overridable": true,
+    "evidence": {"required": ["review_result"]},
+    "references": ["codingStandards.md#c-and-c"]
+  },
+  {
     "id": "csharp-review",
     "title": "Review C# boundaries",
     "description": "C# changes should preserve nullable contracts, async cancellation, immutable values, and dependency-injection lifetime safety.",

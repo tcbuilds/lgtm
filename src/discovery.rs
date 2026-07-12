@@ -165,6 +165,9 @@ fn is_marker(name: Option<&str>) -> bool {
             | "build.gradle.kts"
             | "settings.gradle"
             | "global.json"
+            | "CMakeLists.txt"
+            | "meson.build"
+            | "Makefile"
     ) || name.ends_with(".sh")
         || name.ends_with(".tf")
         || name.ends_with(".csproj")
@@ -201,6 +204,11 @@ fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
         marker.ends_with(".csproj") || marker.ends_with(".sln") || marker == "global.json"
     }) {
         ("csharp", csharp_commands())
+    } else if markers.contains("CMakeLists.txt")
+        || markers.contains("meson.build")
+        || markers.contains("Makefile")
+    {
+        ("cpp", cpp_commands(path, &markers))
     } else if markers.iter().any(|marker| marker.ends_with(".sh")) {
         ("shell", shell_commands(path, &markers))
     } else if markers.iter().any(|marker| marker.ends_with(".tf")) {
@@ -460,6 +468,76 @@ fn csharp_commands() -> Vec<(Vec<String>, &'static str, &'static str)> {
     ]
 }
 
+fn cpp_commands(
+    root: &Path,
+    markers: &BTreeSet<String>,
+) -> Vec<(Vec<String>, &'static str, &'static str)> {
+    if markers.contains("CMakeLists.txt") && command_on_path("cmake") {
+        return vec![
+            (
+                vec!["cmake", "-S", ".", "-B", "build"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                "configure",
+                "high",
+            ),
+            (
+                vec!["cmake", "--build", "build"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                "build",
+                "high",
+            ),
+            (
+                vec!["ctest", "--test-dir", "build"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                "test",
+                "high",
+            ),
+        ];
+    }
+    if markers.contains("meson.build") && command_on_path("meson") {
+        return vec![
+            (
+                vec!["meson", "setup", "build"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                "configure",
+                "high",
+            ),
+            (
+                vec!["meson", "compile", "-C", "build"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                "build",
+                "high",
+            ),
+            (
+                vec!["meson", "test", "-C", "build"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                "test",
+                "high",
+            ),
+        ];
+    }
+    if markers.contains("Makefile") && command_on_path("make") && root.join("Makefile").is_file() {
+        return vec![(
+            vec!["make", "test"].into_iter().map(String::from).collect(),
+            "test",
+            "medium",
+        )];
+    }
+    Vec::new()
+}
+
 fn shell_commands(
     root: &Path,
     markers: &BTreeSet<String>,
@@ -697,6 +775,24 @@ mod tests {
             workspaces
                 .iter()
                 .any(|workspace| workspace.language == "csharp")
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn discovers_cpp_build_markers_without_guessing_missing_tools() {
+        let root = std::env::temp_dir().join(format!("lgtm-discovery-cpp-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(
+            root.join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.20)\n",
+        )
+        .expect("cmake marker");
+        let workspaces = discover(&root).expect("discovery");
+        assert!(
+            workspaces
+                .iter()
+                .any(|workspace| workspace.language == "cpp")
         );
         std::fs::remove_dir_all(root).ok();
     }

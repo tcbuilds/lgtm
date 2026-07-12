@@ -28,7 +28,7 @@
 | Java | partial | review | java | Formatter, analyzer, nullability, and concurrency semantics depend on configured Maven/Gradle tools. |
 | Kotlin | partial | review | kotlin | Formatter, analyzer, nullability, and concurrency semantics depend on configured Maven/Gradle tools. |
 | C# | partial | review | csharp | Nullable, analyzer, async, and DI semantics depend on configured dotnet projects. |
-| C And C++ | unsupported | unsupported | c, cpp | C and C++ support is a later V2 slice. |
+| C And C++ | partial | review | c, cpp | Warnings, ownership, bounds, sanitizer, and fuzz semantics depend on configured native build tooling. |
 | SQL | partial | review | sql | Migrations and query-plan standards remain review guidance. |
 | Shell | partial | review | shell | Shell review guidance and optional ShellCheck discovery are active; lexical shell safety checks remain planned. |
 | HTML, CSS, And UI Styling | partial | native | html, css, typescript, javascript | Lexical checks cover common missing-alt/label and brittle-style signals; visual quality, contrast, focus, and layout stability remain review. |
