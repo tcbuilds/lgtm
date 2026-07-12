@@ -115,3 +115,14 @@ fn preexisting_unrelated_diff_is_allowed_but_new_unrecorded_diff_fails() {
     assert!(failed[2].message.contains("surprise.txt"));
     std::fs::remove_dir_all(root).expect("repo removable");
 }
+
+#[test]
+fn anti_slop_diff_review_flags_new_debug_output() {
+    let root = repo();
+    std::fs::write(root.join("app.py"), "value = 2\nprint(value)\n").expect("debug diff");
+    let touched = BTreeSet::from(["app.py".to_string()]);
+    let results = evaluate(&root, &touched, Some(&BTreeSet::new()), Some("feature"));
+    assert_eq!(results[5].rule_id, "anti-slop-checklist");
+    assert_eq!(results[5].status, Status::Warning);
+    std::fs::remove_dir_all(root).expect("repo removable");
+}

@@ -17,6 +17,7 @@ struct Evaluation<'a> {
     unrelated: Option<&'a BTreeSet<String>>,
     dependency: bool,
     auth: bool,
+    anti_slop: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +104,7 @@ pub fn evaluate(
     let dependency = changes.files.iter().any(|file| is_dependency(file));
     let auth =
         changes.files.iter().any(|file| is_auth_path(file)) || contains_auth_signal(&changes.patch);
+    let anti_slop = contains_anti_slop_signal(&changes.patch);
     build_results(
         &changes,
         Evaluation {
@@ -112,6 +114,7 @@ pub fn evaluate(
             unrelated: unrelated.as_ref(),
             dependency,
             auth,
+            anti_slop,
         },
     )
 }
@@ -154,7 +157,32 @@ fn build_results(changes: &ChangeSet, evaluation: Evaluation<'_>) -> Vec<Enforce
             "Authentication or security-sensitive code changed; perform a focused security review.",
             locations,
         ),
+        result(
+            "anti-slop-checklist",
+            warning_status(evaluation.anti_slop),
+            Severity::Warning,
+            "Diff contains a high-confidence anti-slop review signal; remove debug/scaffolding or document the suppression.",
+            Vec::new(),
+        ),
     ]
+}
+
+fn contains_anti_slop_signal(patch: &str) -> bool {
+    patch
+        .lines()
+        .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+        .any(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("println!(")
+                || lower.contains("print(")
+                || lower.contains("console.log(")
+                || lower.contains("pdb.set_trace(")
+                || lower.contains("debugger;")
+                || lower.contains("eslint-disable")
+                || lower.contains("# noqa")
+                || lower.contains("type: ignore")
+                || lower.contains("todo: remove")
+        })
 }
 
 fn collect(root: &Path) -> Result<ChangeSet, String> {

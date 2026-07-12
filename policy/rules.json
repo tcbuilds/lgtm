@@ -2158,5 +2158,54 @@
     "references": [
       "codingStandards.md#yaml-json-and-config"
     ]
+  },
+  {
+    "id": "anti-slop-checklist",
+    "title": "Review anti-slop checklist signals",
+    "description": "Remove debug output, scaffolding, broad suppressions, and temporary code from diffs.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [
+      "good: ship focused code; bad: leave debug output or temporary suppressions"
+    ],
+    "limitations": [
+      "The diff check covers high-confidence lexical signals only; architectural slop remains review."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "refactoring",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify",
+        "delete"
+      ],
+      "signals": []
+    },
+    "instruction": "Review the diff for debug prints, scaffolding, broad suppressions, and temporary code.",
+    "enforcement": {
+      "mode": "diff",
+      "checks": [
+        "git.diff"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result",
+        "changed_locations"
+      ]
+    },
+    "references": [
+      "codingStandards.md#anti-slop-checklist"
+    ]
   }
 ]

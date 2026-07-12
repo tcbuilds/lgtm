@@ -19,7 +19,7 @@
 | Review And Change Standards | partial | evidence | all | PR metadata generation remains planned. |
 | Refactoring Standards | partial | review | all | Structural and diff checks are not universal yet. |
 | Debugging Protocol | partial | instruction | all | Full hypothesis and reproduction capture is planned. |
-| Anti-Slop Checklist | unsupported | unsupported | all | Checklist items are not a deterministic universal linter. |
+| Anti-Slop Checklist | partial | native | all | Diff checks cover debug/scaffolding/suppression signals only; architectural slop remains review. |
 | Rust | partial | native | rust | Native checks are lexical; async timeout and newtype rules are review guidance, not semantic proof. |
 | Python | partial | wrapped | python | Typed models, dependency injection, and full configured scopes remain planned. |
 | TypeScript And JavaScript | partial | native | typescript, javascript | Native checks are lexical; strict compiler and runtime schema gates remain workspace commands. |
@@ -30,10 +30,10 @@
 | C# | unsupported | unsupported | csharp | C# support is a later V2 slice. |
 | C And C++ | unsupported | unsupported | c, cpp | C and C++ support is a later V2 slice. |
 | SQL | partial | review | sql | Migrations and query-plan standards remain review guidance. |
-| Shell | partial | review | shell | Consumer shell discovery and ShellCheck integration are planned. |
+| Shell | partial | review | shell | Shell review guidance and optional ShellCheck discovery are active; lexical shell safety checks remain planned. |
 | HTML, CSS, And UI Styling | unsupported | unsupported | html, css | UI accessibility and responsive checks are a later V2 slice. |
-| Infrastructure As Code | unsupported | unsupported | terraform, yaml | IaC validation and least-privilege checks are a later V2 slice. |
-| YAML, JSON, And Config | partial | native | yaml, json | Consumer config discovery and duplicate-key checks are planned. |
+| Infrastructure As Code | partial | review | terraform, yaml | Terraform discovery and review guidance are active; semantic least-privilege and rollback proof remain review. |
+| YAML, JSON, And Config | partial | review | yaml, json | Embedded/runtime JSON schemas are validated; consumer duplicate-key and schema discovery remain review. |
 | AI-Assisted Coding Standards | partial | evidence | all | Broader generated-code quality checks are planned. |
 | Master Techniques For Maintainable Systems | partial | instruction | all | Principles are compact contextual guidance, not semantic proof. |
 | Quality Gates | partial | command | all | Workspace-aware universal gates are planned. |

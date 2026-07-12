@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 41);
+        assert_eq!(rules.len(), 42);
     }
 
     #[test]
@@ -602,6 +602,7 @@ mod tests {
                 "shell-idempotency-review",
                 "iac-validation-review",
                 "config-schema-review",
+                "anti-slop-checklist",
             ]
         );
     }
@@ -635,6 +636,7 @@ mod tests {
                     | "shell-idempotency-review"
                     | "iac-validation-review"
                     | "config-schema-review"
+                    | "anti-slop-checklist"
                     | "typescript-no-any"
                     | "typescript-unsafe-unknown"
                     | "typescript-api-response-validation"
