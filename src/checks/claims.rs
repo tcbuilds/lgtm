@@ -221,6 +221,7 @@ mod tests {
             duration_ms: 1,
             argv: Vec::new(),
             cwd: None,
+            workspace_id: None,
         }];
         assert!(claims.iter().all(|claim| is_proven(claim, &evidence)));
     }
@@ -234,6 +235,7 @@ mod tests {
             duration_ms: 1,
             argv: Vec::new(),
             cwd: None,
+            workspace_id: None,
         }];
         assert!(!is_proven(&claim, &evidence));
         assert!(!is_proven(&claim, &[]));
@@ -249,6 +251,7 @@ mod tests {
             duration_ms: 1,
             argv: Vec::new(),
             cwd: None,
+            workspace_id: None,
         }];
         assert!(claims.iter().all(|claim| is_proven(claim, &evidence)));
     }
@@ -261,6 +264,7 @@ mod tests {
             duration_ms: 1,
             argv: Vec::new(),
             cwd: None,
+            workspace_id: None,
         }];
         assert!(!is_proven(&Claim::TestsPassed, &evidence));
     }

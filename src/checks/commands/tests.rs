@@ -142,6 +142,7 @@ fn config_v2_loads_structured_argv_and_workspace_cwd() {
     let evidence = serde_json::to_value(&output.evidence).expect("evidence JSON");
     assert_eq!(evidence[0]["argv"][0], script);
     assert_eq!(evidence[0]["cwd"], ".");
+    assert_eq!(evidence[0]["workspace_id"], "root");
 }
 
 #[test]
@@ -157,11 +158,13 @@ fn structured_commands_isolate_identically_named_workspace_tools() {
         StructuredCommand {
             argv: vec![backend_tool.to_string_lossy().into_owned()],
             cwd: "backend".into(),
+            workspace_id: "backend".to_string(),
             timeout: std::time::Duration::from_secs(30),
         },
         StructuredCommand {
             argv: vec![frontend_tool.to_string_lossy().into_owned()],
             cwd: "frontend".into(),
+            workspace_id: "frontend".to_string(),
             timeout: std::time::Duration::from_secs(30),
         },
     ];
@@ -174,6 +177,8 @@ fn structured_commands_isolate_identically_named_workspace_tools() {
     );
     assert_eq!(output.evidence[0].cwd.as_deref(), Some("backend"));
     assert_eq!(output.evidence[1].cwd.as_deref(), Some("frontend"));
+    assert_eq!(output.evidence[0].workspace_id.as_deref(), Some("backend"));
+    assert_eq!(output.evidence[1].workspace_id.as_deref(), Some("frontend"));
     assert_eq!(output.evidence[0].argv.len(), 1);
     assert_eq!(output.evidence[1].argv.len(), 1);
 }

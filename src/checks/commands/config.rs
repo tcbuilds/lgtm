@@ -18,6 +18,7 @@ pub struct Settings {
 pub struct StructuredCommand {
     pub argv: Vec<String>,
     pub cwd: PathBuf,
+    pub workspace_id: String,
     pub timeout: std::time::Duration,
 }
 
@@ -61,6 +62,7 @@ pub fn load(root: &Path) -> Result<Settings, String> {
                 structured.push(StructuredCommand {
                     argv: command.argv,
                     cwd: command.cwd,
+                    workspace_id: workspace.id.clone(),
                     timeout: std::time::Duration::from_secs(command.timeout_seconds),
                 });
             }

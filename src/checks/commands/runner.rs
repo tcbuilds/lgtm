@@ -49,6 +49,7 @@ pub fn run_structured(root: &Path, commands: &[StructuredCommand]) -> RunResults
             duration_ms,
             argv: command.argv.clone(),
             cwd: Some(command.cwd.to_string_lossy().into_owned()),
+            workspace_id: Some(command.workspace_id.clone()),
         });
         output.results.push(classify(&display, details));
     }
@@ -70,6 +71,7 @@ fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mu
                 duration_ms: 0,
                 argv: Vec::new(),
                 cwd: None,
+                workspace_id: None,
             });
             return;
         }
@@ -89,6 +91,7 @@ fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mu
         duration_ms,
         argv: Vec::new(),
         cwd: None,
+        workspace_id: None,
     });
     output.results.push(classify(command, details));
 }

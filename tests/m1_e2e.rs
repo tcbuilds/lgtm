@@ -126,6 +126,29 @@ fn secret_blocks_then_clean_stop_writes_well_formed_evidence() {
         assert_eq!(record["task_id"], "m1-e2e");
         assert!(record["rules"].is_object());
         assert!(record["results"].is_array());
+        assert!(
+            record["policy_digest"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert!(
+            record["binary_version"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        let started_at = record["started_at_ms"].as_u64().expect("start timestamp");
+        let finished_at = record["finished_at_ms"].as_u64().expect("finish timestamp");
+        assert!(finished_at >= started_at);
+        assert!(
+            record["touched_files_digest"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert!(
+            record["config_digest"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
     }
 }
 

@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -59,6 +60,19 @@ struct TaskEvidence<'a> {
     policy_version: &'static str,
     policy_digest: String,
     binary_version: &'static str,
+    started_at_ms: u128,
+    finished_at_ms: u128,
+    touched_files_digest: String,
+    config_digest: String,
+}
+
+struct EvidenceMeta<'a> {
+    root: &'a Path,
+    session_id: Option<&'a str>,
+    profile: &'a str,
+    paths: &'a [String],
+    started_at_ms: u128,
+    finished_at_ms: u128,
 }
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
@@ -76,6 +90,7 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
 
 fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode, String> {
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Full);
+    let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
     let (profile, registry, overrides, waivers, compatibility) =
@@ -110,13 +125,18 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     crate::policy::overrides::apply_results(&overrides, &mut results);
     crate::policy::waivers::apply(&waivers, &mut results);
     append_task_evidence(
-        &root,
-        hook_input.session_id.as_deref(),
+        EvidenceMeta {
+            root: &root,
+            session_id: hook_input.session_id.as_deref(),
+            profile: &profile,
+            paths: &paths,
+            started_at_ms,
+            finished_at_ms: unix_ms(),
+        },
         &results,
         &command_run.evidence,
         &overrides,
         &waivers,
-        &profile,
     )?;
 
     let failures: Vec<&EnforcementResult> = results
@@ -308,22 +328,21 @@ fn rerun_python_checks(paths: &[String]) -> Vec<EnforcementResult> {
 }
 
 fn append_task_evidence(
-    root: &Path,
-    session_id: Option<&str>,
+    metadata: EvidenceMeta<'_>,
     results: &[EnforcementResult],
     commands: &[commands::CommandEvidence],
     overrides: &[crate::policy::overrides::OverrideRecord],
     waivers: &[crate::policy::waivers::Waiver],
-    profile: &str,
 ) -> Result<(), String> {
+    let root = metadata.root;
     let directory = root.join(".lgtm/evidence");
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("create evidence directory ({error})"))?;
-    let task_id = session_id.unwrap_or("unknown-session");
+    let task_id = metadata.session_id.unwrap_or("unknown-session");
     let record = TaskEvidence {
         task_id,
         agent: "claude-code",
-        profile,
+        profile: metadata.profile,
         commit: None,
         rules: count_results(results),
         results,
@@ -333,12 +352,47 @@ fn append_task_evidence(
         policy_version: crate::policy::POLICY_BUNDLE_VERSION,
         policy_digest: crate::policy::bundle_digest(),
         binary_version: env!("CARGO_PKG_VERSION"),
+        started_at_ms: metadata.started_at_ms,
+        finished_at_ms: metadata.finished_at_ms,
+        touched_files_digest: digest_paths(root, metadata.paths),
+        config_digest: digest_bytes(&crate::fsutil::read_optional_bounded(
+            &root.join(".lgtm/config.json"),
+            256 * 1024,
+        )),
     };
     let mut line =
         serde_json::to_string(&record).map_err(|error| format!("serialize evidence ({error})"))?;
     validate_evidence(&line)?;
     line.push('\n');
     append_bounded_regular(&directory.join("evidence.jsonl"), line.as_bytes())
+}
+
+fn unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis())
+}
+
+fn digest_paths(root: &Path, paths: &[String]) -> String {
+    let mut material = String::new();
+    for path in paths {
+        material.push_str(path);
+        material.push('\0');
+        material.push_str(&crate::fsutil::read_optional_bounded(
+            Path::new(path),
+            256 * 1024,
+        ));
+        material.push('\0');
+    }
+    let _ = root;
+    digest_bytes(&material)
+}
+
+fn digest_bytes(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn validate_evidence(record: &str) -> Result<(), String> {
