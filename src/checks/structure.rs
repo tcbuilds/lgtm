@@ -13,54 +13,133 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
         .filter(|file| supported_extension(Path::new(file)))
         .collect();
     if applicable.is_empty() {
-        return vec![result(Status::NotApplicable, Vec::new())];
+        return vec![
+            result(
+                "function-size",
+                Status::NotApplicable,
+                Vec::new(),
+                "Function-size review was not applicable.",
+            ),
+            result(
+                "file-size",
+                Status::NotApplicable,
+                Vec::new(),
+                "File-size review was not applicable.",
+            ),
+            result(
+                "function-complexity",
+                Status::NotApplicable,
+                Vec::new(),
+                "Complexity review was not applicable.",
+            ),
+        ];
     }
-    let mut findings = Vec::new();
+    let mut analyses = Vec::new();
     for file in applicable {
         let language = language_for(Path::new(file)).expect("supported extension");
         let analysis = match crate::structure::analyze_file(Path::new(file), language) {
             Ok(analysis) => analysis,
-            Err(_) => return vec![result(Status::Unverified, Vec::new())],
+            Err(_) => {
+                return ["function-size", "file-size", "function-complexity"]
+                    .into_iter()
+                    .map(|rule| {
+                        result(
+                            rule,
+                            Status::Unverified,
+                            Vec::new(),
+                            "Structural analysis could not run.",
+                        )
+                    })
+                    .collect();
+            }
         };
-        findings.extend(
+        analyses.push((file.clone(), analysis));
+    }
+    let function_findings = analyses
+        .iter()
+        .flat_map(|(file, analysis)| {
             analysis
                 .functions
-                .into_iter()
+                .iter()
                 .filter(|function| function.lines > HARD_FUNCTION_LINES)
                 .map(|function| Location {
                     file: file.clone(),
                     line: Some(function.start_line as u64),
-                }),
-        );
-    }
-    vec![result(
-        if findings.is_empty() {
-            Status::Passed
-        } else {
-            Status::Failed
-        },
-        findings,
-    )]
+                })
+        })
+        .collect::<Vec<_>>();
+    let file_findings = analyses
+        .iter()
+        .filter(|(_, analysis)| analysis.file_lines > 300)
+        .map(|(file, _)| Location {
+            file: file.clone(),
+            line: Some(1),
+        })
+        .collect::<Vec<_>>();
+    let complexity_findings = analyses
+        .iter()
+        .flat_map(|(file, analysis)| {
+            analysis
+                .functions
+                .iter()
+                .filter(|function| {
+                    function.complexity > 10 || function.max_nesting > 3 || function.parameters > 4
+                })
+                .map(|function| Location {
+                    file: file.clone(),
+                    line: Some(function.start_line as u64),
+                })
+        })
+        .collect::<Vec<_>>();
+    vec![
+        result(
+            "function-size",
+            status(&function_findings),
+            function_findings,
+            "Function-size review found oversized functions.",
+        ),
+        result(
+            "file-size",
+            status(&file_findings),
+            file_findings,
+            "File-size review found files over 300 lines.",
+        ),
+        result(
+            "function-complexity",
+            status(&complexity_findings),
+            complexity_findings,
+            "Complexity review found high-parameter, deeply nested, or high-complexity functions.",
+        ),
+    ]
 }
 
-fn result(status: Status, locations: Vec<Location>) -> EnforcementResult {
+fn status(locations: &[Location]) -> Status {
+    if locations.is_empty() {
+        Status::Passed
+    } else {
+        Status::Failed
+    }
+}
+
+fn result(
+    rule_id: &str,
+    status: Status,
+    locations: Vec<Location>,
+    summary: &str,
+) -> EnforcementResult {
     let failed = status == Status::Failed;
     EnforcementResult {
-        rule_id: "function-size".to_string(),
+        rule_id: rule_id.to_string(),
         status,
         severity: Severity::Warning,
         message: if failed {
-            format!(
-                "Function-size review found {} function(s) over {} lines.",
-                locations.len(),
-                HARD_FUNCTION_LINES
-            )
+            format!("{summary} ({} finding(s)).", locations.len())
         } else {
-            "Function-size review passed or was not applicable.".to_string()
+            summary.to_string()
         },
         locations,
         remediation: failed.then(|| {
-            "Split the function or document a parser/table/state-machine exemption.".to_string()
+            "Review the finding and split the structure or document a parser/table/state-machine exemption.".to_string()
         }),
         evidence: ResultEvidence {
             check: "native.function-size".to_string(),

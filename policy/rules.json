@@ -1873,5 +1873,101 @@
     "references": [
       "codingStandards.md#code-organization"
     ]
+  },
+  {
+    "id": "file-size",
+    "title": "Review oversized files",
+    "description": "Files over 300 lines require review and should be split before 500 lines.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [
+      "good: keep one abstraction level; bad: combine unrelated branches"
+    ],
+    "limitations": [
+      "Lexical metrics are review signals; generated code and legacy baselines need repository policy."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "architecture",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Files over 300 lines require review and should be split before 500 lines.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.file-size"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result",
+        "changed_locations"
+      ]
+    },
+    "references": [
+      "codingStandards.md#code-organization"
+    ]
+  },
+  {
+    "id": "function-complexity",
+    "title": "Review function complexity",
+    "description": "Functions should keep parameters, nesting, and cyclomatic complexity bounded.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [
+      "good: keep one abstraction level; bad: combine unrelated branches"
+    ],
+    "limitations": [
+      "Lexical metrics are review signals; generated code and legacy baselines need repository policy."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "architecture",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Functions should keep parameters, nesting, and cyclomatic complexity bounded.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.function-complexity"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result",
+        "changed_locations"
+      ]
+    },
+    "references": [
+      "codingStandards.md#code-organization"
+    ]
   }
 ]

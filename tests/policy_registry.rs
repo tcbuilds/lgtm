@@ -46,6 +46,8 @@ fn embedded_registry_validates_against_schema() {
             "go-error-wrapping",
             "go-context-first-review",
             "function-size",
+            "file-size",
+            "function-complexity",
         ]
     );
 }
