@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "contextual-design-guidance",
+    "title": "Apply contextual maintainability design guidance",
+    "description": "When a task touches domain models, boundaries, or architecture, prefer illegal-state prevention, validated-domain conversion, pure cores with side-effect edges, explicit data flow, dependency injection for external effects, and simple designs before distributed abstractions.",
+    "mechanism": "instruction",
+    "confidence": "low",
+    "examples": [{"language": "all", "text": "good: parse raw input into a validated domain type before a pure core; bad: pass unvalidated maps through side effects", "provenance": "codingStandards.md#master-techniques-for-maintainable-systems", "schematic": true}],
+    "limitations": ["This is contextual review guidance; semantic architecture and illegal-state proofs are not automated."],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "architecture",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["domain", "boundary", "architecture", "dependency-injection", "refactor"]},
+    "instruction": "Model illegal states out of existence; convert raw input to validated domain values; keep pure core logic separate from side effects; make data flow explicit; inject time, randomness, network, and filesystem dependencies; avoid premature distributed or abstract architecture.",
+    "enforcement": {"mode": "instruction", "checks": []},
+    "overridable": true,
+    "evidence": {"required": ["review_result"]},
+    "references": ["codingStandards.md#master-techniques-for-maintainable-systems"]
+  },
+  {
     "id": "naming-review",
     "title": "Review identifier naming",
     "description": "Use specific, verb-first names and avoid placeholder identifiers in production code.",
