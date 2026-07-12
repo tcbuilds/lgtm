@@ -52,6 +52,53 @@ fn policy_show_text_exposes_examples_limitations_and_source() {
 }
 
 #[test]
+fn policy_explain_is_read_only_and_reports_selection_reasons() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["policy", "explain", "--file", "src/main.rs", "--json"])
+        .output()
+        .expect("policy explain starts");
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).expect("explain is JSON");
+    assert_eq!(report["file"], "src/main.rs");
+    assert!(
+        report["decisions"]
+            .as_array()
+            .expect("decisions")
+            .iter()
+            .all(|decision| {
+                decision["reason"]
+                    .as_str()
+                    .is_some_and(|reason| !reason.is_empty())
+            })
+    );
+    assert!(
+        report["packet"]
+            .as_str()
+            .is_some_and(|packet| packet.contains("Verification required"))
+    );
+}
+
+#[test]
+fn policy_explain_covers_backend_frontend_rust_docs_and_unknown_files() {
+    for file in [
+        "tests/fixtures/context-fastapi/routes.py",
+        "tests/fixtures/context-react/App.tsx",
+        "tests/fixtures/context-rust/lib.rs",
+        "codingStandards.md",
+        "tests/fixtures/unknown-file.txt",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+            .args(["policy", "explain", "--file", file, "--json"])
+            .output()
+            .expect("policy explain starts");
+        assert!(output.status.success(), "explain failed for {file}");
+        let report: Value = serde_json::from_slice(&output.stdout).expect("explain JSON");
+        assert_eq!(report["file"], file);
+        assert!(report["decisions"].is_array());
+    }
+}
+
+#[test]
 fn policy_coverage_reports_every_normative_section() {
     let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["policy", "coverage", "--json"])
