@@ -94,9 +94,10 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
                 .iter()
                 .filter(|function| {
                     !function.exempt && {
-                        function.complexity > 10
+                        function.complexity > 5
                             || function.max_nesting > 3
-                            || function.parameters > 4
+                            || function.max_nesting > 2
+                            || function.parameters > 3
                     }
                 })
                 .map(|function| Location {
@@ -120,19 +121,11 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
         ),
         result(
             "function-complexity",
-            status(&complexity_findings),
+            complexity_status(&analyses),
             complexity_findings,
             "Complexity review found high-parameter, deeply nested, or high-complexity functions.",
         ),
     ]
-}
-
-fn status(locations: &[Location]) -> Status {
-    if locations.is_empty() {
-        Status::Passed
-    } else {
-        Status::Failed
-    }
 }
 
 fn threshold_status(
@@ -168,6 +161,27 @@ fn file_size_status(analyses: &[(String, crate::structure::Analysis)]) -> Status
     }
 }
 
+fn complexity_status(analyses: &[(String, crate::structure::Analysis)]) -> Status {
+    let mut review = false;
+    for analysis in analyses.iter().map(|(_, analysis)| analysis) {
+        for function in &analysis.functions {
+            if function.exempt {
+                continue;
+            }
+            if function.complexity > 10 || function.max_nesting > 3 {
+                return Status::Failed;
+            }
+            review |=
+                function.complexity > 5 || function.max_nesting > 2 || function.parameters > 3;
+        }
+    }
+    if review {
+        Status::Warning
+    } else {
+        Status::Passed
+    }
+}
+
 fn result(
     rule_id: &str,
     status: Status,
@@ -178,7 +192,9 @@ fn result(
     EnforcementResult {
         rule_id: rule_id.to_string(),
         status,
-        severity: if matches!(rule_id, "function-size" | "file-size") && failed {
+        severity: if matches!(rule_id, "function-size" | "file-size" | "function-complexity")
+            && failed
+        {
             Severity::Error
         } else {
             Severity::Warning
@@ -291,6 +307,20 @@ mod tests {
         .expect("hard fixture source");
         let findings = scan(&[file]);
         assert_eq!(findings[1].status, Status::Failed);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn complexity_separates_review_and_hard_limits() {
+        let path = std::env::temp_dir().join(format!("lgtm-complexity-{}.py", std::process::id()));
+        let review = "def review(one, two, three, four):\n    return one\n";
+        std::fs::write(&path, review).expect("review fixture");
+        let file = path.to_string_lossy().into_owned();
+        assert_eq!(scan(std::slice::from_ref(&file))[2].status, Status::Warning);
+        let mut hard = String::from("def hard(value):\n");
+        hard.push_str(&"    if value:\n".repeat(11));
+        std::fs::write(&path, hard).expect("hard fixture");
+        assert_eq!(scan(&[file])[2].status, Status::Failed);
         std::fs::remove_file(path).ok();
     }
 }
