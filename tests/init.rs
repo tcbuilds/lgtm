@@ -516,11 +516,43 @@ fn config_is_preserved_on_reinit() {
         serde_json::json!({"PY-LINE-LENGTH": "warning"}),
         "user-edited severity_overrides must be preserved across re-init"
     );
+    assert!(
+        after.get("languages").is_none(),
+        "V2 re-init must not add legacy languages"
+    );
+    assert!(
+        after.get("required_commands").is_none(),
+        "V2 re-init must not add legacy required_commands"
+    );
 
     let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
     assert!(
         stdout.contains("preserved existing .lgtm/config.json"),
         "summary must report that config was preserved, got: {stdout}"
+    );
+}
+
+#[test]
+fn v2_config_with_legacy_fields_is_refused_without_mutation() {
+    let repo = TempRepo::new();
+    let config = r#"{
+        "version": "2",
+        "profile": "default",
+        "workspaces": [],
+        "disabled_rules": [],
+        "severity_overrides": {},
+        "languages": ["python"],
+        "required_commands": {"python": ["pytest"]}
+    }"#;
+    repo.write(".lgtm/config.json", config);
+
+    let output = run_init(&repo);
+    assert!(!output.status.success());
+    assert_eq!(repo.read(".lgtm/config.json"), config);
+    assert!(
+        String::from_utf8(output.stderr)
+            .expect("stderr utf-8")
+            .contains("Additional properties are not allowed")
     );
 }
 

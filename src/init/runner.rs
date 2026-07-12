@@ -151,7 +151,6 @@ pub fn run_with_options(root: &Path, accept_guesses: bool) -> Result<InitSummary
     );
 
     let config_render = render_config(
-        &detection,
         &workspaces,
         existing_config,
         &existing_config_contents,

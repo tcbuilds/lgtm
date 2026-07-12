@@ -61,15 +61,9 @@ pub(super) type ValidatedConfig = Option<(Map<String, Value>, String)>;
 /// wrong. The raw contents are returned so [`render_config`] can perform its
 /// skip-if-identical comparison against the bytes validated here rather than
 /// re-reading the file, which both avoids a second unbounded read and closes the
-/// swap-between-validate-and-render race. The type check exists because
-/// [`merge_config`] preserves fields it does not overwrite: a preserved field
-/// whose type is wrong would otherwise be silently discarded and overwritten,
-/// violating preservation. Every preserved field is checked to the depth the
-/// runtime relies on: `profile` must be a string, `languages` an array of
-/// strings, `disabled_rules`
-/// an array of strings, `severity_overrides` an object of string values, and
-/// `required_commands` an object whose every value is an array of strings.
-/// Refusing here keeps that consistent with the malformed-config handling above.
+/// swap-between-validate-and-render race. V2 configs are parsed against the
+/// strict structured schema; legacy fields are type-checked only for V1
+/// migration.
 pub(super) fn validate_config(path: &Path) -> Result<ValidatedConfig, InitError> {
     let contents = match read_if_exists(path)? {
         None => return Ok(None),
@@ -83,23 +77,29 @@ pub(super) fn validate_config(path: &Path) -> Result<ValidatedConfig, InitError>
             reason: error.to_string(),
         })?;
 
-    let Value::Object(object) = value else {
+    let Value::Object(ref object) = value else {
         return Err(InitError::ConfigNotObject {
             path: path.to_path_buf(),
         });
     };
 
-    validate_optional_field(path, &object, "profile", Value::is_string)?;
-    validate_optional_field(path, &object, "version", Value::is_string)?;
-    crate::policy::config_version::validate(&object).map_err(|reason| {
+    validate_optional_field(path, object, "profile", Value::is_string)?;
+    validate_optional_field(path, object, "version", Value::is_string)?;
+    crate::policy::config_version::validate(object).map_err(|reason| {
         InitError::MalformedConfig {
             path: path.to_path_buf(),
             reason,
         }
     })?;
-    validate_optional_field(path, &object, "languages", is_string_array)?;
-    validate_optional_field(path, &object, "disabled_rules", is_string_array)?;
-    validate_optional_field(path, &object, "severity_overrides", is_string_valued_object)?;
+    if object.get("version").and_then(Value::as_str) == Some("2") {
+        crate::config_v2::parse(&value).map_err(|error| InitError::MalformedConfig {
+            path: path.to_path_buf(),
+            reason: error.to_string(),
+        })?;
+    }
+    validate_optional_field(path, object, "languages", is_string_array)?;
+    validate_optional_field(path, object, "disabled_rules", is_string_array)?;
+    validate_optional_field(path, object, "severity_overrides", is_string_valued_object)?;
     if let Some(value) = object.get("command_timeout_seconds")
         && !value
             .as_u64()
@@ -125,7 +125,7 @@ pub(super) fn validate_config(path: &Path) -> Result<ValidatedConfig, InitError>
         }
     }
 
-    Ok(Some((object, contents)))
+    Ok(Some((object.clone(), contents)))
 }
 
 fn validate_optional_field(
@@ -145,9 +145,8 @@ fn validate_optional_field(
 
 /// True when `value` is a JSON array whose every element is a string.
 ///
-/// Used to validate preserved `disabled_rules` and each `required_commands`
-/// entry, both of which [`merge_config`] carries forward verbatim and therefore
-/// must be well-typed to avoid silently preserving a nonsense value.
+/// Used to validate legacy `disabled_rules` and each `required_commands` entry
+/// before V1 migration, avoiding silent preservation of malformed values.
 fn is_string_array(value: &Value) -> bool {
     value
         .as_array()
@@ -170,16 +169,10 @@ fn is_string_valued_object(value: &Value) -> bool {
 ///
 /// On a fresh repo (`existing_config` is `None`) the detected config is
 /// produced. When a valid config already exists it is preserved verbatim:
-/// user-edited `disabled_rules` and `severity_overrides` are never overwritten.
-/// Newly detected languages and their commands are merged only into fields that
-/// are still empty in the existing config, so re-init can enrich a bare config
-/// without clobbering deliberate edits. Returns `None` when the serialized
-/// contents already match `existing_contents` (the exact bytes
-/// [`validate_config`] read from disk) so no write is staged; reusing those
-/// already-validated bytes avoids a second unbounded read and closes the
-/// swap-between-validate-and-render race.
+/// user-edited fields are never overwritten. Existing V2 config is preserved
+/// byte-for-byte; legacy config is migrated to detected workspace commands.
+/// Returns `None` when no write is needed.
 pub(super) fn render_config(
-    detection: &Detection,
     workspaces: &[Workspace],
     existing_config: Option<Map<String, Value>>,
     existing_contents: &str,
@@ -197,9 +190,9 @@ pub(super) fn render_config(
                     })?;
             serde_json::to_value(migrated).expect("V2 config model serializes")
         }
-        Some(existing) => {
+        Some(_existing) => {
             notes.push("preserved existing .lgtm/config.json".to_string());
-            Value::Object(merge_config(existing, detection))
+            return Ok(None);
         }
     };
 
@@ -212,37 +205,4 @@ pub(super) fn render_config(
     }
 
     Ok(Some(serialized.into_bytes()))
-}
-
-/// Merge newly detected languages and commands into an existing config object,
-/// filling only empty fields.
-///
-/// User-set keys are preserved. `languages` is populated from detection only
-/// when the existing list is missing or empty; each detected language's commands
-/// are added under `required_commands` only when that language has no entry yet.
-/// Everything else in the existing object is left exactly as authored.
-fn merge_config(mut existing: Map<String, Value>, detection: &Detection) -> Map<String, Value> {
-    existing
-        .entry("version".to_string())
-        .or_insert_with(|| json!(crate::policy::config_version::CONFIG_COMPATIBILITY_VERSION));
-    let languages_empty = existing
-        .get("languages")
-        .and_then(Value::as_array)
-        .is_none_or(Vec::is_empty);
-    if languages_empty {
-        existing.insert("languages".to_string(), json!(detection.languages));
-    }
-
-    let required = existing
-        .entry("required_commands".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    if let Value::Object(required) = required {
-        for (language, commands) in &detection.required_commands {
-            if !required.contains_key(language) {
-                required.insert(language.clone(), json!(commands));
-            }
-        }
-    }
-
-    existing
 }
