@@ -55,6 +55,16 @@ pub fn run(output: &Path, force: bool) -> Result<String, String> {
     if output.as_os_str().is_empty() || output == Path::new(".") {
         return Err("export output must be a dedicated directory".to_string());
     }
+    if output.components().count() < 2 {
+        return Err("export output must not be a filesystem root".to_string());
+    }
+    if output.exists() {
+        let metadata = fs::symlink_metadata(output)
+            .map_err(|error| format!("inspect export output ({error})"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("export output must be a real directory".to_string());
+        }
+    }
     if output.exists() && !force {
         return Err(format!(
             "export output already exists: {} (pass --force to replace it)",
