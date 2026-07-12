@@ -19,6 +19,7 @@ struct Evaluation<'a> {
     auth: bool,
     anti_slop: bool,
     error_contract: bool,
+    behavior_test_quality: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +108,7 @@ pub fn evaluate(
         changes.files.iter().any(|file| is_auth_path(file)) || contains_auth_signal(&changes.patch);
     let anti_slop = contains_anti_slop_signal(&changes.patch);
     let error_contract = contains_error_contract_signal(&changes.patch);
+    let behavior_test_quality = contains_trivial_test_signal(&changes.patch);
     build_results(
         &changes,
         Evaluation {
@@ -118,6 +120,7 @@ pub fn evaluate(
             auth,
             anti_slop,
             error_contract,
+            behavior_test_quality,
         },
     )
 }
@@ -174,6 +177,13 @@ fn build_results(changes: &ChangeSet, evaluation: Evaluation<'_>) -> Vec<Enforce
             "New boundary failure text should include action, entity, reason, and retryability.",
             locations,
         ),
+        result(
+            "behavior-test-quality",
+            warning_status(evaluation.behavior_test_quality),
+            Severity::Warning,
+            "Test diff contains a high-confidence smoke-only or trivial assertion signal.",
+            Vec::new(),
+        ),
     ]
 }
 
@@ -206,6 +216,22 @@ fn contains_error_contract_signal(patch: &str) -> bool {
                 && !lower.contains("entity=")
                 && !lower.contains("reason=")
                 && !lower.contains("retryable=")
+        })
+}
+
+fn contains_trivial_test_signal(patch: &str) -> bool {
+    patch
+        .lines()
+        .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+        .any(|line| {
+            let lower = line.to_ascii_lowercase();
+            (lower.contains("assert!(true")
+                || lower.contains("expect(true")
+                || lower.trim_end().ends_with("pass"))
+                && (lower.contains("test")
+                    || lower.contains("spec")
+                    || lower.contains("assert")
+                    || lower.contains("pass"))
         })
 }
 
@@ -328,6 +354,7 @@ fn rule_ids() -> impl Iterator<Item = &'static str> {
         "new-dependency-review",
         "auth-change-security-review",
         "error-contract-review",
+        "behavior-test-quality",
     ]
     .into_iter()
 }

@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "behavior-test-quality",
+    "title": "Review behavior-test assertions",
+    "description": "Tests should assert observable outcomes rather than only running code or asserting an unconditional truth.",
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": [{"language": "all", "text": "good: assert_eq!(result, expected); bad: assert!(true)", "provenance": "codingStandards.md#testing-standards", "schematic": true}],
+    "limitations": ["Only high-confidence trivial assertions are flagged; semantic assertion strength remains review."],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "testing",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["test", "assertion"]},
+    "instruction": "Assert observable outcomes and meaningful error cases; do not use smoke-only or unconditional truth assertions as proof.",
+    "enforcement": {"mode": "diff", "checks": ["git.diff"]},
+    "overridable": true,
+    "evidence": {"required": ["check_result"]},
+    "references": ["codingStandards.md#testing-standards"]
+  },
+  {
     "id": "test-quality-guidance",
     "title": "Select appropriate test types",
     "description": "Choose test forms that match the changed behavior: table-driven and property tests for parsers/validators/classifiers, golden tests for stable generated output, contract tests at service/schema boundaries, and integration tests for public APIs.",

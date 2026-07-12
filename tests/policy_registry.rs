@@ -52,6 +52,7 @@ fn embedded_registry_validates_against_schema() {
             "shell-idempotency-review",
             "iac-validation-review",
             "config-schema-review",
+            "behavior-test-quality",
             "test-quality-guidance",
             "debugging-protocol",
             "sensitive-logging-review",

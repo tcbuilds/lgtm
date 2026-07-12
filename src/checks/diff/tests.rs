@@ -136,3 +136,13 @@ fn boundary_error_contract_review_distinguishes_structured_failures() {
         "+ eprintln!(\"request failed: entity=request reason=timeout retryable=true\");"
     ));
 }
+
+#[test]
+fn behavior_test_review_flags_only_trivial_assertions() {
+    assert!(contains_trivial_test_signal(
+        "+ fn test_smoke() { assert!(true); }"
+    ));
+    assert!(!contains_trivial_test_signal(
+        "+ fn test_value() { assert_eq!(value(), 2); }"
+    ));
+}
