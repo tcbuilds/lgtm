@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "debugging-protocol",
+    "title": "Follow the debugging protocol",
+    "description": "Bug fixes should record reproduction inputs, environment and version, one hypothesis, a root-cause repair, a regression test, and removal or conversion of temporary diagnostics.",
+    "mechanism": "instruction",
+    "confidence": "low",
+    "examples": [{"language": "all", "text": "good: reproduce, state one hypothesis, repair the cause, add a regression test; bad: patch symptoms and leave debug prints", "provenance": "codingStandards.md#debugging-protocol", "schematic": true}],
+    "limitations": ["The packet can request protocol evidence but cannot prove semantic root cause or reproduction quality."],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "correctness",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["modify"], "signals": ["bug-fix", "regression", "debug"]},
+    "instruction": "For bug fixes, state reproduction inputs/environment/version and one hypothesis; repair the root cause, add a regression test, and remove or convert temporary diagnostics.",
+    "enforcement": {"mode": "instruction", "checks": []},
+    "overridable": true,
+    "evidence": {"required": ["review_result", "changed_locations"]},
+    "references": ["codingStandards.md#debugging-protocol"]
+  },
+  {
     "id": "sensitive-logging-review",
     "title": "Review sensitive logging",
     "description": "Logs must not expose passwords, tokens, cookies, auth headers, raw payloads, or PII.",

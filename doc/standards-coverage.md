@@ -18,7 +18,7 @@
 | Documentation Standards | partial | review | all | Documentation drift detection is planned. |
 | Review And Change Standards | partial | evidence | all | PR metadata generation remains planned. |
 | Refactoring Standards | partial | review | all | Structural and diff checks are not universal yet. |
-| Debugging Protocol | partial | instruction | all | Full hypothesis and reproduction capture is planned. |
+| Debugging Protocol | partial | instruction | all | Evidence is requested but semantic hypothesis and reproduction quality are not proven. |
 | Anti-Slop Checklist | partial | native | all | Diff checks cover debug/scaffolding/suppression signals only; architectural slop remains review. |
 | Rust | partial | native | rust | Native checks are lexical; async timeout and newtype rules are review guidance, not semantic proof. |
 | Python | partial | wrapped | python | Typed models, dependency injection, and full configured scopes remain planned. |
