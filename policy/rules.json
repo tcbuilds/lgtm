@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "test-naming-review",
+    "title": "Review test names",
+    "description": "Test names should describe the observable behavior under test instead of generic placeholders.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [{"language": "all", "text": "good: rejects_expired_token; bad: test", "provenance": "codingStandards.md#testing-standards", "schematic": true}],
+    "limitations": ["Only generic parser symbols are flagged; framework-specific naming conventions remain review."],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "testing",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["test", "spec"]},
+    "instruction": "Name tests after the observable behavior and expected outcome they verify.",
+    "enforcement": {"mode": "static", "checks": ["native.test-naming"]},
+    "overridable": true,
+    "evidence": {"required": ["check_result", "changed_locations"]},
+    "references": ["codingStandards.md#testing-standards"]
+  },
+  {
     "id": "determinism-review",
     "title": "Review test determinism",
     "description": "Unit tests should avoid real sleeps, unseeded randomness, live network calls, shared mutable fixtures, and paid external dependencies unless explicitly marked integration/e2e.",
