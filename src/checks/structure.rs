@@ -227,7 +227,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("lgtm-function-exempt-{}.py", std::process::id()));
         let mut source = String::from(
-            "# lgtm: exempt reason=parser state machine owner=team expires=2099-01-01\ndef parser():\n",
+            "# lgtm: exempt reason=parser state machine owner=team expires=2099-01-01 delete=replace parser\ndef parser():\n",
         );
         source.push_str(&"    value = 1\n".repeat(51));
         std::fs::write(&path, source).expect("fixture source");

@@ -205,6 +205,7 @@ fn has_exemption_marker(line: &str) -> bool {
         && lower.contains("reason=")
         && lower.contains("owner=")
         && lower.contains("expires=")
+        && lower.contains("delete=")
 }
 
 fn update_brace_depth(line: &str, depth: usize) -> Result<usize, AnalysisError> {
