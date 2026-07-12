@@ -2,7 +2,7 @@ use super::*;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::config::MAX_CONFIG_BYTES;
 use super::context::{MAX_CONTEXT_BYTES, TRUNCATION_MARKER, truncate_context};

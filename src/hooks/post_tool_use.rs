@@ -6,7 +6,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::adapter;
+use crate::adapter::{self, ClaudeAdapter, HookAdapter, HookEvent, HookResponse};
 use crate::checks::tiers::{self, Check, Hook};
 use crate::checks::{EnforcementResult, Status};
 use crate::checks::{gitleaks, languages, ruff, structure};
@@ -194,10 +194,19 @@ fn emit_blocks(output: &mut impl Write, results: &[&EnforcementResult]) -> ExitC
         .map(|result| block_reason(result))
         .collect::<Vec<_>>()
         .join("\n");
-    if let Err(error) = adapter::write_line(output, &adapter::block(&reason)) {
+    let encoded = match ClaudeAdapter
+        .encode_response(HookEvent::PostToolUse, HookResponse::BlockStop { reason })
+    {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            diagnostic("encode", "decision", &error, false);
+            return ExitCode::SUCCESS;
+        }
+    };
+    if let Err(error) = adapter::emit(output, &mut std::io::stderr(), &encoded) {
         diagnostic("write", "decision", &error.to_string(), true);
     }
-    ExitCode::SUCCESS
+    ExitCode::from(encoded.exit_code)
 }
 
 fn block_reason(result: &EnforcementResult) -> String {

@@ -17,8 +17,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use serde_json::json;
-
+use crate::adapter::{self, ClaudeAdapter, HookAdapter, HookEvent, HookResponse};
 use crate::detect::detect;
 mod config;
 mod context;
@@ -92,18 +91,19 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     let config_state = load_config(&root);
 
     let context = build_context(&detection, &config_state, hook_input.source.as_deref());
-    let payload = contract_payload(&context);
-
-    let serialized = match serde_json::to_string(&payload) {
-        Ok(serialized) => serialized,
+    let encoded = match ClaudeAdapter.encode_response(
+        HookEvent::SessionStart,
+        HookResponse::InjectContext(context),
+    ) {
+        Ok(encoded) => encoded,
         Err(error) => {
-            diagnostic("serialize", "contract", &error.to_string(), false);
+            diagnostic("encode", "contract", &error, false);
             return ExitCode::SUCCESS;
         }
     };
 
-    if let Err(error) = writeln!(output, "{serialized}") {
-        diagnostic("write", "contract", &error.to_string(), true);
+    if let Err(error) = adapter::emit(output, &mut std::io::stderr(), &encoded) {
+        diagnostic("write", "contract", &error, true);
         return ExitCode::SUCCESS;
     }
 
@@ -139,16 +139,6 @@ fn repo_root(cwd: Option<&str>) -> PathBuf {
         Some(cwd) if !cwd.trim().is_empty() => PathBuf::from(cwd),
         _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     }
-}
-
-/// Wrap the contract text in the Claude Code SessionStart JSON envelope.
-fn contract_payload(context: &str) -> serde_json::Value {
-    json!({
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": context,
-        }
-    })
 }
 
 #[cfg(test)]

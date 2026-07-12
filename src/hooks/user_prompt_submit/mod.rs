@@ -98,7 +98,13 @@ fn write_intent_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn write_response(output: &mut impl Write, intent: &str, packet: &str) -> Result<(), String> {
-    crate::adapter::write_line(output, &crate::adapter::user_prompt_context(intent, packet))
+    use crate::adapter::{ClaudeAdapter, HookAdapter, HookEvent, HookResponse};
+    let context = format!("Detected task intent: {intent}.\n\n{packet}");
+    let encoded = ClaudeAdapter.encode_response(
+        HookEvent::UserPromptSubmit,
+        HookResponse::InjectContext(context),
+    )?;
+    crate::adapter::emit(output, &mut std::io::stderr(), &encoded)
 }
 
 fn repo_root(cwd: Option<&str>) -> PathBuf {

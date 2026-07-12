@@ -186,8 +186,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         write_summary(output, &results)?;
         return Ok(ExitCode::SUCCESS);
     }
-    write_block_decision(&failures)?;
-    Ok(ExitCode::from(2))
+    write_block_decision(&failures)
 }
 
 fn legacy_version_result() -> EnforcementResult {
@@ -643,7 +642,8 @@ fn write_summary(output: &mut impl Write, results: &[EnforcementResult]) -> Resu
     Ok(())
 }
 
-fn write_block_decision(failures: &[&EnforcementResult]) -> Result<(), String> {
+fn write_block_decision(failures: &[&EnforcementResult]) -> Result<ExitCode, String> {
+    use crate::adapter::{ClaudeAdapter, HookAdapter, HookEvent, HookResponse};
     let mut reason = "lgtm Stop blocked: unresolved MUST violations:".to_string();
     for result in failures {
         reason.push_str(&format!("\n- {}: {}", result.rule_id, result.message));
@@ -651,6 +651,9 @@ fn write_block_decision(failures: &[&EnforcementResult]) -> Result<(), String> {
             reason.push_str(&format!("\n  Repair: {remediation}"));
         }
     }
-    crate::adapter::write_line(&mut std::io::stderr(), &crate::adapter::block(&reason))
-        .map_err(|error| format!("write block decision ({error})"))
+    let encoded =
+        ClaudeAdapter.encode_response(HookEvent::Stop, HookResponse::BlockStop { reason })?;
+    crate::adapter::emit(&mut std::io::stdout(), &mut std::io::stderr(), &encoded)
+        .map_err(|error| format!("write block decision ({error})"))?;
+    Ok(ExitCode::from(encoded.exit_code))
 }

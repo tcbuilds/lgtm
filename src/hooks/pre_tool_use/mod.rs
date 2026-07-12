@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::adapter;
+use crate::adapter::{self, ClaudeAdapter, HookAdapter, HookEvent, HookResponse};
 use crate::compile::compile_selected;
 use crate::context;
 use crate::policy::ChangeType;
@@ -83,6 +83,15 @@ fn capture(root: &Path, target: &Path, session: Option<&str>) -> Result<(), Stri
 }
 
 fn deny(output: &mut impl Write, reason: &str) -> ExitCode {
-    let _ = adapter::write_line(output, &adapter::pre_tool_deny(reason));
-    ExitCode::SUCCESS
+    let encoded = match ClaudeAdapter.encode_response(
+        HookEvent::PreToolUse,
+        HookResponse::Deny {
+            reason: reason.to_string(),
+        },
+    ) {
+        Ok(encoded) => encoded,
+        Err(_) => return ExitCode::SUCCESS,
+    };
+    let _ = adapter::emit(output, &mut std::io::stderr(), &encoded);
+    ExitCode::from(encoded.exit_code)
 }
