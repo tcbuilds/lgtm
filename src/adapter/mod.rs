@@ -7,8 +7,10 @@
 //! no adapter can invent a status, block on a non-error, or bypass evidence.
 
 mod claude;
+mod codex;
 
 pub use claude::ClaudeAdapter;
+pub use codex::CodexAdapter;
 
 use std::io::Write;
 
