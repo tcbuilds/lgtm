@@ -251,10 +251,14 @@ fn typescript_commands(root: &Path) -> Vec<(Vec<String>, &'static str, &'static 
     let package = read_optional_bounded(&root.join("package.json"), MAX_METADATA_BYTES);
     let manager = if root.join("pnpm-lock.yaml").is_file() {
         "pnpm"
+    } else if root.join("yarn.lock").is_file() {
+        "yarn"
+    } else if root.join("bun.lockb").is_file() || root.join("bun.lock").is_file() {
+        "bun"
     } else {
         "npm"
     };
-    let scripts = ["lint", "typecheck", "test"];
+    let scripts = ["lint", "format", "typecheck", "test", "build"];
     scripts
         .into_iter()
         .filter(|script| package.contains(&format!("\"{script}\"")))
@@ -424,6 +428,30 @@ mod tests {
                 .map(String::as_str)
                 .collect::<Vec<_>>()
                 == ["poetry", "run"]
+        }));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn typescript_workspace_uses_lockfile_manager_and_configured_scripts() {
+        let root = std::env::temp_dir().join(format!("lgtm-discovery-ts-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(
+            root.join("package.json"),
+            "{\"workspaces\":[\"apps/*\"],\"scripts\":{\"lint\":\"eslint .\",\"build\":\"next build\"}}\n",
+        )
+        .expect("package");
+        std::fs::write(root.join("yarn.lock"), "# lockfile\n").expect("yarn lock");
+        let workspace = discover(&root)
+            .expect("discovery")
+            .into_iter()
+            .find(|workspace| workspace.language == "typescript")
+            .expect("typescript workspace");
+        assert!(workspace.commands.iter().any(|command| {
+            command.argv.iter().map(String::as_str).collect::<Vec<_>>() == ["yarn", "run", "lint"]
+        }));
+        assert!(workspace.commands.iter().any(|command| {
+            command.argv.iter().map(String::as_str).collect::<Vec<_>>() == ["yarn", "run", "build"]
         }));
         std::fs::remove_dir_all(root).ok();
     }
