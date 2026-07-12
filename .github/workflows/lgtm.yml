@@ -1,0 +1,29 @@
+name: lgtm
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run full LGTM policy check
+        run: |
+          set -o pipefail
+          cargo run --locked -- check --tier full 2>&1 | tee lgtm-check.log
+      - name: Upload bounded LGTM evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lgtm-check-output
+          path: lgtm-check.log
+          retention-days: 14
