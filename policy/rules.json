@@ -1052,7 +1052,7 @@
     "title": "Do not mutate React state",
     "description": "React state must be updated through setters, never mutated in place.",
     "mechanism": "native",
-    "confidence": "medium",
+    "confidence": "low",
     "examples": [
       "good: use the supported pattern; bad: bypass it"
     ],
@@ -1061,7 +1061,7 @@
     ],
     "enforcement_stage": "post_tool",
     "severity": "warning",
-    "level": "should",
+    "level": "review",
     "category": "language-specific",
     "applies_to": {
       "languages": [
@@ -1102,7 +1102,7 @@
     "title": "Use stable React keys",
     "description": "React list keys should use stable domain IDs rather than indexes.",
     "mechanism": "native",
-    "confidence": "medium",
+    "confidence": "low",
     "examples": [
       "good: use the supported pattern; bad: bypass it"
     ],
@@ -1111,7 +1111,7 @@
     ],
     "enforcement_stage": "post_tool",
     "severity": "warning",
-    "level": "should",
+    "level": "review",
     "category": "language-specific",
     "applies_to": {
       "languages": [
