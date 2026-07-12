@@ -638,12 +638,6 @@ fn write_block_decision(failures: &[&EnforcementResult]) -> Result<(), String> {
             reason.push_str(&format!("\n  Repair: {remediation}"));
         }
     }
-    let decision = serde_json::json!({
-        "decision": "block",
-        "reason": reason,
-    });
-    let serialized = serde_json::to_string(&decision)
-        .map_err(|error| format!("serialize block decision ({error})"))?;
-    writeln!(std::io::stderr(), "{serialized}")
+    crate::adapter::write_line(&mut std::io::stderr(), &crate::adapter::block(&reason))
         .map_err(|error| format!("write block decision ({error})"))
 }

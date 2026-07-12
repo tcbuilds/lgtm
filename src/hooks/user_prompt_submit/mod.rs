@@ -98,15 +98,7 @@ fn write_intent_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn write_response(output: &mut impl Write, intent: &str, packet: &str) -> Result<(), String> {
-    let additional_context = format!("Detected task intent: {intent}.\n\n{packet}");
-    let response = json!({
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": additional_context,
-        }
-    });
-    serde_json::to_writer(&mut *output, &response).map_err(|error| error.to_string())?;
-    writeln!(output).map_err(|error| error.to_string())
+    crate::adapter::write_line(output, &crate::adapter::user_prompt_context(intent, packet))
 }
 
 fn repo_root(cwd: Option<&str>) -> PathBuf {

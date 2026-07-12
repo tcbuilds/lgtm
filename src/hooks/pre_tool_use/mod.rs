@@ -9,8 +9,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use serde_json::json;
-
+use crate::adapter;
 use crate::compile::compile_selected;
 use crate::context;
 use crate::policy::ChangeType;
@@ -86,11 +85,6 @@ fn capture(root: &Path, target: &Path, session: Option<&str>) -> Result<(), Stri
 }
 
 fn deny(output: &mut impl Write, reason: &str) -> ExitCode {
-    let payload = json!({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": "deny",
-        "permissionDecisionReason": reason,
-    }, "systemMessage": reason});
-    let _ = writeln!(output, "{}", payload);
+    let _ = adapter::write_line(output, &adapter::pre_tool_deny(reason));
     ExitCode::SUCCESS
 }

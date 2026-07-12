@@ -6,11 +6,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::process::ExitCode;
 
-use serde_json::json;
-
+use crate::adapter;
 use crate::checks::tiers::{self, Check, Hook};
 use crate::checks::{EnforcementResult, Status};
 use crate::checks::{gitleaks, languages, ruff, structure};
+#[cfg(test)]
+use serde_json::json;
 
 mod evidence;
 mod input;
@@ -193,15 +194,7 @@ fn emit_blocks(output: &mut impl Write, results: &[&EnforcementResult]) -> ExitC
         .map(|result| block_reason(result))
         .collect::<Vec<_>>()
         .join("\n");
-    let payload = json!({ "decision": "block", "reason": reason });
-    let serialized = match serde_json::to_string(&payload) {
-        Ok(serialized) => serialized,
-        Err(error) => {
-            diagnostic("serialize", "decision", &error.to_string(), false);
-            return ExitCode::SUCCESS;
-        }
-    };
-    if let Err(error) = writeln!(output, "{serialized}") {
+    if let Err(error) = adapter::write_line(output, &adapter::block(&reason)) {
         diagnostic("write", "decision", &error.to_string(), true);
     }
     ExitCode::SUCCESS
