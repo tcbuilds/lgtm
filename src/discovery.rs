@@ -160,6 +160,10 @@ fn is_marker(name: Option<&str>) -> bool {
             | "tsconfig.json"
             | "Cargo.toml"
             | "go.mod"
+            | "pom.xml"
+            | "build.gradle"
+            | "build.gradle.kts"
+            | "settings.gradle"
     ) || name.ends_with(".sh")
         || name.ends_with(".tf")
 }
@@ -184,6 +188,12 @@ fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
         ("rust", rust_commands())
     } else if markers.contains("go.mod") {
         ("go", go_commands())
+    } else if markers.contains("pom.xml")
+        || markers.contains("build.gradle")
+        || markers.contains("build.gradle.kts")
+        || markers.contains("settings.gradle")
+    {
+        ("jvm", jvm_commands(path, &markers))
     } else if markers.iter().any(|marker| marker.ends_with(".sh")) {
         ("shell", shell_commands(path, &markers))
     } else if markers.iter().any(|marker| marker.ends_with(".tf")) {
@@ -364,6 +374,51 @@ fn go_commands() -> Vec<(Vec<String>, &'static str, &'static str)> {
         ));
     }
     commands
+}
+
+fn jvm_commands(
+    root: &Path,
+    markers: &BTreeSet<String>,
+) -> Vec<(Vec<String>, &'static str, &'static str)> {
+    if markers.contains("pom.xml") && command_on_path("mvn") {
+        return vec![
+            (
+                vec!["mvn", "test"].into_iter().map(String::from).collect(),
+                "test",
+                "high",
+            ),
+            (
+                vec!["mvn", "verify"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                "build",
+                "high",
+            ),
+        ];
+    }
+    let gradle = if root.join("gradlew").is_file() {
+        "./gradlew"
+    } else if command_on_path("gradle") {
+        "gradle"
+    } else {
+        return Vec::new();
+    };
+    vec![
+        (
+            vec![gradle, "test"].into_iter().map(String::from).collect(),
+            "test",
+            "high",
+        ),
+        (
+            vec![gradle, "build"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            "build",
+            "high",
+        ),
+    ]
 }
 
 fn shell_commands(
@@ -574,6 +629,20 @@ mod tests {
             workspaces
                 .iter()
                 .any(|workspace| workspace.language == "terraform")
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn discovers_jvm_build_markers_without_guessing_missing_tools() {
+        let root = std::env::temp_dir().join(format!("lgtm-discovery-jvm-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(root.join("pom.xml"), "<project/>\n").expect("maven marker");
+        let workspaces = discover(&root).expect("discovery");
+        assert!(
+            workspaces
+                .iter()
+                .any(|workspace| workspace.language == "jvm")
         );
         std::fs::remove_dir_all(root).ok();
     }

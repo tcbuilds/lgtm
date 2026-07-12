@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "jvm-review",
+    "title": "Review Java and Kotlin boundaries",
+    "description": "JVM changes should use nullability, immutable domain values, controller boundaries, structured concurrency, and typed errors.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [{"language": "java", "text": "good: typed domain error at the boundary; bad: nullable controller state leaks into infrastructure", "provenance": "codingStandards.md#java", "schematic": true}],
+    "limitations": ["Formatter, analyzer, nullability, and concurrency semantics depend on configured Gradle/Maven tools."],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {"languages": ["java", "kotlin"], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["java", "kotlin", "jvm", "controller", "coroutine"]},
+    "instruction": "Review nullability, immutable domain modeling, controller/infrastructure boundaries, structured concurrency, cancellation, and typed error conversion; run the workspace's configured Gradle/Maven gates.",
+    "enforcement": {"mode": "instruction", "checks": []},
+    "overridable": true,
+    "evidence": {"required": ["review_result"]},
+    "references": ["codingStandards.md#java", "codingStandards.md#kotlin"]
+  },
+  {
     "id": "ui-accessibility-review",
     "title": "Review UI accessibility signals",
     "description": "Semantic HTML and UI components need image alternatives and accessible labels or roles.",
