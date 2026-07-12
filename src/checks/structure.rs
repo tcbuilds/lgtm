@@ -68,7 +68,7 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
                 })
         })
         .collect::<Vec<_>>();
-    let file_findings = analyses
+    let mut file_findings = analyses
         .iter()
         .filter(|(_, analysis)| analysis.file_lines > 300)
         .map(|(file, _)| Location {
@@ -76,6 +76,16 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
             line: Some(1),
         })
         .collect::<Vec<_>>();
+    file_findings.extend(analyses.iter().flat_map(|(file, analysis)| {
+        analysis
+            .types
+            .iter()
+            .filter(|item| item.lines > 200)
+            .map(|item| Location {
+                file: file.clone(),
+                line: Some(item.start_line as u64),
+            })
+    }));
     let complexity_findings = analyses
         .iter()
         .flat_map(|(file, analysis)| {
@@ -145,15 +155,13 @@ fn threshold_status(
 }
 
 fn file_size_status(analyses: &[(String, crate::structure::Analysis)]) -> Status {
-    if analyses
-        .iter()
-        .any(|(_, analysis)| analysis.file_lines >= 500)
-    {
+    if analyses.iter().any(|(_, analysis)| {
+        analysis.file_lines >= 500 || analysis.types.iter().any(|item| item.lines > 300)
+    }) {
         Status::Failed
-    } else if analyses
-        .iter()
-        .any(|(_, analysis)| analysis.file_lines > 300)
-    {
+    } else if analyses.iter().any(|(_, analysis)| {
+        analysis.file_lines > 300 || analysis.types.iter().any(|item| item.lines > 200)
+    }) {
         Status::Warning
     } else {
         Status::Passed
@@ -263,6 +271,26 @@ mod tests {
         let findings = scan(&[file]);
         assert_eq!(findings[1].status, Status::Failed);
         assert_eq!(findings[1].severity, Severity::Error);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn oversized_type_is_reviewed_and_hard_limited() {
+        let path = std::env::temp_dir().join(format!("lgtm-type-size-{}.rs", std::process::id()));
+        let mut source = String::from("struct Record {\n");
+        source.push_str(&"    value: u32,\n".repeat(201));
+        source.push_str("}\n");
+        std::fs::write(&path, source).expect("fixture source");
+        let file = path.to_string_lossy().into_owned();
+        let findings = scan(std::slice::from_ref(&file));
+        assert_eq!(findings[1].status, Status::Warning);
+        std::fs::write(
+            &path,
+            "struct Record {\n".to_string() + &"    value: u32,\n".repeat(301) + "}\n",
+        )
+        .expect("hard fixture source");
+        let findings = scan(&[file]);
+        assert_eq!(findings[1].status, Status::Failed);
         std::fs::remove_file(path).ok();
     }
 }

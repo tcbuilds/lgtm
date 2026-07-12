@@ -14,6 +14,7 @@ pub struct Analysis {
     pub file_lines: usize,
     pub token_count: usize,
     pub functions: Vec<FunctionMetric>,
+    pub types: Vec<TypeMetric>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,14 @@ pub struct FunctionMetric {
     pub complexity: usize,
     pub max_nesting: usize,
     pub exempt: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeMetric {
+    pub name: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub lines: usize,
 }
 
 #[derive(Debug, Error)]
@@ -133,6 +142,81 @@ pub fn analyze_source(language: &str, source: &str) -> Result<Analysis, Analysis
         file_lines: lines.len(),
         token_count,
         functions,
+        types: type_metrics(language, &lines),
+    })
+}
+
+fn type_metrics(language: &str, lines: &[&str]) -> Vec<TypeMetric> {
+    let mut metrics = Vec::new();
+    let brace_language = !matches!(language, "python");
+    let mut depth = 0_usize;
+    let mut active: Option<(String, usize, usize, usize)> = None;
+    for (index, raw_line) in lines.iter().enumerate() {
+        let line_number = index + 1;
+        let line = strip_comment(raw_line, language);
+        if brace_language {
+            depth = update_brace_depth(&line, depth).unwrap_or(depth);
+        }
+        if let Some((name, start, start_depth, indent)) = active.as_ref() {
+            let ended = if brace_language {
+                depth < *start_depth && line.contains('}')
+            } else {
+                !line.trim().is_empty() && indentation(&line) <= *indent && line_number > *start
+            };
+            if ended {
+                metrics.push(TypeMetric {
+                    name: name.clone(),
+                    start_line: *start,
+                    end_line: line_number,
+                    lines: line_number - *start + 1,
+                });
+                active = None;
+            }
+        }
+        if active.is_none()
+            && let Some((name, indent)) = type_header(&line, language)
+        {
+            active = Some((name, line_number, depth, indent));
+        }
+    }
+    if let Some((name, start, _, _)) = active {
+        metrics.push(TypeMetric {
+            name,
+            start_line: start,
+            end_line: lines.len(),
+            lines: lines.len() - start + 1,
+        });
+    }
+    metrics
+}
+
+fn type_header(line: &str, language: &str) -> Option<(String, usize)> {
+    let trimmed = line.trim_start();
+    let indent = indentation(line);
+    if language == "python" {
+        let name = trimmed
+            .strip_prefix("class ")?
+            .split(['(', ':'])
+            .next()?
+            .trim();
+        return (!name.is_empty()).then(|| (name.to_string(), indent));
+    }
+    if !trimmed.contains('{') {
+        return None;
+    }
+    let marker = match language {
+        "rust" => ["struct ", "enum ", "trait ", "impl "].as_slice(),
+        "typescript" | "javascript" => ["class ", "interface ", "type "].as_slice(),
+        "go" => ["type "].as_slice(),
+        _ => return None,
+    };
+    marker.iter().find_map(|prefix| {
+        let start = trimmed.find(prefix)? + prefix.len();
+        let name = trimmed[start..]
+            .split(['{', '=', '<', ' ', ';'])
+            .next()?
+            .trim();
+        (!name.is_empty()).then(|| (name.to_string(), indent))
     })
 }
 
@@ -289,6 +373,9 @@ mod tests {
         assert_eq!(typescript.functions[0].name, "render");
         let go = analyze_source("go", "func Run(value string) {\n}\n").expect("Go analysis");
         assert_eq!(go.functions[0].name, "Run");
+        let rust = analyze_source("rust", "struct Record {\n    value: u32,\n}\n")
+            .expect("Rust type analysis");
+        assert_eq!(rust.types[0].name, "Record");
         let javascript = analyze_source(
             "javascript",
             "function render(value) {\n  return value;\n}\n",
