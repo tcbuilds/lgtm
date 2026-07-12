@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "determinism-review",
+    "title": "Review test determinism",
+    "description": "Unit tests should avoid real sleeps, unseeded randomness, live network calls, shared mutable fixtures, and paid external dependencies unless explicitly marked integration/e2e.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [{"language": "all", "text": "good: inject a clock and seed randomness; bad: sleep and call a live API in a unit test", "provenance": "codingStandards.md#testing-standards", "schematic": true}],
+    "limitations": ["Lexical signals cannot prove order dependence or paid dependencies; explicit integration/e2e paths are allowed."],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "testing",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["test", "sleep", "random", "network"]},
+    "instruction": "Keep unit tests deterministic: inject clocks, seed randomness, avoid real sleeps/live network/paid dependencies, and isolate mutable fixtures; mark integration/e2e tests explicitly.",
+    "enforcement": {"mode": "static", "checks": ["native.determinism"]},
+    "overridable": true,
+    "evidence": {"required": ["check_result", "changed_locations"]},
+    "references": ["codingStandards.md#testing-standards"]
+  },
+  {
     "id": "behavior-test-quality",
     "title": "Review behavior-test assertions",
     "description": "Tests should assert observable outcomes rather than only running code or asserting an unconditional truth.",
