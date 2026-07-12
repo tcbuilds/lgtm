@@ -77,7 +77,7 @@ mod tests {
         std::fs::write(&file, "ok\n").expect("file");
         assert_eq!(
             resolve(&root, &file.to_string_lossy()).expect("inside"),
-            file
+            file.canonicalize().expect("canonical file")
         );
         let outside = std::env::temp_dir().join(format!("lgtm-pre-outside-{}", std::process::id()));
         std::fs::write(&outside, "outside\n").expect("outside");

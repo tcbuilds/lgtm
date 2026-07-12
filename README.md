@@ -39,6 +39,28 @@ lgtm doctor
 
 Commit the generated `.lgtm/config.json`, `.claude/settings.json`, and `.gitignore` changes. Claude Code will run LGTM automatically during future sessions.
 
+## How the Hooks Work
+
+The `lgtm` binary is the enforcement engine. It is not a background service.
+The repository's `.claude/settings.json` tells Claude Code when to start it:
+
+```text
+Claude event
+    ↓
+.claude/settings.json hook
+    ↓
+lgtm hook <event>
+    ↓
+select relevant rules → guide the agent → check the change → allow or block
+```
+
+At the start of a session, LGTM gives the agent a small permanent contract.
+When you submit a task, it selects only the relevant standards and sends a
+compact MUST/REVIEW packet before coding begins. Before an Edit or Write, it
+checks the target path and records a baseline. After edits, fast checks run;
+pushes and CI can run the full gate. You can also run the binary directly with
+`lgtm check --tier full`.
+
 For Codex, Git hooks, or CI, run the same checks directly:
 
 ```bash

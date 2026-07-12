@@ -44,7 +44,7 @@ mod tests {
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("git head");
         assert_eq!(
             resolve(Some(&root.join("backend").display().to_string())).unwrap(),
-            root
+            root.canonicalize().expect("canonical root")
         );
         std::fs::remove_dir_all(root).ok();
     }
