@@ -12,12 +12,12 @@
 | Error Handling | partial | native | all, python, typescript, javascript | Wrappers cover selected Python patterns; boundary conversion, cleanup, and retry semantics remain review. |
 | Testing Standards | partial | evidence | all | Coverage metrics and nuanced assertion-strength proof remain planned; high-confidence test-quality, naming, and determinism signals are review findings. |
 | Observability Standards | partial | review | all | No universal log, metric, or trace proof is implemented. |
-| Performance Standards | unsupported | unsupported | all | Performance claims require measured evidence not yet automated. |
+| Performance Standards | partial | instruction | all | Performance claims require measured evidence; hotspot checks are not automated. |
 | Security Standards | partial | review | all | Secure defaults and authorization remain language/framework work; endpoint and contextual builder findings remain review. |
-| Dependency Standards | partial | review | all | License, maintenance, transitive, and runtime analysis is planned. |
-| Documentation Standards | partial | review | all | Documentation drift detection is planned. |
-| Review And Change Standards | partial | evidence | all | PR metadata generation remains planned. |
-| Refactoring Standards | partial | native | all | Structural and diff checks are not universal yet; semantic justification quality remains review. |
+| Dependency Standards | partial | review | all | License, maintenance, transitive, and runtime analysis remains review. |
+| Documentation Standards | partial | instruction | all | Documentation drift detection is not automated. |
+| Review And Change Standards | partial | evidence | all | PR metadata generation remains guidance and never pushes or messages externally. |
+| Refactoring Standards | partial | native | all | Structural and diff checks are not universal; semantic public-behavior preservation remains review. |
 | Debugging Protocol | partial | instruction | all | Evidence is requested but semantic hypothesis and reproduction quality are not proven. |
 | Anti-Slop Checklist | partial | native | all | Diff checks cover debug/scaffolding/suppression signals only; architectural slop remains review. |
 | Rust | partial | native | rust | Native checks are lexical; async timeout and newtype rules are review guidance, not semantic proof. |
@@ -34,6 +34,6 @@
 | HTML, CSS, And UI Styling | partial | native | html, css, typescript, javascript | Lexical checks cover common missing-alt/label and brittle-style signals; visual quality, contrast, focus, and layout stability remain review. |
 | Infrastructure As Code | partial | review | terraform, yaml | Terraform discovery and review guidance are active; semantic least-privilege and rollback proof remain review. |
 | YAML, JSON, And Config | partial | review | yaml, json | Embedded/runtime JSON schemas are validated; consumer duplicate-key and schema discovery remain review. |
-| AI-Assisted Coding Standards | partial | evidence | all | Broader generated-code quality checks are planned. |
+| AI-Assisted Coding Standards | partial | evidence | all | Broader generated-code quality checks and intent proof remain review. |
 | Master Techniques For Maintainable Systems | partial | instruction | all | Principles are compact contextual guidance, not semantic proof. |
 | Quality Gates | partial | command | all | Workspace-aware universal gates are planned. |
