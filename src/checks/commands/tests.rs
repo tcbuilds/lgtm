@@ -219,3 +219,13 @@ fn config_uses_default_and_validates_custom_timeout() {
         assert!(load(&fixture.root).is_err());
     }
 }
+
+#[test]
+fn coverage_without_a_configured_tool_is_not_applicable() {
+    let fixture = Fixture::create();
+    let evidence = run_coverage(&fixture.root, &[]);
+    assert_eq!(evidence[0].workspace_id, "repository");
+    assert_eq!(evidence[0].status, "not_applicable");
+    assert!(evidence[0].line_percent.is_none());
+    assert!(evidence[0].branch_percent.is_none());
+}

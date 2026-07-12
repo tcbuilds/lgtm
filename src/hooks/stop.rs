@@ -53,17 +53,6 @@ struct RuleCounts {
 }
 
 #[derive(Debug, Serialize)]
-struct CoverageEvidence {
-    workspace_id: String,
-    status: &'static str,
-    tool: Option<String>,
-    scope: Option<String>,
-    line_percent: Option<f64>,
-    branch_percent: Option<f64>,
-    measured_at_ms: Option<u128>,
-}
-
-#[derive(Debug, Serialize)]
 struct TaskEvidence<'a> {
     task_id: &'a str,
     agent: &'static str,
@@ -74,7 +63,7 @@ struct TaskEvidence<'a> {
     commands: &'a [commands::CommandEvidence],
     overrides: &'a [crate::policy::overrides::OverrideRecord],
     waivers: &'a [crate::policy::waivers::Waiver],
-    coverage: Vec<CoverageEvidence>,
+    coverage: Vec<commands::CoverageEvidence>,
     policy_version: &'static str,
     policy_digest: String,
     binary_version: &'static str,
@@ -145,6 +134,9 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         hook_input.tier.as_deref(),
     );
     bind_command_provenance(&root, &paths, &mut command_run.evidence);
+    let coverage = commands::load(&root)
+        .map(|settings| commands::run_coverage(&root, &settings.coverage))
+        .unwrap_or_else(|_| commands::run_coverage(&root, &[]));
     results.extend(command_run.results);
     if !hook_input.check {
         results.push(crate::checks::claims::evaluate(
@@ -169,6 +161,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         },
         &results,
         &command_run.evidence,
+        &coverage,
         &overrides,
         &waivers,
     )?;
@@ -466,6 +459,7 @@ fn append_task_evidence(
     metadata: EvidenceMeta<'_>,
     results: &[EnforcementResult],
     commands: &[commands::CommandEvidence],
+    coverage: &[commands::CoverageEvidence],
     overrides: &[crate::policy::overrides::OverrideRecord],
     waivers: &[crate::policy::waivers::Waiver],
 ) -> Result<(), String> {
@@ -484,15 +478,7 @@ fn append_task_evidence(
         commands,
         overrides,
         waivers,
-        coverage: vec![CoverageEvidence {
-            workspace_id: "repository".to_string(),
-            status: "not_applicable",
-            tool: None,
-            scope: None,
-            line_percent: None,
-            branch_percent: None,
-            measured_at_ms: None,
-        }],
+        coverage: coverage.to_vec(),
         policy_version: crate::policy::POLICY_BUNDLE_VERSION,
         policy_digest: crate::policy::bundle_digest(),
         binary_version: env!("CARGO_PKG_VERSION"),

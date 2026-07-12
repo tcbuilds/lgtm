@@ -5,8 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::checks::Status;
 
-use super::config::StructuredCommand;
-use super::result::{CommandEvidence, RunResults, not_applicable, result};
+use super::config::{CoverageCommand, StructuredCommand};
+use super::result::{CommandEvidence, CoverageEvidence, RunResults, not_applicable, result};
 
 pub fn run(root: &Path, commands: &[String], timeout: std::time::Duration) -> RunResults {
     let mut output = RunResults {
@@ -62,6 +62,83 @@ pub fn run_structured(root: &Path, commands: &[StructuredCommand]) -> RunResults
         output.results.push(classify(&display, details));
     }
     output
+}
+
+pub fn run_coverage(root: &Path, commands: &[CoverageCommand]) -> Vec<CoverageEvidence> {
+    if commands.is_empty() {
+        return vec![CoverageEvidence {
+            workspace_id: "repository".to_string(),
+            status: "not_applicable".to_string(),
+            tool: None,
+            scope: None,
+            line_percent: None,
+            branch_percent: None,
+            measured_at_ms: None,
+        }];
+    }
+    commands
+        .iter()
+        .map(|command| {
+            let mut process = Command::new(&command.argv[0]);
+            process
+                .args(&command.argv[1..])
+                .current_dir(root.join(&command.cwd))
+                .stdin(Stdio::null());
+            let measured_at_ms = unix_ms();
+            let captured =
+                crate::checks::gitleaks::runner::run_details_with_timeout(process, command.timeout);
+            let (status, line_percent, branch_percent) = match captured {
+                Some(details) if details.code == Some(0) => {
+                    let text = String::from_utf8_lossy(&details.stdout);
+                    let line = parse_metric(&text, "line");
+                    let branch = parse_metric(&text, "branch");
+                    let passed = line.is_some_and(|value| {
+                        command
+                            .line_threshold_percent
+                            .is_none_or(|threshold| value >= f64::from(threshold))
+                    }) && branch.is_none_or(|value| {
+                        command
+                            .branch_threshold_percent
+                            .is_none_or(|threshold| value >= f64::from(threshold))
+                    });
+                    if line.is_none() && branch.is_none() {
+                        ("unverified", line, branch)
+                    } else if passed {
+                        ("passed", line, branch)
+                    } else {
+                        ("failed", line, branch)
+                    }
+                }
+                _ => ("unverified", None, None),
+            };
+            CoverageEvidence {
+                workspace_id: command.workspace_id.clone(),
+                status: status.to_string(),
+                tool: command.argv.first().cloned(),
+                scope: Some(command.scope.clone()),
+                line_percent,
+                branch_percent,
+                measured_at_ms: Some(measured_at_ms),
+            }
+        })
+        .collect()
+}
+
+fn parse_metric(output: &str, label: &str) -> Option<f64> {
+    output.lines().find_map(|line| {
+        let lower = line.to_ascii_lowercase();
+        if !lower.contains(label) || !lower.contains('%') {
+            return None;
+        }
+        let percent = lower
+            .split('%')
+            .next()?
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>();
+        percent.chars().rev().collect::<String>().parse().ok()
+    })
 }
 
 fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mut RunResults) {

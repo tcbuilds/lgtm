@@ -12,6 +12,7 @@ pub struct Settings {
     pub commands: Vec<String>,
     pub structured: Vec<StructuredCommand>,
     pub timeout: std::time::Duration,
+    pub coverage: Vec<CoverageCommand>,
 }
 
 #[derive(Debug, Clone)]
@@ -21,6 +22,17 @@ pub struct StructuredCommand {
     pub workspace_id: String,
     pub tier: String,
     pub timeout: std::time::Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct CoverageCommand {
+    pub workspace_id: String,
+    pub argv: Vec<String>,
+    pub cwd: PathBuf,
+    pub timeout: std::time::Duration,
+    pub scope: String,
+    pub line_threshold_percent: Option<u8>,
+    pub branch_threshold_percent: Option<u8>,
 }
 
 pub fn load(root: &Path) -> Result<Settings, String> {
@@ -57,7 +69,19 @@ pub fn load(root: &Path) -> Result<Settings, String> {
         let config = crate::config_v2::parse(&value).map_err(|error| error.to_string())?;
         let mut commands = Vec::new();
         let mut structured = Vec::new();
+        let mut coverage = Vec::new();
         for workspace in config.workspaces {
+            for item in &workspace.coverage {
+                coverage.push(CoverageCommand {
+                    workspace_id: workspace.id.clone(),
+                    argv: item.argv.clone(),
+                    cwd: item.cwd.clone(),
+                    timeout: std::time::Duration::from_secs(item.timeout_seconds),
+                    scope: item.scope.clone(),
+                    line_threshold_percent: item.line_threshold_percent,
+                    branch_threshold_percent: item.branch_threshold_percent,
+                });
+            }
             for command in workspace.commands {
                 commands.push(command.argv.join(" "));
                 structured.push(StructuredCommand {
@@ -76,6 +100,7 @@ pub fn load(root: &Path) -> Result<Settings, String> {
             commands,
             structured,
             timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
+            coverage,
         });
     }
     let timeout = timeout(&value)?;
@@ -84,6 +109,7 @@ pub fn load(root: &Path) -> Result<Settings, String> {
             commands: Vec::new(),
             structured: Vec::new(),
             timeout,
+            coverage: Vec::new(),
         });
     };
     let map = required
@@ -108,6 +134,7 @@ pub fn load(root: &Path) -> Result<Settings, String> {
         commands,
         structured: Vec::new(),
         timeout,
+        coverage: Vec::new(),
     })
 }
 
@@ -116,6 +143,7 @@ fn defaults() -> Settings {
         commands: Vec::new(),
         structured: Vec::new(),
         timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
+        coverage: Vec::new(),
     }
 }
 

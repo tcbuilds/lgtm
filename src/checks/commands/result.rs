@@ -30,6 +30,17 @@ pub struct CommandEvidence {
     pub finished_at_ms: Option<u128>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CoverageEvidence {
+    pub workspace_id: String,
+    pub status: String,
+    pub tool: Option<String>,
+    pub scope: Option<String>,
+    pub line_percent: Option<f64>,
+    pub branch_percent: Option<f64>,
+    pub measured_at_ms: Option<u128>,
+}
+
 pub struct RunResults {
     pub results: Vec<EnforcementResult>,
     pub evidence: Vec<CommandEvidence>,
