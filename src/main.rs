@@ -31,6 +31,9 @@ enum Command {
         /// Convert an existing V1 config to structured V2 with a backup.
         #[arg(long)]
         migrate_config: bool,
+        /// Allow medium-confidence fallback commands during normal init.
+        #[arg(long)]
+        accept_guesses: bool,
     },
     /// Run the policy runtime for a single agent lifecycle event.
     Hook {
@@ -172,7 +175,8 @@ fn run(command: Command) -> ExitCode {
         Command::Init {
             dry_run,
             migrate_config,
-        } => run_init(dry_run, migrate_config),
+            accept_guesses,
+        } => run_init(dry_run, migrate_config, accept_guesses),
         Command::Hook { event } => run_hook(event),
         Command::Doctor => run_doctor(),
         Command::Compile { validate } => run_compile(validate),
@@ -590,13 +594,13 @@ fn compile_exit_code(
 /// current working directory, then prints a concise report to stdout. On
 /// failure the precise cause is written to stderr and the process exits
 /// non-zero without partially reporting success.
-fn run_init(dry_run: bool, migrate_config: bool) -> ExitCode {
+fn run_init(dry_run: bool, migrate_config: bool, accept_guesses: bool) -> ExitCode {
     let result = if migrate_config {
         init::migrate_config(Path::new("."), dry_run)
     } else if dry_run {
         init::preview(Path::new("."))
     } else {
-        init::run(Path::new("."))
+        init::run_with_options(Path::new("."), accept_guesses)
     };
     match result {
         Ok(summary) => {
@@ -762,7 +766,8 @@ mod tests {
             cli.command,
             Command::Init {
                 dry_run: false,
-                migrate_config: false
+                migrate_config: false,
+                accept_guesses: false
             }
         ));
     }

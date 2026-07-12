@@ -36,7 +36,7 @@ use fs::{commit_write, create_dir_all, preflight_targets, read_if_exists, stage_
 #[cfg(test)]
 use gitignore::evidence_is_ignored;
 use gitignore::{render_gitignore, render_settings};
-pub use runner::{migrate_config, preview, run};
+pub use runner::{migrate_config, preview, run, run_with_options};
 pub use settings::{build_config, merge_settings};
 #[cfg(test)]
 use settings::{commands_match, entry_runs_command};
@@ -111,6 +111,11 @@ pub enum InitError {
     /// Workspace discovery could not safely inspect the repository.
     #[error("workspace discovery failed: {0}")]
     Discovery(#[from] DiscoveryError),
+    /// Discovery produced fallback commands that require explicit acceptance.
+    #[error(
+        "low-confidence commands detected; rerun with --accept-guesses or inspect `lgtm init --dry-run`: {details}"
+    )]
+    LowConfidence { details: String },
     /// Creating a directory under the target repo failed.
     #[error("create directory failed: path={path} reason={source} retryable=true")]
     CreateDir {

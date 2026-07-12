@@ -98,8 +98,31 @@ pub fn preview(root: &Path) -> Result<InitSummary, InitError> {
 
 /// Scaffold repo-local configuration and merge Claude Code hooks.
 pub fn run(root: &Path) -> Result<InitSummary, InitError> {
+    run_with_options(root, true)
+}
+
+/// Scaffold configuration, optionally requiring explicit acceptance of
+/// medium-confidence fallback commands.
+pub fn run_with_options(root: &Path, accept_guesses: bool) -> Result<InitSummary, InitError> {
     let detection = detect(root);
     let workspaces = crate::discovery::discover(root)?;
+    if !accept_guesses {
+        let guesses: Vec<_> = workspaces
+            .iter()
+            .flat_map(|workspace| {
+                workspace
+                    .commands
+                    .iter()
+                    .filter(|command| command.confidence == "medium")
+                    .map(|command| format!("{}:{}", workspace.id, command.argv.join(" ")))
+            })
+            .collect();
+        if !guesses.is_empty() {
+            return Err(InitError::LowConfidence {
+                details: guesses.join(", "),
+            });
+        }
+    }
 
     let settings_path = root.join(".claude").join("settings.json");
     let validated_settings = validate_settings(&settings_path)?;

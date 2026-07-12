@@ -15,7 +15,7 @@ use common::TempRepo;
 /// Run `lgtm init` with the temp directory as its working directory.
 fn run_init(repo: &TempRepo) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .arg("init")
+        .args(["init", "--accept-guesses"])
         .current_dir(repo.path())
         .output()
         .expect("lgtm binary should execute")
@@ -105,6 +105,20 @@ fn init_dry_run_reports_plan_without_writing_files() {
     assert!(text.contains("files: .lgtm/config.json, .gitignore, .claude/settings.json"));
     assert!(!repo.exists(".lgtm/config.json"));
     assert!(!repo.exists(".claude/settings.json"));
+}
+
+#[test]
+fn init_refuses_medium_confidence_fallbacks_without_acceptance() {
+    let repo = TempRepo::new();
+    repo.write("requirements.txt", "pytest\n");
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .arg("init")
+        .current_dir(repo.path())
+        .output()
+        .expect("init executes");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("low-confidence commands"));
+    assert!(!repo.exists(".lgtm/config.json"));
 }
 
 #[test]
