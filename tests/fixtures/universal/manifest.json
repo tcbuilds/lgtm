@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "cases": [
+    {"name":"root-clean","shape":"root","status":"clean"},
+    {"name":"monorepo-mixed","shape":"monorepo","status":"clean"},
+    {"name":"missing-tool","shape":"root","status":"missing-tool"},
+    {"name":"malformed-config","shape":"root","status":"malformed-config"},
+    {"name":"legacy-config","shape":"root","status":"legacy-debt"},
+    {"name":"windows-path","shape":"root","status":"path-safety"},
+    {"name":"oversize-input","shape":"root","status":"path-safety"}
+  ],
+  "languages": ["python","typescript","rust","go","shell","terraform","jvm","csharp","cpp","sql"]
+}
