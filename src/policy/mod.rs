@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 70);
+        assert_eq!(rules.len(), 71);
     }
 
     #[test]
@@ -651,6 +651,7 @@ mod tests {
                 "dependency-change-review",
                 "performance-review",
                 "endpoint-controls-review",
+                "auth-input-enforcement",
                 "public-endpoint-review",
                 "safe-construction-review",
                 "justification-metadata",
@@ -712,6 +713,7 @@ mod tests {
                     | "dependency-change-review"
                     | "performance-review"
                     | "endpoint-controls-review"
+                    | "auth-input-enforcement"
                     | "public-endpoint-review"
                     | "safe-construction-review"
                     | "sql-migration-review"

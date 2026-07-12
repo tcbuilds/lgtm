@@ -133,6 +133,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     results.extend(crate::checks::justification::scan(&paths));
     results.extend(crate::checks::construction::scan(&paths));
     results.extend(crate::checks::endpoints::scan(&paths));
+    results.extend(crate::checks::auth::scan(&paths));
     let mut command_run = run_repository_commands(
         &root,
         hook_input.workspace.as_deref(),

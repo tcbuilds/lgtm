@@ -59,6 +59,7 @@ fn embedded_registry_validates_against_schema() {
             "dependency-change-review",
             "performance-review",
             "endpoint-controls-review",
+            "auth-input-enforcement",
             "public-endpoint-review",
             "safe-construction-review",
             "justification-metadata",
