@@ -119,6 +119,9 @@ fn scan_target(root: &Path, file_path: &str) -> Vec<EnforcementResult> {
                 results.extend(crate::checks::justification::scan(std::slice::from_ref(
                     &resolved,
                 )));
+                results.extend(crate::checks::construction::scan(std::slice::from_ref(
+                    &resolved,
+                )));
             }
             _ => unreachable!("fast tier contains only fast checks"),
         }

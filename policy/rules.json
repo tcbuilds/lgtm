@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "safe-construction-review",
+    "title": "Review safe construction boundaries",
+    "description": "Avoid concatenating untrusted values into shell, HTML, URL, JSON, regex, or SQL strings; use contextual builders and escaping.",
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": [{"language": "all", "text": "good: parameterized query/argv builder; bad: 'SELECT ' + user_input", "provenance": "codingStandards.md#security-standards", "schematic": true}],
+    "limitations": ["Lexical checks cover common concatenation shapes; framework-specific builders and semantic escaping remain review."],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "security",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["shell", "html", "url", "json", "regex", "sql", "input"]},
+    "instruction": "Use parameterized SQL, argv/builders, contextual HTML/URL escaping, and typed serializers; do not concatenate untrusted values into boundary strings.",
+    "enforcement": {"mode": "static", "checks": ["native.safe-construction"]},
+    "overridable": true,
+    "evidence": {"required": ["check_result", "changed_locations"]},
+    "references": ["codingStandards.md#security-standards"]
+  },
+  {
     "id": "justification-metadata",
     "title": "Require temporary-code justification",
     "description": "Temporary, TODO, disabled, or suppressed code needs a reason, owner, ISO expiry, and deletion condition.",

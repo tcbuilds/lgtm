@@ -11,6 +11,7 @@
 pub mod boundary;
 pub mod claims;
 pub mod commands;
+pub mod construction;
 pub mod determinism;
 pub mod diff;
 #[path = "gitleaks/api.rs"]
