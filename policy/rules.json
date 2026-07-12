@@ -898,5 +898,253 @@
       "Automated checks cover only registered patterns; review other implementations."
     ],
     "enforcement_stage": "stop"
+  },
+  {
+    "id": "rust-no-unsafe",
+    "title": "Forbid unreviewed Rust unsafe",
+    "description": "Rust unsafe requires approved invariants and architecture review.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [
+      "good: use the supported pattern; bad: bypass it"
+    ],
+    "limitations": [
+      "The native check is lexical and requires review for complex syntax."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "should",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "rust"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Rust unsafe requires approved invariants and architecture review.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.rust-no-unsafe"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#rust"
+    ]
+  },
+  {
+    "id": "rust-no-unwrap-expect",
+    "title": "Avoid Rust unwrap and expect",
+    "description": "Production Rust paths should use typed error handling.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [
+      "good: use the supported pattern; bad: bypass it"
+    ],
+    "limitations": [
+      "The native check is lexical and requires review for complex syntax."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "should",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "rust"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Production Rust paths should use typed error handling.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.rust-no-unwrap-expect"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#rust"
+    ]
+  },
+  {
+    "id": "typescript-no-any",
+    "title": "Avoid TypeScript any",
+    "description": "TypeScript boundaries should use unknown or a precise type.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [
+      "good: use the supported pattern; bad: bypass it"
+    ],
+    "limitations": [
+      "The native check is lexical and requires review for complex syntax."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "should",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "TypeScript boundaries should use unknown or a precise type.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.typescript-no-any"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#typescript"
+    ]
+  },
+  {
+    "id": "react-no-state-mutation",
+    "title": "Do not mutate React state",
+    "description": "React state must be updated through setters, never mutated in place.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [
+      "good: use the supported pattern; bad: bypass it"
+    ],
+    "limitations": [
+      "The native check is lexical and requires review for complex syntax."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "should",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "React state must be updated through setters, never mutated in place.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.react-no-state-mutation"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#react"
+    ]
+  },
+  {
+    "id": "react-unstable-key",
+    "title": "Use stable React keys",
+    "description": "React list keys should use stable domain IDs rather than indexes.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [
+      "good: use the supported pattern; bad: bypass it"
+    ],
+    "limitations": [
+      "The native check is lexical and requires review for complex syntax."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "should",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "React list keys should use stable domain IDs rather than indexes.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.react-unstable-key"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#react"
+    ]
   }
 ]

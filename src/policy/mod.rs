@@ -478,6 +478,7 @@ fn registered_check(check: &str) -> bool {
         check,
         "gitleaks.detect" | "ruff.check" | "command.required" | "git.diff" | "transcript.claims"
     ) || check.starts_with("semgrep.")
+        || check.starts_with("native.")
 }
 
 /// Reject a registry in which two rules share the same `id`.
@@ -536,7 +537,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 15);
+        assert_eq!(rules.len(), 20);
     }
 
     #[test]
@@ -561,6 +562,11 @@ mod tests {
                 "auth-change-security-review",
                 "required-repository-commands",
                 "evidence-claims-honest",
+                "rust-no-unsafe",
+                "rust-no-unwrap-expect",
+                "typescript-no-any",
+                "react-no-state-mutation",
+                "react-unstable-key",
             ]
         );
     }
@@ -571,7 +577,13 @@ mod tests {
         for rule in &rules {
             if matches!(
                 rule.id.as_str(),
-                "regression-test-required" | "new-behavior-tests-required"
+                "regression-test-required"
+                    | "new-behavior-tests-required"
+                    | "rust-no-unsafe"
+                    | "rust-no-unwrap-expect"
+                    | "typescript-no-any"
+                    | "react-no-state-mutation"
+                    | "react-unstable-key"
             ) {
                 assert!(rule.overridable);
                 continue;

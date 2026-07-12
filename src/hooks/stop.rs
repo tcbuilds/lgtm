@@ -92,6 +92,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         intent.as_deref(),
     ));
     results.extend(rerun_python_checks(&paths));
+    results.extend(crate::checks::languages::scan(&paths));
     let command_run = run_repository_commands(&root);
     results.extend(command_run.results);
     results.push(crate::checks::claims::evaluate(

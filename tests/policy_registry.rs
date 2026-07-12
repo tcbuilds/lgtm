@@ -26,6 +26,11 @@ fn embedded_registry_validates_against_schema() {
             "auth-change-security-review",
             "required-repository-commands",
             "evidence-claims-honest",
+            "rust-no-unsafe",
+            "rust-no-unwrap-expect",
+            "typescript-no-any",
+            "react-no-state-mutation",
+            "react-unstable-key",
         ]
     );
 }
