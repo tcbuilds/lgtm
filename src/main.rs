@@ -65,6 +65,29 @@ enum Command {
         #[arg(long)]
         version: Option<String>,
     },
+    /// Inspect the embedded policy registry.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicyCommand {
+    /// List every embedded rule.
+    List {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one embedded rule in detail.
+    Show {
+        /// Stable rule identifier.
+        rule_id: String,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// The five native agent lifecycle events wired by the Claude Code adapter.
@@ -100,6 +123,75 @@ fn run(command: Command) -> ExitCode {
             expires,
         } => run_waive(&rule, &reason, &owner, &expires),
         Command::Update { check, version } => run_update(check, version.as_deref()),
+        Command::Policy { command } => run_policy(command),
+    }
+}
+
+fn run_policy(command: PolicyCommand) -> ExitCode {
+    let rules = match lgtm::policy::load_embedded_registry() {
+        Ok(rules) => rules,
+        Err(error) => {
+            eprintln!("policy failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match command {
+        PolicyCommand::List { json } => {
+            if json {
+                return write_json(&rules);
+            }
+            println!("ID\tLEVEL\tSEVERITY\tMODE\tCATEGORY\tTITLE");
+            for rule in rules {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    rule.id,
+                    rule.level,
+                    rule.severity,
+                    rule.enforcement.mode,
+                    rule.category,
+                    rule.title
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        PolicyCommand::Show { rule_id, json } => {
+            let Some(rule) = rules.into_iter().find(|rule| rule.id == rule_id) else {
+                eprintln!("policy failed: unknown rule `{rule_id}`");
+                return ExitCode::FAILURE;
+            };
+            if json {
+                return write_json(&rule);
+            }
+            println!("id: {}", rule.id);
+            println!("title: {}", rule.title);
+            println!("description: {}", rule.description);
+            println!("level: {}", rule.level);
+            println!("severity: {}", rule.severity);
+            println!("category: {}", rule.category);
+            println!("enforcement: {}", rule.enforcement.mode);
+            println!("checks: {}", rule.enforcement.checks.join(", "));
+            println!("languages: {}", rule.applies_to.languages.join(", "));
+            println!("domains: {}", rule.applies_to.domains.join(", "));
+            println!("files: {}", rule.applies_to.file_patterns.join(", "));
+            println!("instruction: {}", rule.instruction);
+            println!("evidence: {}", rule.evidence.required.join(", "));
+            println!("overridable: {}", rule.overridable);
+            println!("references: {}", rule.references.join(", "));
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+fn write_json<T: serde::Serialize>(value: &T) -> ExitCode {
+    match serde_json::to_string_pretty(value) {
+        Ok(rendered) => {
+            println!("{rendered}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("policy failed: serialize output ({error})");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -333,6 +425,26 @@ mod tests {
     fn parses_report_subcommand() {
         let cli = Cli::try_parse_from(["lgtm", "report"]).expect("report should parse");
         assert!(matches!(cli.command, Command::Report { .. }));
+    }
+
+    #[test]
+    fn parses_policy_commands() {
+        let list = Cli::try_parse_from(["lgtm", "policy", "list", "--json"])
+            .expect("policy list should parse");
+        assert!(matches!(
+            list.command,
+            Command::Policy {
+                command: PolicyCommand::List { json: true }
+            }
+        ));
+        let show = Cli::try_parse_from(["lgtm", "policy", "show", "external-call-timeout"])
+            .expect("policy show should parse");
+        assert!(matches!(
+            show.command,
+            Command::Policy {
+                command: PolicyCommand::Show { ref rule_id, json: false }
+            } if rule_id == "external-call-timeout"
+        ));
     }
 
     #[test]
