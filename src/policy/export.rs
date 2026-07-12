@@ -6,36 +6,45 @@ use std::path::Path;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-const ARTIFACTS: [(&str, &str); 10] = [
-    ("rules.json", super::RULES_JSON),
-    ("rule.schema.json", super::RULE_SCHEMA_JSON),
-    ("standards-coverage.json", super::coverage::COVERAGE_JSON),
-    (
-        "standards-coverage.schema.json",
-        super::coverage::COVERAGE_SCHEMA_JSON,
-    ),
-    ("config-v2.schema.json", crate::config_v2::SCHEMA_JSON),
-    (
-        "semgrep-python.yml",
-        include_str!("../../policy/semgrep-python.yml"),
-    ),
-    (
-        "profiles/default.json",
-        include_str!("../../policy/profiles/default.json"),
-    ),
-    (
-        "profiles/strict.json",
-        include_str!("../../policy/profiles/strict.json"),
-    ),
-    (
-        "profiles/prototype.json",
-        include_str!("../../policy/profiles/prototype.json"),
-    ),
-    (
-        "profiles/infrastructure.json",
-        include_str!("../../policy/profiles/infrastructure.json"),
-    ),
-];
+fn artifacts() -> Vec<(&'static str, String)> {
+    vec![
+        ("rules.json", super::RULES_JSON.to_string()),
+        ("rule.schema.json", super::RULE_SCHEMA_JSON.to_string()),
+        (
+            "standards-coverage.json",
+            super::coverage::COVERAGE_JSON.to_string(),
+        ),
+        (
+            "standards-coverage.schema.json",
+            super::coverage::COVERAGE_SCHEMA_JSON.to_string(),
+        ),
+        (
+            "config-v2.schema.json",
+            crate::config_v2::SCHEMA_JSON.to_string(),
+        ),
+        (
+            "semgrep-python.yml",
+            include_str!("../../policy/semgrep-python.yml").to_string(),
+        ),
+        (
+            "profiles/default.json",
+            include_str!("../../policy/profiles/default.json").to_string(),
+        ),
+        (
+            "profiles/strict.json",
+            include_str!("../../policy/profiles/strict.json").to_string(),
+        ),
+        (
+            "profiles/prototype.json",
+            include_str!("../../policy/profiles/prototype.json").to_string(),
+        ),
+        (
+            "profiles/infrastructure.json",
+            include_str!("../../policy/profiles/infrastructure.json").to_string(),
+        ),
+        ("examples.md", examples_markdown()),
+    ]
+}
 
 #[derive(Debug, Serialize)]
 struct Manifest {
@@ -80,13 +89,14 @@ pub fn run(output: &Path, force: bool) -> Result<String, String> {
     fs::create_dir_all(&temp).map_err(|error| format!("create export staging ({error})"))?;
 
     let mut files = Vec::new();
-    for (relative, contents) in ARTIFACTS {
+    for (relative, contents) in artifacts() {
         let path = temp.join(relative);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("create artifact parent ({error})"))?;
         }
-        fs::write(&path, contents).map_err(|error| format!("write {relative} ({error})"))?;
+        fs::write(&path, contents.as_bytes())
+            .map_err(|error| format!("write {relative} ({error})"))?;
         files.push(FileDigest {
             path: relative.to_string(),
             sha256: digest(contents.as_bytes()),
@@ -116,6 +126,38 @@ pub fn run(output: &Path, force: bool) -> Result<String, String> {
     Ok(format!("exported policy bundle to {}", output.display()))
 }
 
+fn examples_markdown() -> String {
+    let rules = super::load_embedded_registry().unwrap_or_default();
+    let mut markdown = String::from(
+        "# LGTM Policy Examples\n\nGenerated from the embedded policy registry. Examples are guidance, not automated proof.\n\n",
+    );
+    for rule in rules {
+        if rule.examples.is_empty() {
+            continue;
+        }
+        markdown.push_str(&format!("## `{}` — {}\n\n", rule.id, rule.title));
+        markdown.push_str(&format!("- Languages: {}\n", language_scope(&rule)));
+        markdown.push_str(&format!("- Provenance: {}\n", rule.references.join(", ")));
+        markdown.push_str(&format!(
+            "- Limitations: {}\n\n",
+            rule.limitations.join(" ")
+        ));
+        for example in rule.examples {
+            markdown.push_str(&format!("- {}\n", example.replace('\n', " ")));
+        }
+        markdown.push('\n');
+    }
+    markdown
+}
+
+fn language_scope(rule: &super::Rule) -> String {
+    if rule.applies_to.languages.is_empty() {
+        "all".to_string()
+    } else {
+        rule.applies_to.languages.join(", ")
+    }
+}
+
 fn digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -133,6 +175,12 @@ mod tests {
         assert!(message.contains("exported policy bundle"));
         assert!(output.join("manifest.json").is_file());
         assert!(output.join("rules.json").is_file());
+        assert!(output.join("examples.md").is_file());
+        assert!(
+            fs::read_to_string(output.join("examples.md"))
+                .expect("exported examples")
+                .contains("LGTM Policy Examples")
+        );
         assert!(output.join("profiles/strict.json").is_file());
         assert_eq!(
             fs::read_to_string(output.join("rules.json")).expect("exported rules"),
