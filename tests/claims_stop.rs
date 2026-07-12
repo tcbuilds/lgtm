@@ -42,3 +42,10 @@ fn matching_required_command_claim_passes_honesty_check() {
     assert!(evidence.contains("evidence-claims-honest"));
     assert!(evidence.contains("\"status\":\"passed\""));
 }
+
+#[test]
+fn operational_lgtm_claim_does_not_block_stop() {
+    let repo = TempRepo::new();
+    let output = run_stop(&repo, "`lgtm doctor` passed; the hook probe succeeded.");
+    assert!(output.status.success());
+}

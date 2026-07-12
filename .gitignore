@@ -13,7 +13,14 @@ implementation_plan.md
 *.log
 .DS_Store
 
+# Generated fixture outputs
+**/__pycache__/
+*.py[cod]
+tests/fixtures/**/target/
+tests/fixtures/**/Cargo.lock
+
 
 # Added by cargo
 
 /target
+**/.lgtm/evidence/

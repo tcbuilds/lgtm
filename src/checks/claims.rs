@@ -40,7 +40,7 @@ pub fn evaluate(path: Option<&Path>, evidence: &[CommandEvidence]) -> Enforcemen
     if claims.iter().all(|claim| is_proven(claim, evidence)) {
         outcome(
             Status::Passed,
-            "Every verification claim has matching current Stop command evidence.",
+            "Every repository quality-gate claim has matching current Stop command evidence.",
             descriptors,
         )
     } else {
@@ -109,7 +109,9 @@ fn extract_text_claims(text: &str, claims: &mut Vec<Claim>) {
     for line in text.lines().filter(|line| success_line(line)) {
         let mut parts = line.split('`');
         while let (Some(_), Some(command)) = (parts.next(), parts.next()) {
-            if let Some(command) = normalize(command) {
+            if let Some(command) = normalize(command)
+                && is_quality_gate_command(&command)
+            {
                 claims.push(Claim::Command(command));
             }
             if claims.len() >= MAX_CLAIMS {
@@ -135,6 +137,19 @@ fn success_line(line: &str) -> bool {
 fn normalize(command: &str) -> Option<String> {
     let argv = shlex::split(command.trim())?;
     (!argv.is_empty()).then(|| argv.join(" "))
+}
+
+fn is_quality_gate_command(command: &str) -> bool {
+    let Some(argv) = shlex::split(command) else {
+        return false;
+    };
+    let Some(executable) = argv
+        .first()
+        .and_then(|value| Path::new(value).file_name().and_then(|name| name.to_str()))
+    else {
+        return false;
+    };
+    executable != "lgtm" || argv.get(1).is_some_and(|subcommand| subcommand == "check")
 }
 
 fn is_proven(claim: &Claim, evidence: &[CommandEvidence]) -> bool {
@@ -272,6 +287,24 @@ mod tests {
             finished_at_ms: None,
         }];
         assert!(claims.iter().all(|claim| is_proven(claim, &evidence)));
+    }
+
+    #[test]
+    fn ignores_operational_lgtm_claims() {
+        let claims = parse_claims(&transcript(
+            "`lgtm doctor` passed; `lgtm hook pre-tool-use` succeeded.",
+        ))
+        .expect("claims");
+        assert!(claims.is_empty());
+    }
+
+    #[test]
+    fn keeps_lgtm_full_check_as_a_quality_claim() {
+        let claims = parse_claims(&transcript("`lgtm check --tier full` passed")).expect("claims");
+        assert_eq!(
+            claims,
+            vec![Claim::Command("lgtm check --tier full".to_string())]
+        );
     }
 
     #[test]
