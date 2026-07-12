@@ -23,7 +23,7 @@
 | Rust | partial | native | rust | Native checks are lexical; parser-backed ownership, async timeout, and newtype checks remain planned. |
 | Python | partial | wrapped | python | Typed models, dependency injection, and full configured scopes remain planned. |
 | TypeScript And JavaScript | partial | native | typescript, javascript | Native checks are lexical; strict compiler and runtime schema gates remain workspace commands. |
-| React | partial | native | typescript, javascript | Checks cover common lexical patterns; AST state/effect analysis remains planned. |
+| React | partial | native | typescript, javascript | State/key checks are lexical; cleanup, error/loading, and accessibility guidance remain review-only until structural/UI analysis exists. |
 | Go | unsupported | unsupported | go | Go support is a later V2 slice. |
 | Java | unsupported | unsupported | java | Java support is a later V2 slice. |
 | Kotlin | unsupported | unsupported | kotlin | Kotlin support is a later V2 slice. |

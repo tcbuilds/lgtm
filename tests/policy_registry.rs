@@ -35,6 +35,9 @@ fn embedded_registry_validates_against_schema() {
             "typescript-api-response-validation",
             "rust-spawn-cancellation",
             "rust-no-mutable-global",
+            "react-effect-cleanup",
+            "react-error-loading-states",
+            "react-accessibility-review",
         ]
     );
 }

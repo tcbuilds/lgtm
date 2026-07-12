@@ -1344,5 +1344,149 @@
     "references": [
       "codingStandards.md#rust"
     ]
+  },
+  {
+    "id": "react-effect-cleanup",
+    "title": "Review React effect cleanup",
+    "description": "React effects must clean up subscriptions, timers, observers, sockets, and async work.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [
+      "good: make the state explicit; bad: rely on implicit null behavior"
+    ],
+    "limitations": [
+      "This is review guidance; semantic UI quality is not claimed as static proof."
+    ],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "React effects must clean up subscriptions, timers, observers, sockets, and async work.",
+    "enforcement": {
+      "mode": "instruction",
+      "checks": []
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "review_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#react"
+    ]
+  },
+  {
+    "id": "react-error-loading-states",
+    "title": "Review React error and loading states",
+    "description": "Interactive React surfaces should expose explicit loading and failure states.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [
+      "good: make the state explicit; bad: rely on implicit null behavior"
+    ],
+    "limitations": [
+      "This is review guidance; semantic UI quality is not claimed as static proof."
+    ],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Interactive React surfaces should expose explicit loading and failure states.",
+    "enforcement": {
+      "mode": "instruction",
+      "checks": []
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "review_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#react"
+    ]
+  },
+  {
+    "id": "react-accessibility-review",
+    "title": "Review React accessibility semantics",
+    "description": "React components should use semantic labels, keyboard paths, focus management, and accessible states.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [
+      "good: make the state explicit; bad: rely on implicit null behavior"
+    ],
+    "limitations": [
+      "This is review guidance; semantic UI quality is not claimed as static proof."
+    ],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "typescript",
+        "javascript"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "React components should use semantic labels, keyboard paths, focus management, and accessible states.",
+    "enforcement": {
+      "mode": "instruction",
+      "checks": []
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "review_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#react"
+    ]
   }
 ]
