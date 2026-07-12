@@ -28,18 +28,30 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
         for (index, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
             let boundary = trimmed.starts_with("except") || trimmed.starts_with("catch");
-            if !boundary {
+            let retry = trimmed.to_ascii_lowercase().contains("retry");
+            if !boundary && !retry {
                 continue;
             }
             let followup = lines.get(index + 1).map_or("", |value| value.trim());
-            if followup == "pass"
-                || (followup.is_empty()
-                    && !lines
-                        .iter()
-                        .skip(index + 1)
-                        .take(4)
-                        .any(|value| value.contains("throw") || value.contains("raise")))
-            {
+            let nearby = lines
+                .iter()
+                .skip(index + 1)
+                .take(8)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase();
+            let empty_handler = boundary
+                && (followup == "pass"
+                    || (followup.is_empty()
+                        && !nearby.contains("throw")
+                        && !nearby.contains("raise")));
+            let unbounded_retry = retry
+                && !nearby.contains("backoff")
+                && !nearby.contains("jitter")
+                && !nearby.contains("cancel")
+                && !nearby.contains("timeout");
+            if empty_handler || unbounded_retry {
                 locations.push(Location {
                     file: file.clone(),
                     line: Some((index + 1) as u64),
@@ -91,6 +103,18 @@ mod tests {
             "try:\n    run()\nexcept Exception:\n    raise RuntimeError('context')\n",
         )
         .expect("clean fixture");
+        assert_eq!(scan(&[file])[0].status, Status::Passed);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn flags_retry_without_bounds_and_accepts_backoff_cancellation() {
+        let path = std::env::temp_dir().join(format!("lgtm-retry-{}.py", std::process::id()));
+        std::fs::write(&path, "for retry in range(3):\n    run()\n").expect("retry fixture");
+        let file = path.to_string_lossy().into_owned();
+        assert_eq!(scan(std::slice::from_ref(&file))[0].status, Status::Warning);
+        std::fs::write(&path, "for retry in range(3):\n    backoff_and_cancel()\n")
+            .expect("bounded fixture");
         assert_eq!(scan(&[file])[0].status, Status::Passed);
         std::fs::remove_file(path).ok();
     }
