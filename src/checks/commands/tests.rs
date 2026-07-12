@@ -148,6 +148,22 @@ fn config_v2_loads_structured_argv_and_workspace_cwd() {
 }
 
 #[test]
+fn config_rejects_world_writable_files() {
+    let fixture = Fixture::create();
+    std::fs::create_dir(fixture.root.join(".lgtm")).expect("config directory");
+    let path = fixture.root.join(".lgtm/config.json");
+    std::fs::write(&path, "{}").expect("config");
+    let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
+    permissions.set_mode(0o666);
+    std::fs::set_permissions(&path, permissions).expect("world writable");
+    assert!(
+        load(&fixture.root)
+            .unwrap_err()
+            .contains("not world writable")
+    );
+}
+
+#[test]
 fn structured_commands_isolate_identically_named_workspace_tools() {
     let fixture = Fixture::create();
     let backend = fixture.root.join("backend");

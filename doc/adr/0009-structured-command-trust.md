@@ -6,7 +6,7 @@ Accepted
 
 ## Decision
 
-Repository commands are executed only from validated V2 argv arrays with repository-relative working directories, bounded timeouts, no shell operators, and regular-file configuration. Coverage commands use the same boundary. The runner records workspace, argv, cwd, exit status, duration, and provenance metadata. Environment is limited to an explicit allowlist. Config ownership and permission hardening remains a follow-up because cross-platform metadata behavior must be specified before enforcement.
+Repository commands are executed only from validated V2 argv arrays with repository-relative working directories, bounded timeouts, no shell operators, and regular-file configuration. Coverage commands use the same boundary. The runner records workspace, argv, cwd, exit status, duration, and provenance metadata. Environment is limited to an explicit allowlist. On Unix, config must be owned by the runner and not world-writable; other platforms report their documented metadata limitations.
 
 ## Rationale
 
@@ -14,4 +14,4 @@ Shell strings and ambient configuration create injection and workspace-leakage r
 
 ## Trade-offs
 
-Some repositories need environment variables or wrapper scripts. They must expose those through an explicit executable or repository-local configuration rather than relying on hidden shell behavior. Permission checks remain an open compatibility-reviewed change.
+Some repositories need environment variables or wrapper scripts. They must expose those through an explicit executable or repository-local configuration rather than relying on hidden shell behavior. Group-writable files remain compatible with common umasks when ownership is trusted; world-writable or foreign-owned config fails closed.

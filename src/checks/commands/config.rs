@@ -2,6 +2,9 @@ use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 const MAX_COMMANDS: usize = 64;
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
@@ -44,7 +47,20 @@ pub fn load(root: &Path) -> Result<Settings, String> {
         Ok(metadata) if metadata.len() > MAX_CONFIG_BYTES => {
             return Err(format!("config exceeds {MAX_CONFIG_BYTES} bytes"));
         }
-        Ok(_) => {}
+        Ok(metadata) => {
+            #[cfg(unix)]
+            {
+                // The process owner check uses the kernel effective UID; no
+                // memory or pointer is passed, so this libc call is safe.
+                let foreign_owner = metadata.uid() != unsafe { libc::geteuid() };
+                let world_writable = metadata.permissions().mode() & 0o002 != 0;
+                if foreign_owner || world_writable {
+                    return Err(
+                        "config must be owned by the runner and not world writable".to_string()
+                    );
+                }
+            }
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(defaults()),
         Err(error) => return Err(format!("inspect config ({error})")),
     }
