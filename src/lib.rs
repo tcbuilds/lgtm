@@ -8,6 +8,7 @@ pub mod checks;
 pub mod compile;
 pub mod context;
 pub mod detect;
+pub mod discovery;
 pub mod fsutil;
 pub mod hooks;
 pub mod init;
