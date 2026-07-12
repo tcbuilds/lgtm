@@ -41,6 +41,7 @@ pub fn run_structured(root: &Path, commands: &[StructuredCommand]) -> RunResults
             .args(&command.argv[1..])
             .current_dir(root.join(&command.cwd))
             .stdin(Stdio::null());
+        apply_environment(&mut process);
         let details =
             crate::checks::gitleaks::runner::run_details_with_timeout(process, command.timeout);
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
@@ -84,6 +85,7 @@ pub fn run_coverage(root: &Path, commands: &[CoverageCommand]) -> Vec<CoverageEv
                 .args(&command.argv[1..])
                 .current_dir(root.join(&command.cwd))
                 .stdin(Stdio::null());
+            apply_environment(&mut process);
             let measured_at_ms = unix_ms();
             let captured =
                 crate::checks::gitleaks::runner::run_details_with_timeout(process, command.timeout);
@@ -173,6 +175,7 @@ fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mu
         .args(&argv[1..])
         .current_dir(root)
         .stdin(Stdio::null());
+    apply_environment(&mut process);
     let details = crate::checks::gitleaks::runner::run_details_with_timeout(process, timeout);
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let code = details.as_ref().and_then(|details| details.code);
@@ -242,4 +245,20 @@ fn parse(command: &str) -> Result<Vec<String>, String> {
         return Err("shell operators are not allowed".to_string());
     }
     Ok(argv)
+}
+
+fn apply_environment(process: &mut Command) {
+    let path = std::env::var_os("PATH");
+    let home = std::env::var_os("HOME");
+    let ci = std::env::var_os("CI");
+    process.env_clear();
+    if let Some(path) = path {
+        process.env("PATH", path);
+    }
+    if let Some(home) = home {
+        process.env("HOME", home);
+    }
+    if let Some(ci) = ci {
+        process.env("CI", ci);
+    }
 }
