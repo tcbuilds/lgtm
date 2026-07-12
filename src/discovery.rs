@@ -164,8 +164,11 @@ fn is_marker(name: Option<&str>) -> bool {
             | "build.gradle"
             | "build.gradle.kts"
             | "settings.gradle"
+            | "global.json"
     ) || name.ends_with(".sh")
         || name.ends_with(".tf")
+        || name.ends_with(".csproj")
+        || name.ends_with(".sln")
 }
 
 fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
@@ -194,6 +197,10 @@ fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
         || markers.contains("settings.gradle")
     {
         ("jvm", jvm_commands(path, &markers))
+    } else if markers.iter().any(|marker| {
+        marker.ends_with(".csproj") || marker.ends_with(".sln") || marker == "global.json"
+    }) {
+        ("csharp", csharp_commands())
     } else if markers.iter().any(|marker| marker.ends_with(".sh")) {
         ("shell", shell_commands(path, &markers))
     } else if markers.iter().any(|marker| marker.ends_with(".tf")) {
@@ -421,6 +428,38 @@ fn jvm_commands(
     ]
 }
 
+fn csharp_commands() -> Vec<(Vec<String>, &'static str, &'static str)> {
+    if !command_on_path("dotnet") {
+        return Vec::new();
+    }
+    vec![
+        (
+            vec!["dotnet", "format"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            "format",
+            "high",
+        ),
+        (
+            vec!["dotnet", "build"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            "build",
+            "high",
+        ),
+        (
+            vec!["dotnet", "test"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            "test",
+            "high",
+        ),
+    ]
+}
+
 fn shell_commands(
     root: &Path,
     markers: &BTreeSet<String>,
@@ -643,6 +682,21 @@ mod tests {
             workspaces
                 .iter()
                 .any(|workspace| workspace.language == "jvm")
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn discovers_csharp_project_markers_without_guessing_missing_dotnet() {
+        let root =
+            std::env::temp_dir().join(format!("lgtm-discovery-csharp-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(root.join("app.csproj"), "<Project/>\n").expect("project marker");
+        let workspaces = discover(&root).expect("discovery");
+        assert!(
+            workspaces
+                .iter()
+                .any(|workspace| workspace.language == "csharp")
         );
         std::fs::remove_dir_all(root).ok();
     }

@@ -27,7 +27,7 @@
 | Go | partial | native | go | Native checks are lexical and review-tier; context placement and structured concurrency semantics remain review. |
 | Java | partial | review | java | Formatter, analyzer, nullability, and concurrency semantics depend on configured Maven/Gradle tools. |
 | Kotlin | partial | review | kotlin | Formatter, analyzer, nullability, and concurrency semantics depend on configured Maven/Gradle tools. |
-| C# | unsupported | unsupported | csharp | C# support is a later V2 slice. |
+| C# | partial | review | csharp | Nullable, analyzer, async, and DI semantics depend on configured dotnet projects. |
 | C And C++ | unsupported | unsupported | c, cpp | C and C++ support is a later V2 slice. |
 | SQL | partial | review | sql | Migrations and query-plan standards remain review guidance. |
 | Shell | partial | review | shell | Shell review guidance and optional ShellCheck discovery are active; lexical shell safety checks remain planned. |
