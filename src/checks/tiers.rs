@@ -20,6 +20,7 @@ pub enum Check {
     Mypy,
     Semgrep,
     RepositoryCommands,
+    NativeLanguages,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,14 +29,20 @@ pub enum Availability {
     NotConfigured,
 }
 
-const FAST: [Check; 3] = [Check::Secrets, Check::Diff, Check::Ruff];
+const FAST: [Check; 4] = [
+    Check::Secrets,
+    Check::Diff,
+    Check::Ruff,
+    Check::NativeLanguages,
+];
 const TARGETED: [Check; 3] = [Check::RelatedTests, Check::Mypy, Check::Semgrep];
-const FULL: [Check; 5] = [
+const FULL: [Check; 6] = [
     Check::Secrets,
     Check::Diff,
     Check::Ruff,
     Check::Semgrep,
     Check::RepositoryCommands,
+    Check::NativeLanguages,
 ];
 
 pub fn checks(tier: Tier) -> &'static [Check] {
@@ -69,7 +76,12 @@ mod tests {
     fn tiers_have_stable_cost_order() {
         assert_eq!(
             checks(Tier::Fast),
-            [Check::Secrets, Check::Diff, Check::Ruff]
+            [
+                Check::Secrets,
+                Check::Diff,
+                Check::Ruff,
+                Check::NativeLanguages
+            ]
         );
         assert_eq!(
             checks(Tier::Targeted),
@@ -82,7 +94,8 @@ mod tests {
                 Check::Diff,
                 Check::Ruff,
                 Check::Semgrep,
-                Check::RepositoryCommands
+                Check::RepositoryCommands,
+                Check::NativeLanguages
             ]
         );
     }
