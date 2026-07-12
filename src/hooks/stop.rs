@@ -26,6 +26,12 @@ struct HookInput {
     cwd: Option<String>,
     #[serde(default)]
     transcript_path: Option<String>,
+    #[serde(default)]
+    check: bool,
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default)]
+    tier: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,7 +101,11 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     let root = resolve_root(hook_input.cwd.as_deref())?;
     let (profile, registry, overrides, waivers, compatibility) =
         crate::policy::load_profiled_registry(&root)?;
-    let paths = touched_paths(&root, hook_input.session_id.as_deref())?;
+    let paths = if hook_input.check {
+        check_paths(&root)?
+    } else {
+        touched_paths(&root, hook_input.session_id.as_deref())?
+    };
     let mut results = rerun_checks(&paths);
     let touched: BTreeSet<String> = paths
         .iter()
@@ -116,12 +126,18 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     results.extend(crate::checks::naming::scan(&paths));
     results.extend(crate::checks::boundary::scan(&paths));
     results.extend(crate::checks::logging::scan(&paths));
-    let command_run = run_repository_commands(&root);
+    let command_run = run_repository_commands(
+        &root,
+        hook_input.workspace.as_deref(),
+        hook_input.tier.as_deref(),
+    );
     results.extend(command_run.results);
-    results.push(crate::checks::claims::evaluate(
-        hook_input.transcript_path.as_deref().map(Path::new),
-        &command_run.evidence,
-    ));
+    if !hook_input.check {
+        results.push(crate::checks::claims::evaluate(
+            hook_input.transcript_path.as_deref().map(Path::new),
+            &command_run.evidence,
+        ));
+    }
     if compatibility == crate::policy::config_version::Compatibility::LegacyMissing {
         results.push(legacy_version_result());
     }
@@ -172,10 +188,21 @@ fn legacy_version_result() -> EnforcementResult {
     }
 }
 
-fn run_repository_commands(root: &Path) -> commands::RunResults {
+fn run_repository_commands(
+    root: &Path,
+    workspace: Option<&str>,
+    tier: Option<&str>,
+) -> commands::RunResults {
     match commands::load(root) {
         Ok(configured) if !configured.structured.is_empty() => {
-            commands::run_structured(root, &configured.structured)
+            let selected: Vec<_> = configured
+                .structured
+                .iter()
+                .filter(|command| workspace.is_none_or(|id| command.workspace_id == id))
+                .filter(|command| tier.is_none_or(|selected| command.tier == selected))
+                .cloned()
+                .collect();
+            commands::run_structured(root, &selected)
         }
         Ok(configured) => commands::run(root, &configured.commands, configured.timeout),
         Err(reason) => commands::RunResults {
@@ -265,6 +292,78 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<Vec<String>, S
         }
     }
     Ok(paths.into_iter().collect())
+}
+
+fn check_paths(root: &Path) -> Result<Vec<String>, String> {
+    let mut paths = Vec::new();
+    collect_check_paths(root, root, 0, &mut paths)?;
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn collect_check_paths(
+    root: &Path,
+    current: &Path,
+    depth: usize,
+    paths: &mut Vec<String>,
+) -> Result<(), String> {
+    if depth > 8 || paths.len() >= 512 {
+        return Ok(());
+    }
+    let entries =
+        std::fs::read_dir(current).map_err(|error| format!("scan check paths ({error})"))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read check path ({error})"))?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|error| format!("inspect check path ({error})"))?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !matches!(
+                name.as_str(),
+                ".git"
+                    | ".lgtm"
+                    | ".claude"
+                    | "target"
+                    | "node_modules"
+                    | "dist"
+                    | "build"
+                    | "vendor"
+                    | ".venv"
+                    | "venv"
+            ) {
+                collect_check_paths(root, &path, depth + 1, paths)?;
+            }
+        } else if metadata.is_file()
+            && path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension,
+                        "py" | "rs"
+                            | "ts"
+                            | "tsx"
+                            | "js"
+                            | "jsx"
+                            | "go"
+                            | "sh"
+                            | "tf"
+                            | "yaml"
+                            | "yml"
+                            | "json"
+                    )
+                })
+            && path.strip_prefix(root).is_ok()
+        {
+            paths.push(path.to_string_lossy().into_owned());
+        }
+    }
+    Ok(())
 }
 
 fn canonical_contained_file(root: &Path, file: &str) -> Option<String> {

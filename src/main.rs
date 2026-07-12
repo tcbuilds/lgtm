@@ -85,6 +85,22 @@ enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Run the same bounded policy checks outside an agent hook.
+    Check {
+        /// Restrict structured commands to one workspace id.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Run only commands in the selected tier.
+        #[arg(long)]
+        tier: Option<CheckTier>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CheckTier {
+    Fast,
+    Targeted,
+    Full,
 }
 
 #[derive(Debug, Subcommand)]
@@ -198,7 +214,29 @@ fn run(command: Command) -> ExitCode {
         Command::Update { check, version } => run_update(check, version.as_deref()),
         Command::Policy { command } => run_policy(command),
         Command::Config { command } => run_config(command),
+        Command::Check { workspace, tier } => run_check(workspace.as_deref(), tier),
     }
+}
+
+fn run_check(workspace: Option<&str>, tier: Option<CheckTier>) -> ExitCode {
+    let root = match std::env::current_dir() {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("check failed: cannot resolve repository root ({error})");
+            return ExitCode::FAILURE;
+        }
+    };
+    let payload = serde_json::json!({
+        "cwd": root,
+        "check": true,
+        "workspace": workspace,
+        "tier": tier.map(|value| format!("{value:?}").to_ascii_lowercase()),
+    });
+    let mut input = std::io::Cursor::new(payload.to_string());
+    let mut output = Vec::new();
+    let code = stop::run(&mut input, &mut output);
+    print!("{}", String::from_utf8_lossy(&output));
+    code
 }
 
 fn run_policy(command: PolicyCommand) -> ExitCode {
@@ -825,6 +863,26 @@ mod tests {
     fn parses_report_subcommand() {
         let cli = Cli::try_parse_from(["lgtm", "report"]).expect("report should parse");
         assert!(matches!(cli.command, Command::Report { .. }));
+    }
+
+    #[test]
+    fn parses_check_filters() {
+        let cli = Cli::try_parse_from([
+            "lgtm",
+            "check",
+            "--workspace",
+            "backend",
+            "--tier",
+            "targeted",
+        ])
+        .expect("check should parse");
+        assert!(matches!(
+            cli.command,
+            Command::Check {
+                workspace: Some(_),
+                tier: Some(CheckTier::Targeted)
+            }
+        ));
     }
 
     #[test]

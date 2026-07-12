@@ -1,0 +1,4 @@
+# The integration test assembles a deliberately fake credential at runtime.
+# Keep the fixture out of repository scans; it never represents a live secret.
+[allowlist]
+paths = ['''tests/post_tool_use\.rs$''']

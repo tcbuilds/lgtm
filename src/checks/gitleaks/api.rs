@@ -82,6 +82,15 @@ fn run_gitleaks(binary: &str, file: &str) -> ScanOutcome {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let repository_file = std::env::current_dir()
+        .ok()
+        .is_some_and(|root| Path::new(file).starts_with(root));
+    if repository_file && Path::new(".gitleaksignore").is_file() {
+        command.arg("--gitleaks-ignore-path").arg(".gitleaksignore");
+    }
+    if repository_file && Path::new(".gitleaks.toml").is_file() {
+        command.arg("--config").arg(".gitleaks.toml");
+    }
     run_scan(command, &report_path)
 }
 

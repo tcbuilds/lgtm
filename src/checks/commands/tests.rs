@@ -159,12 +159,14 @@ fn structured_commands_isolate_identically_named_workspace_tools() {
             argv: vec![backend_tool.to_string_lossy().into_owned()],
             cwd: "backend".into(),
             workspace_id: "backend".to_string(),
+            tier: "full".to_string(),
             timeout: std::time::Duration::from_secs(30),
         },
         StructuredCommand {
             argv: vec![frontend_tool.to_string_lossy().into_owned()],
             cwd: "frontend".into(),
             workspace_id: "frontend".to_string(),
+            tier: "full".to_string(),
             timeout: std::time::Duration::from_secs(30),
         },
     ];
