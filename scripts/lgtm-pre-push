@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+if ! command -v lgtm >/dev/null 2>&1; then
+  printf '%s\n' 'lgtm pre-push failed: install lgtm or add it to PATH' >&2
+  exit 1
+fi
+
+exec lgtm check --tier full

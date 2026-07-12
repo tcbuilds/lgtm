@@ -39,7 +39,7 @@ lgtm doctor
 
 Commit the generated `.lgtm/config.json`, `.claude/settings.json`, and `.gitignore` changes. Claude Code will run LGTM automatically during future sessions.
 
-For Codex or CI, run the same checks directly:
+For Codex, Git hooks, or CI, run the same checks directly:
 
 ```bash
 lgtm check --tier full
@@ -49,7 +49,27 @@ See [the Codex adapter contract](doc/adapters/codex.md) for exit statuses and
 platform limits.
 
 Claude Stop hooks run fast, touched-workspace gates by default. Run
-`lgtm check --tier full` before merge to execute tests, builds, and coverage.
+`lgtm check --tier full` at a push/CI boundary to execute tests, builds, and
+coverage without paying that cost at every conversation stop.
+
+To make pushes run the full gate locally, copy
+[`scripts/lgtm-pre-push`](scripts/lgtm-pre-push) into a versioned hooks directory
+and point Git at it:
+
+```bash
+mkdir -p .githooks
+test ! -e .githooks/pre-push || {
+  echo 'Refusing to replace existing .githooks/pre-push' >&2
+  exit 1
+}
+curl -fsSL https://raw.githubusercontent.com/tcbuilds/lgtm/main/scripts/lgtm-pre-push \
+  -o .githooks/pre-push
+chmod +x .githooks/pre-push
+git config core.hooksPath .githooks
+```
+
+Keep the repository CI workflow enabled as the final authority; `git push
+--no-verify` can bypass local hooks.
 
 ## Common Commands
 
