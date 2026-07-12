@@ -7,10 +7,12 @@ use std::path::{Path, PathBuf};
 const MAX_INPUT_BYTES: u64 = 512 * 1024;
 
 pub fn validate_file(path: &Path) -> Result<usize, String> {
-    let value = read_json(path)?;
-    let registry = normalize_registry(value)?;
+    load_file(path).map(|rules| rules.len())
+}
+
+pub fn load_file(path: &Path) -> Result<Vec<super::Rule>, String> {
+    let registry = normalize_registry(read_json(path)?)?;
     super::load_and_validate(&serde_json::to_string(&registry).map_err(|error| error.to_string())?)
-        .map(|rules| rules.len())
         .map_err(|error| error.to_string())
 }
 

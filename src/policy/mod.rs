@@ -14,6 +14,7 @@ pub mod authoring;
 pub mod config_version;
 pub mod coverage;
 pub mod docs;
+pub mod drift;
 pub mod export;
 pub mod org_bundle;
 pub mod overlay;

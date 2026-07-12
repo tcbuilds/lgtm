@@ -194,6 +194,18 @@ enum PolicyCommand {
         #[arg(long)]
         fixtures: PathBuf,
     },
+    /// Compare an installed registry with the embedded policy bundle.
+    Drift {
+        /// Candidate rule object or registry array.
+        #[arg(long)]
+        candidate: PathBuf,
+        /// Explicitly accept newly added or strengthened hard rules.
+        #[arg(long)]
+        accept_hardening: bool,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// The five native agent lifecycle events wired by the Claude Code adapter.
@@ -449,6 +461,34 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        PolicyCommand::Drift {
+            candidate,
+            accept_hardening,
+            json,
+        } => {
+            let report = match lgtm::policy::drift::compare(&candidate) {
+                Ok(report) => report,
+                Err(error) => {
+                    eprintln!("policy drift failed: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if let Err(error) = lgtm::policy::drift::enforce_acceptance(&report, accept_hardening) {
+                eprintln!("policy drift blocked: {error}");
+                return ExitCode::FAILURE;
+            }
+            if json {
+                return write_json(&report);
+            }
+            println!("added: {}", report.added.join(", "));
+            println!("removed: {}", report.removed.join(", "));
+            println!("severity changed: {}", report.severity_changed.join(", "));
+            println!(
+                "hardening accepted: {}",
+                accept_hardening || report.hardening.is_empty()
+            );
+            ExitCode::SUCCESS
         }
     }
 }
