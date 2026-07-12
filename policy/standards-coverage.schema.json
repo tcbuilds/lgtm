@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tcbuilds/lgtm/standards-coverage.schema.json",
+  "title": "lgtm coding standards coverage ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["standards_file", "version", "normative_headings", "sections"],
+  "properties": {
+    "standards_file": { "const": "codingStandards.md" },
+    "version": { "type": "string", "minLength": 1 },
+    "normative_headings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "sections": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "heading", "source_anchor", "scope", "status", "mechanism", "supported_languages", "enforcement_stages", "limitations", "notes"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+          "heading": { "type": "string", "minLength": 1 },
+          "source_anchor": { "type": "string", "pattern": "^codingStandards\\.md#L[1-9][0-9]*$" },
+          "scope": { "const": "all_normative_items" },
+          "status": { "enum": ["covered", "partial", "unsupported"] },
+          "mechanism": { "enum": ["native", "wrapped", "command", "instruction", "review", "evidence", "unsupported"] },
+          "rule_ids": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+          "supported_languages": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+          "enforcement_stages": { "type": "array", "minItems": 1, "items": { "type": "string" }, "uniqueItems": true },
+          "limitations": { "type": "string", "minLength": 1 },
+          "notes": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

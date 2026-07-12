@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod config_version;
+pub mod coverage;
 pub mod overrides;
 pub mod profile;
 pub mod waivers;

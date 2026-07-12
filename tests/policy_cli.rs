@@ -23,3 +23,18 @@ fn policy_show_reports_unknown_rule_without_panicking() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unknown rule"));
 }
+
+#[test]
+fn policy_coverage_reports_every_normative_section() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["policy", "coverage", "--json"])
+        .output()
+        .expect("policy coverage starts");
+    assert!(output.status.success());
+    let ledger: Value = serde_json::from_slice(&output.stdout).expect("coverage is JSON");
+    let sections = ledger["sections"].as_array().expect("section array");
+    assert_eq!(sections.len(), 33);
+    assert!(sections.iter().any(|section| {
+        section["heading"] == "Non-Negotiable Rules" && section["status"] == "partial"
+    }));
+}

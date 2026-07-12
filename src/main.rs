@@ -88,6 +88,12 @@ enum PolicyCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show standards coverage status.
+    Coverage {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// The five native agent lifecycle events wired by the Claude Code adapter.
@@ -177,6 +183,41 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
             println!("evidence: {}", rule.evidence.required.join(", "));
             println!("overridable: {}", rule.overridable);
             println!("references: {}", rule.references.join(", "));
+            ExitCode::SUCCESS
+        }
+        PolicyCommand::Coverage { json } => {
+            let report = match lgtm::policy::coverage::report() {
+                Ok(report) => report,
+                Err(error) => {
+                    eprintln!("policy coverage failed: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if json {
+                return write_json(&report);
+            }
+            let mut counts = [0_usize; 3];
+            println!("SECTION\tSTATUS\tMECHANISM\tRULES\tNOTES");
+            for section in report.ledger.sections {
+                let index = match section.status {
+                    lgtm::policy::coverage::CoverageStatus::Covered => 0,
+                    lgtm::policy::coverage::CoverageStatus::Partial => 1,
+                    lgtm::policy::coverage::CoverageStatus::Unsupported => 2,
+                };
+                counts[index] += 1;
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    section.heading,
+                    section.status,
+                    section.mechanism,
+                    section.rule_ids.join(","),
+                    section.notes
+                );
+            }
+            println!(
+                "summary: covered={} partial={} unsupported={}",
+                counts[0], counts[1], counts[2]
+            );
             ExitCode::SUCCESS
         }
     }
