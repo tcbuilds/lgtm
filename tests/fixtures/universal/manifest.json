@@ -2,6 +2,10 @@
   "version": 1,
   "cases": [
     {"name":"root-clean","shape":"root","status":"clean"},
+    {"name":"python-monorepo","shape":"python-monorepo","status":"clean"},
+    {"name":"typescript-app","shape":"typescript-app","status":"clean"},
+    {"name":"rust-cli","shape":"rust-cli","status":"clean"},
+    {"name":"mixed-repo","shape":"mixed-repo","status":"clean"},
     {"name":"monorepo-mixed","shape":"monorepo","status":"clean"},
     {"name":"missing-tool","shape":"root","status":"missing-tool"},
     {"name":"malformed-config","shape":"root","status":"malformed-config"},

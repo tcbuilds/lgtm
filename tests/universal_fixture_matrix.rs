@@ -27,6 +27,10 @@ fn manifest_covers_supported_language_families_and_safety_cases() {
     }
     for case in [
         "root-clean",
+        "python-monorepo",
+        "typescript-app",
+        "rust-cli",
+        "mixed-repo",
         "monorepo-mixed",
         "missing-tool",
         "malformed-config",
