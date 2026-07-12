@@ -27,6 +27,7 @@ fn compiles_compact_deduplicated_packet_in_stable_order() {
             .contains("\nREVIEW\n- Review the boundary design.")
     );
     assert!(compiled.packet.contains("Verification required:"));
+    assert!(compiled.packet.contains("Examples (guidance only):"));
     assert!(compiled.packet.contains("Do not claim a check passed"));
     assert!(!compiled.packet.contains("codingStandards.md"));
     assert!(compiled.packet.len() < 4_096, "packet must remain compact");

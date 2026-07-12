@@ -6,6 +6,7 @@ use super::plan::{EnforcementPlan, build_plan};
 
 pub(super) const MAX_RULES: usize = 256;
 const MAX_LINE_BYTES: usize = 512;
+const MAX_PACKET_BYTES: usize = 6 * 1024;
 
 /// Human instruction packet paired with its machine-readable plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,8 +41,34 @@ fn render_packet(rules: &[&Rule], plan: &EnforcementPlan) -> String {
     packet.push_str("\nVerification required:\n");
     append_prefixed(&mut packet, "check", &plan.checks);
     append_prefixed(&mut packet, "evidence", &plan.evidence_required);
+    append_examples(&mut packet, rules);
     packet.push_str("\nDo not claim a check passed unless it was executed successfully.\n");
+    if packet.len() > MAX_PACKET_BYTES {
+        let mut end = MAX_PACKET_BYTES;
+        while !packet.is_char_boundary(end) {
+            end -= 1;
+        }
+        packet.truncate(end);
+        packet.push_str("\n… (packet truncated)\n");
+    }
     packet
+}
+
+fn append_examples(packet: &mut String, rules: &[&Rule]) {
+    let examples: BTreeSet<_> = rules
+        .iter()
+        .filter_map(|rule| rule.examples.first())
+        .map(|example| bounded_line(example))
+        .collect();
+    if examples.is_empty() {
+        return;
+    }
+    packet.push_str("\nExamples (guidance only):\n");
+    for example in examples {
+        packet.push_str("- ");
+        packet.push_str(&example);
+        packet.push('\n');
+    }
 }
 
 fn instructions(rules: &[&Rule], predicate: fn(Level) -> bool) -> Vec<String> {
