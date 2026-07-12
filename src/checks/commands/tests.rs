@@ -106,6 +106,42 @@ fn config_loads_grouped_commands_and_enforces_cap() {
 }
 
 #[test]
+fn config_v2_loads_structured_argv_and_workspace_cwd() {
+    let fixture = Fixture::create();
+    std::fs::create_dir(fixture.root.join(".lgtm")).expect("config directory");
+    let script = fixture.script("pass-v2", 0);
+    let config = serde_json::json!({
+        "version": "2",
+        "profile": "default",
+        "workspaces": [{
+            "id": "root",
+            "language": "shell",
+            "root": ".",
+            "commands": [{
+                "argv": [script],
+                "cwd": ".",
+                "timeout_seconds": 30,
+                "tier": "full",
+                "purpose": "test",
+                "source": "fixture",
+                "confidence": "high"
+            }]
+        }],
+        "disabled_rules": [],
+        "severity_overrides": {}
+    });
+    std::fs::write(
+        fixture.root.join(".lgtm/config.json"),
+        serde_json::to_vec(&config).expect("config JSON"),
+    )
+    .expect("config");
+    let settings = load(&fixture.root).expect("V2 config loads");
+    assert_eq!(settings.structured.len(), 1);
+    let output = run_structured(&fixture.root, &settings.structured);
+    assert_eq!(output.results[0].status, Status::Passed);
+}
+
+#[test]
 fn config_uses_default_and_validates_custom_timeout() {
     let fixture = Fixture::create();
     std::fs::create_dir(fixture.root.join(".lgtm")).unwrap();

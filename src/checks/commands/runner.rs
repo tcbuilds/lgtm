@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use crate::checks::Status;
 
+use super::config::StructuredCommand;
 use super::result::{CommandEvidence, RunResults, not_applicable, result};
 
 pub fn run(root: &Path, commands: &[String], timeout: std::time::Duration) -> RunResults {
@@ -17,6 +18,37 @@ pub fn run(root: &Path, commands: &[String], timeout: std::time::Duration) -> Ru
     }
     for command in commands {
         run_one(root, command, timeout, &mut output);
+    }
+    output
+}
+
+pub fn run_structured(root: &Path, commands: &[StructuredCommand]) -> RunResults {
+    let mut output = RunResults {
+        results: Vec::new(),
+        evidence: Vec::new(),
+    };
+    if commands.is_empty() {
+        output.results.push(not_applicable());
+        return output;
+    }
+    for command in commands {
+        let display = command.argv.join(" ");
+        let started = Instant::now();
+        let mut process = Command::new(&command.argv[0]);
+        process
+            .args(&command.argv[1..])
+            .current_dir(root.join(&command.cwd))
+            .stdin(Stdio::null());
+        let details =
+            crate::checks::gitleaks::runner::run_details_with_timeout(process, command.timeout);
+        let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let code = details.as_ref().and_then(|details| details.code);
+        output.evidence.push(CommandEvidence {
+            command: display.clone(),
+            exit_code: code,
+            duration_ms,
+        });
+        output.results.push(classify(&display, details));
     }
     output
 }

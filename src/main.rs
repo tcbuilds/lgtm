@@ -24,7 +24,14 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Register hooks and scaffold config in the current repository.
-    Init,
+    Init {
+        /// Preview detected workspaces and planned files without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Convert an existing V1 config to structured V2 with a backup.
+        #[arg(long)]
+        migrate_config: bool,
+    },
     /// Run the policy runtime for a single agent lifecycle event.
     Hook {
         /// Lifecycle event that triggered this invocation.
@@ -117,7 +124,10 @@ fn main() -> ExitCode {
 /// stderr and exit successfully so unfinished hooks never wedge an agent session.
 fn run(command: Command) -> ExitCode {
     match command {
-        Command::Init => run_init(),
+        Command::Init {
+            dry_run,
+            migrate_config,
+        } => run_init(dry_run, migrate_config),
         Command::Hook { event } => run_hook(event),
         Command::Doctor => run_doctor(),
         Command::Compile { validate } => run_compile(validate),
@@ -334,8 +344,15 @@ fn compile_exit_code(
 /// current working directory, then prints a concise report to stdout. On
 /// failure the precise cause is written to stderr and the process exits
 /// non-zero without partially reporting success.
-fn run_init() -> ExitCode {
-    match init::run(Path::new(".")) {
+fn run_init(dry_run: bool, migrate_config: bool) -> ExitCode {
+    let result = if migrate_config {
+        init::migrate_config(Path::new("."), dry_run)
+    } else if dry_run {
+        init::preview(Path::new("."))
+    } else {
+        init::run(Path::new("."))
+    };
+    match result {
         Ok(summary) => {
             report_init_summary(&summary);
             ExitCode::SUCCESS
@@ -365,6 +382,14 @@ fn report_init_summary(summary: &init::InitSummary) {
             workspace.language,
             workspace.root.display()
         );
+        for command in &workspace.commands {
+            println!(
+                "      {} [{}] confidence={}",
+                command.argv.join(" "),
+                command.purpose,
+                command.confidence
+            );
+        }
     }
     for (language, commands) in &summary.detection.required_commands {
         println!("  commands ({language}): {}", commands.join(", "));
@@ -470,7 +495,13 @@ mod tests {
     #[test]
     fn parses_init_subcommand() {
         let cli = Cli::try_parse_from(["lgtm", "init"]).expect("init should parse");
-        assert!(matches!(cli.command, Command::Init));
+        assert!(matches!(
+            cli.command,
+            Command::Init {
+                dry_run: false,
+                migrate_config: false
+            }
+        ));
     }
 
     #[test]

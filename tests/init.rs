@@ -21,6 +21,26 @@ fn run_init(repo: &TempRepo) -> std::process::Output {
         .expect("lgtm binary should execute")
 }
 
+fn run_init_dry_run(repo: &TempRepo) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["init", "--dry-run"])
+        .current_dir(repo.path())
+        .output()
+        .expect("lgtm init dry-run should execute")
+}
+
+fn run_migrate(repo: &TempRepo, dry_run: bool) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_lgtm"));
+    command.arg("init").arg("--migrate-config");
+    if dry_run {
+        command.arg("--dry-run");
+    }
+    command
+        .current_dir(repo.path())
+        .output()
+        .expect("lgtm config migration should execute")
+}
+
 #[test]
 fn fresh_python_repo_creates_all_files() {
     let repo = TempRepo::new();
@@ -72,6 +92,55 @@ fn fresh_python_repo_creates_all_files() {
             "settings must wire {event}"
         );
     }
+}
+
+#[test]
+fn init_dry_run_reports_plan_without_writing_files() {
+    let repo = TempRepo::new();
+    repo.write("backend/pyproject.toml", "[tool.ruff]\n");
+    let output = run_init_dry_run(&repo);
+    assert!(output.status.success(), "dry-run must succeed");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("dry-run: no files changed"));
+    assert!(text.contains("files: .lgtm/config.json, .gitignore, .claude/settings.json"));
+    assert!(!repo.exists(".lgtm/config.json"));
+    assert!(!repo.exists(".claude/settings.json"));
+}
+
+#[test]
+fn migrate_config_backs_up_v1_and_writes_validated_v2() {
+    let repo = TempRepo::new();
+    let original = r#"{
+  "version": "1",
+  "profile": "strict",
+  "languages": ["python"],
+  "required_commands": {"python": ["uv run pytest"]},
+  "disabled_rules": ["example"],
+  "severity_overrides": {"example": "warning"}
+}"#;
+    repo.write(".lgtm/config.json", original);
+    let output = run_migrate(&repo, false);
+    assert!(output.status.success(), "migration must succeed");
+    assert_eq!(repo.read(".lgtm/config.v1.bak.json"), original);
+    let config = repo.read_json(".lgtm/config.json");
+    assert_eq!(config["version"], "2");
+    assert_eq!(
+        config["workspaces"][0]["commands"][0]["argv"],
+        serde_json::json!(["uv", "run", "pytest"])
+    );
+    assert_eq!(config["disabled_rules"], serde_json::json!(["example"]));
+}
+
+#[test]
+fn migrate_config_dry_run_preserves_v1_bytes() {
+    let repo = TempRepo::new();
+    let original = r#"{"version":"1","required_commands":{"python":["pytest"]}}"#;
+    repo.write(".lgtm/config.json", original);
+    let output = run_migrate(&repo, true);
+    assert!(output.status.success(), "migration dry-run must succeed");
+    assert_eq!(repo.read(".lgtm/config.json"), original);
+    assert!(!repo.exists(".lgtm/config.v1.bak.json"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("dry-run: no files changed"));
 }
 
 #[test]

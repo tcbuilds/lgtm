@@ -36,7 +36,7 @@ use fs::{commit_write, create_dir_all, preflight_targets, read_if_exists, stage_
 #[cfg(test)]
 use gitignore::evidence_is_ignored;
 use gitignore::{render_gitignore, render_settings};
-pub use runner::run;
+pub use runner::{migrate_config, preview, run};
 pub use settings::{build_config, merge_settings};
 #[cfg(test)]
 use settings::{commands_match, entry_runs_command};

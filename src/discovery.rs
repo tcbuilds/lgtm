@@ -350,6 +350,40 @@ mod tests {
     }
 
     #[test]
+    fn python_workspace_uses_uv_and_project_scoped_tools() {
+        let root =
+            std::env::temp_dir().join(format!("lgtm-discovery-lawsuit-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("backend")).expect("backend");
+        std::fs::write(
+            root.join("backend/pyproject.toml"),
+            "[tool.ruff]\n[tool.mypy]\npackages = [\"records_assistant\"]\n[tool.pytest.ini_options]\n",
+        )
+        .expect("python config");
+        std::fs::write(root.join("backend/uv.lock"), "version = 1\n").expect("uv lock");
+        let workspace = discover(&root)
+            .expect("discovery")
+            .into_iter()
+            .find(|workspace| workspace.language == "python")
+            .expect("python workspace");
+        let argv: Vec<Vec<String>> = workspace
+            .commands
+            .iter()
+            .map(|command| command.argv.clone())
+            .collect();
+        assert!(argv.iter().any(|command| {
+            command.iter().map(String::as_str).collect::<Vec<_>>() == ["uv", "run", "ruff", "check"]
+        }));
+        assert!(argv.iter().any(|command| {
+            command.iter().map(String::as_str).collect::<Vec<_>>() == ["uv", "run", "mypy"]
+        }));
+        assert!(
+            argv.iter()
+                .all(|command| !command.contains(&"--strict".to_string()))
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn ignored_trees_are_not_scanned() {
         let root =
             std::env::temp_dir().join(format!("lgtm-discovery-ignore-{}", std::process::id()));

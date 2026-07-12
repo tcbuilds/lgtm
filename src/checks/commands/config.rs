@@ -1,5 +1,6 @@
 use std::io::Read;
 use std::path::Path;
+use std::path::PathBuf;
 
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 const MAX_COMMANDS: usize = 64;
@@ -9,6 +10,14 @@ const MAX_TIMEOUT_SECONDS: u64 = 3600;
 #[derive(Debug)]
 pub struct Settings {
     pub commands: Vec<String>,
+    pub structured: Vec<StructuredCommand>,
+    pub timeout: std::time::Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructuredCommand {
+    pub argv: Vec<String>,
+    pub cwd: PathBuf,
     pub timeout: std::time::Duration,
 }
 
@@ -42,10 +51,34 @@ pub fn load(root: &Path) -> Result<Settings, String> {
     }
     let value: serde_json::Value =
         serde_json::from_str(&raw).map_err(|error| format!("parse required commands ({error})"))?;
+    if value.get("version").and_then(serde_json::Value::as_str) == Some(crate::config_v2::VERSION) {
+        let config = crate::config_v2::parse(&value).map_err(|error| error.to_string())?;
+        let mut commands = Vec::new();
+        let mut structured = Vec::new();
+        for workspace in config.workspaces {
+            for command in workspace.commands {
+                commands.push(command.argv.join(" "));
+                structured.push(StructuredCommand {
+                    argv: command.argv,
+                    cwd: command.cwd,
+                    timeout: std::time::Duration::from_secs(command.timeout_seconds),
+                });
+            }
+        }
+        if commands.len() > MAX_COMMANDS {
+            return Err(format!("workspaces exceed {MAX_COMMANDS} commands"));
+        }
+        return Ok(Settings {
+            commands,
+            structured,
+            timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
+        });
+    }
     let timeout = timeout(&value)?;
     let Some(required) = value.get("required_commands") else {
         return Ok(Settings {
             commands: Vec::new(),
+            structured: Vec::new(),
             timeout,
         });
     };
@@ -67,12 +100,17 @@ pub fn load(root: &Path) -> Result<Settings, String> {
             }
         }
     }
-    Ok(Settings { commands, timeout })
+    Ok(Settings {
+        commands,
+        structured: Vec::new(),
+        timeout,
+    })
 }
 
 fn defaults() -> Settings {
     Settings {
         commands: Vec::new(),
+        structured: Vec::new(),
         timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
     }
 }
