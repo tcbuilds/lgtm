@@ -102,6 +102,9 @@ fn scan_target(root: &Path, file_path: &str) -> Vec<EnforcementResult> {
             Check::NativeLanguages => {
                 results.extend(languages::scan(std::slice::from_ref(&resolved)));
                 results.extend(structure::scan(std::slice::from_ref(&resolved)));
+                results.extend(crate::checks::modules::scan(std::slice::from_ref(
+                    &resolved,
+                )));
             }
             _ => unreachable!("fast tier contains only fast checks"),
         }

@@ -2365,6 +2365,67 @@
     ]
   },
   {
+    "id": "module-boundary-review",
+    "title": "Review module boundaries",
+    "description": "Modules should not form deterministic dependency cycles; domain code should remain separated from infrastructure concerns.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [
+      {
+        "language": "all",
+        "text": "good: depend through an adapter; bad: module A imports B while B imports A",
+        "provenance": "codingStandards.md#code-organization",
+        "schematic": true
+      }
+    ],
+    "limitations": [
+      "Only relative source imports visible in the bounded touched-file graph are analyzed; architectural layering remains review guidance."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "error",
+    "level": "must",
+    "category": "architecture",
+    "applies_to": {
+      "languages": [
+        "python",
+        "rust",
+        "typescript",
+        "javascript"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "import",
+        "module"
+      ]
+    },
+    "instruction": "Avoid dependency cycles and keep domain code behind explicit adapter seams.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.module-boundaries"
+      ]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": [
+        "check_result",
+        "changed_locations"
+      ]
+    },
+    "references": [
+      "codingStandards.md#code-organization"
+    ]
+  },
+  {
     "id": "error-contract-review",
     "title": "Review boundary error contracts",
     "description": "Boundary failures should expose an action, entity, specific reason, and retryability instead of opaque messages.",
