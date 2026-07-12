@@ -229,3 +229,22 @@ fn coverage_without_a_configured_tool_is_not_applicable() {
     assert!(evidence[0].line_percent.is_none());
     assert!(evidence[0].branch_percent.is_none());
 }
+
+#[test]
+fn configured_coverage_records_metrics_and_threshold_status() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body("coverage", "echo 'line coverage: 85% branch coverage: 90%'");
+    let command = CoverageCommand {
+        workspace_id: "backend".to_string(),
+        argv: vec![tool],
+        cwd: ".".into(),
+        timeout: std::time::Duration::from_secs(30),
+        scope: "unit".to_string(),
+        line_threshold_percent: Some(80),
+        branch_threshold_percent: Some(90),
+    };
+    let evidence = run_coverage(&fixture.root, &[command]);
+    assert_eq!(evidence[0].status, "passed");
+    assert_eq!(evidence[0].line_percent, Some(85.0));
+    assert_eq!(evidence[0].branch_percent, Some(90.0));
+}

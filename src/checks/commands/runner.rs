@@ -127,17 +127,17 @@ pub fn run_coverage(root: &Path, commands: &[CoverageCommand]) -> Vec<CoverageEv
 fn parse_metric(output: &str, label: &str) -> Option<f64> {
     output.lines().find_map(|line| {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains(label) || !lower.contains('%') {
+        let start = lower.find(label)?;
+        let suffix = &lower[start + label.len()..];
+        if !suffix.contains('%') {
             return None;
         }
-        let percent = lower
-            .split('%')
-            .next()?
+        let percent = suffix
             .chars()
-            .rev()
+            .skip_while(|character| !character.is_ascii_digit())
             .take_while(char::is_ascii_digit)
             .collect::<String>();
-        percent.chars().rev().collect::<String>().parse().ok()
+        percent.parse().ok()
     })
 }
 
