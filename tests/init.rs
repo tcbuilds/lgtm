@@ -7,7 +7,7 @@
 
 use std::process::Command;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 mod common;
 use common::TempRepo;
@@ -108,7 +108,7 @@ fn init_dry_run_reports_plan_without_writing_files() {
 }
 
 #[test]
-fn init_refuses_medium_confidence_fallbacks_without_acceptance() {
+fn init_accepts_declared_pytest_without_guessing_other_tools() {
     let repo = TempRepo::new();
     repo.write("requirements.txt", "pytest\n");
     let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
@@ -116,9 +116,12 @@ fn init_refuses_medium_confidence_fallbacks_without_acceptance() {
         .current_dir(repo.path())
         .output()
         .expect("init executes");
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("low-confidence commands"));
-    assert!(!repo.exists(".lgtm/config.json"));
+    assert!(
+        output.status.success(),
+        "declared pytest should be accepted"
+    );
+    let config = repo.read_json(".lgtm/config.json");
+    assert_eq!(config["required_commands"]["python"], json!(["pytest"]));
 }
 
 #[test]

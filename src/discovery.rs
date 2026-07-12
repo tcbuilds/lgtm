@@ -270,26 +270,43 @@ fn python_commands(root: &Path) -> Vec<(Vec<String>, &'static str, &'static str)
     .into_iter()
     .map(String::from)
     .collect();
-    let configured = has_table(&pyproject, "tool.ruff")
-        || has_table(&pyproject, "tool.mypy")
-        || pyproject
-            .lines()
-            .any(|line| line.trim().starts_with("[tool.pytest"));
+    let ruff_configured = has_table(&pyproject, "tool.ruff") || has_dependency(root, "ruff");
+    let mypy_configured = has_table(&pyproject, "tool.mypy") || has_dependency(root, "mypy");
+    let pytest_configured = pyproject
+        .lines()
+        .any(|line| line.trim().starts_with("[tool.pytest"))
+        || root.join("pytest.ini").is_file()
+        || root.join("tox.ini").is_file()
+        || has_dependency(root, "pytest");
     let mut commands = Vec::new();
-    for (tool, args, purpose) in [
-        ("ruff", vec!["check"], "lint"),
-        ("ruff", vec!["format", "--check"], "format"),
-        ("mypy", vec![], "types"),
-        ("pytest", vec![], "test"),
+    for (tool, args, purpose, enabled) in [
+        ("ruff", vec!["check"], "lint", ruff_configured),
+        ("ruff", vec!["format", "--check"], "format", ruff_configured),
+        ("mypy", vec![], "types", mypy_configured),
+        ("pytest", vec![], "test", pytest_configured),
     ] {
+        if !enabled {
+            continue;
+        }
         let mut argv = prefix.clone();
         argv.push(tool.to_string());
         argv.extend(args.into_iter().map(String::from));
-        if !configured || tool == "pytest" || has_table(&pyproject, &format!("tool.{tool}")) {
-            commands.push((argv, purpose, if configured { "high" } else { "medium" }));
-        }
+        commands.push((argv, purpose, "high"));
     }
     commands
+}
+
+fn has_dependency(root: &Path, package: &str) -> bool {
+    let requirements = read_optional_bounded(&root.join("requirements.txt"), MAX_METADATA_BYTES);
+    requirements.lines().any(|line| {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        let name = line
+            .split(['<', '>', '=', '!', '~', '[', ';'])
+            .next()
+            .unwrap_or_default()
+            .trim();
+        name.eq_ignore_ascii_case(package)
+    })
 }
 
 fn typescript_commands(root: &Path) -> Vec<(Vec<String>, &'static str, &'static str)> {
@@ -712,6 +729,28 @@ mod tests {
                 .collect::<Vec<_>>()
                 == ["poetry", "run"]
         }));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn python_workspace_uses_declared_pytest_without_guessing_other_tools() {
+        let root =
+            std::env::temp_dir().join(format!("lgtm-discovery-pytest-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(root.join("pytest.ini"), "[pytest]\ntestpaths = tests\n")
+            .expect("pytest config");
+        std::fs::write(root.join("requirements.txt"), "pytest>=8\n").expect("requirements");
+        let workspace = discover(&root)
+            .expect("discovery")
+            .into_iter()
+            .find(|workspace| workspace.language == "python")
+            .expect("python workspace");
+        let commands: Vec<Vec<String>> = workspace
+            .commands
+            .into_iter()
+            .map(|command| command.argv)
+            .collect();
+        assert_eq!(commands, vec![vec!["pytest".to_string()]]);
         std::fs::remove_dir_all(root).ok();
     }
 

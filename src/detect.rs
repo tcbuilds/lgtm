@@ -92,13 +92,9 @@ fn has_top_level_python_file(root: &Path) -> bool {
 /// The check commands to require for Python, derived from detected tooling.
 ///
 /// A tool is included when its configuration table is present in
-/// `pyproject.toml`: `[tool.ruff]`, `[tool.mypy]`, or a `[tool.pytest...]`
-/// table (matched on a line-anchored table header, not a raw substring, so an
-/// unrelated mention of the tool name elsewhere in the file does not trigger
-/// it). When no tool table is found, the standard Python trio (ruff, mypy,
-/// pytest) is required so an initialized repo still enforces a baseline rather
-/// than an empty command set. The mypy target is `src` only when a `src/`
-/// directory exists, otherwise `.`.
+/// A tool is included when its configuration table or dependency declaration is
+/// present. `pytest.ini` and `tox.ini` also prove pytest. Unknown tools are not
+/// guessed; users can add explicit commands in `.lgtm/config.json`.
 fn python_commands(root: &Path) -> Vec<String> {
     let config_text = read_optional_bounded(&root.join("pyproject.toml"), MAX_METADATA_BYTES);
     let pytest_command = if uses_uv(root, &config_text) {
@@ -113,24 +109,34 @@ fn python_commands(root: &Path) -> Vec<String> {
     };
 
     let mut commands = Vec::new();
-    if has_toml_table(&config_text, "tool.ruff") {
+    if has_toml_table(&config_text, "tool.ruff") || has_dependency(root, "ruff") {
         commands.push("ruff check .".to_string());
+        commands.push("ruff format --check".to_string());
     }
-    if has_toml_table(&config_text, "tool.mypy") {
+    if has_toml_table(&config_text, "tool.mypy") || has_dependency(root, "mypy") {
         commands.push(mypy_command.clone());
     }
-    if has_pytest_table(&config_text) {
+    if has_pytest_table(&config_text)
+        || root.join("pytest.ini").is_file()
+        || root.join("tox.ini").is_file()
+        || has_dependency(root, "pytest")
+    {
         commands.push(pytest_command.to_string());
     }
-
-    if commands.is_empty() {
-        return vec![
-            "ruff check .".to_string(),
-            mypy_command,
-            pytest_command.to_string(),
-        ];
-    }
     commands
+}
+
+fn has_dependency(root: &Path, package: &str) -> bool {
+    let requirements = read_optional_bounded(&root.join("requirements.txt"), MAX_METADATA_BYTES);
+    requirements.lines().any(|line| {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        let name = line
+            .split(['<', '>', '=', '!', '~', '[', ';'])
+            .next()
+            .unwrap_or_default()
+            .trim();
+        name.eq_ignore_ascii_case(package)
+    })
 }
 
 fn uses_uv(root: &Path, pyproject: &str) -> bool {
@@ -174,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_pyproject_falls_back_to_standard_trio() {
+    fn oversized_pyproject_does_not_invent_commands() {
         let unique = format!(
             "lgtm-detect-{}-{:?}",
             std::process::id(),
@@ -192,14 +198,7 @@ mod tests {
 
         std::fs::remove_dir_all(&root).ok();
 
-        assert_eq!(
-            commands,
-            vec![
-                "ruff check .".to_string(),
-                "mypy --strict .".to_string(),
-                "pytest".to_string(),
-            ],
-        );
+        assert!(commands.is_empty());
     }
 
     #[test]
@@ -211,6 +210,16 @@ mod tests {
         assert_eq!(python_commands(&root), ["pytest"]);
         std::fs::write(root.join("uv.lock"), "version = 1\n").expect("uv lock");
         assert_eq!(python_commands(&root), ["uv run pytest"]);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn pytest_ini_and_requirements_prove_pytest_only() {
+        let root = std::env::temp_dir().join(format!("lgtm-detect-pytest-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temp dir");
+        std::fs::write(root.join("pytest.ini"), "[pytest]\n").expect("pytest config");
+        std::fs::write(root.join("requirements.txt"), "pytest>=8\n").expect("requirements");
+        assert_eq!(python_commands(&root), ["pytest"]);
         std::fs::remove_dir_all(root).ok();
     }
 }
