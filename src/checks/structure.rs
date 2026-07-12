@@ -104,7 +104,7 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
         ),
         result(
             "file-size",
-            status(&file_findings),
+            file_size_status(&analyses),
             file_findings,
             "File-size review found files over 300 lines.",
         ),
@@ -144,6 +144,22 @@ fn threshold_status(
     }
 }
 
+fn file_size_status(analyses: &[(String, crate::structure::Analysis)]) -> Status {
+    if analyses
+        .iter()
+        .any(|(_, analysis)| analysis.file_lines >= 500)
+    {
+        Status::Failed
+    } else if analyses
+        .iter()
+        .any(|(_, analysis)| analysis.file_lines > 300)
+    {
+        Status::Warning
+    } else {
+        Status::Passed
+    }
+}
+
 fn result(
     rule_id: &str,
     status: Status,
@@ -154,7 +170,7 @@ fn result(
     EnforcementResult {
         rule_id: rule_id.to_string(),
         status,
-        severity: if rule_id == "function-size" && failed {
+        severity: if matches!(rule_id, "function-size" | "file-size") && failed {
             Severity::Error
         } else {
             Severity::Warning
@@ -233,6 +249,20 @@ mod tests {
         std::fs::write(&path, source).expect("fixture source");
         let findings = scan(&[path.to_string_lossy().into_owned()]);
         assert_eq!(findings[0].status, Status::Passed);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn file_size_has_review_and_hard_thresholds() {
+        let path = std::env::temp_dir().join(format!("lgtm-file-size-{}.py", std::process::id()));
+        std::fs::write(&path, "value = 1\n".repeat(301)).expect("fixture source");
+        let file = path.to_string_lossy().into_owned();
+        let findings = scan(std::slice::from_ref(&file));
+        assert_eq!(findings[1].status, Status::Warning);
+        std::fs::write(&path, "value = 1\n".repeat(500)).expect("hard fixture source");
+        let findings = scan(&[file]);
+        assert_eq!(findings[1].status, Status::Failed);
+        assert_eq!(findings[1].severity, Severity::Error);
         std::fs::remove_file(path).ok();
     }
 }
