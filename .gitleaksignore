@@ -1,2 +1,2 @@
 # Intentional fake credential used to prove the secret gate blocks realistic input.
-ef7a976476b0ec73d6e5efe4b14fc4c096626dfb:tests/post_tool_use.rs:generic-api-key:75
+84afa981b63d68645e5108952823841dd7c0c165:tests/post_tool_use.rs:generic-api-key:75
