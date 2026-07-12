@@ -133,9 +133,12 @@ pub fn run_with_options(root: &Path, accept_guesses: bool) -> Result<InitSummary
     let existing_config = validate_config(&config_path)?;
     let existing_config_contents = existing_config
         .as_ref()
-        .map(|(_, contents)| contents.clone())
+        .map(|config| config.contents.clone())
         .unwrap_or_default();
-    let existing_config = existing_config.map(|(object, _)| object);
+    let needs_repair = existing_config
+        .as_ref()
+        .is_some_and(|config| config.needs_repair);
+    let existing_config = existing_config.map(|config| config.object);
 
     let evidence_dir = root.join(".lgtm").join("evidence");
     let gitignore_path = root.join(".gitignore");
@@ -154,6 +157,7 @@ pub fn run_with_options(root: &Path, accept_guesses: bool) -> Result<InitSummary
         &workspaces,
         existing_config,
         &existing_config_contents,
+        needs_repair,
         &mut notes,
     )?;
     let gitignore_render = render_gitignore(&gitignore_path, &mut notes)?;

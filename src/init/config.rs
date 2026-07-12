@@ -46,25 +46,23 @@ pub(super) fn validate_settings(path: &Path) -> Result<ValidatedSettings, InitEr
     Ok(Some(object))
 }
 
-/// The validated, parsed `.lgtm/config.json` object paired with the exact bytes
-/// read from disk, or `None` when the file is absent or blank. The raw bytes are
-/// threaded to [`render_config`] for its skip-if-identical comparison so the file
-/// is never re-read after validation.
-pub(super) type ValidatedConfig = Option<(Map<String, Value>, String)>;
+/// Validated `.lgtm/config.json` data plus whether init should rewrite it.
+pub(super) struct ValidatedConfig {
+    pub(super) object: Map<String, Value>,
+    pub(super) contents: String,
+    pub(super) needs_repair: bool,
+}
+
+pub(super) type OptionalValidatedConfig = Option<ValidatedConfig>;
 
 /// Read and validate an existing `.lgtm/config.json` without writing anything.
 ///
-/// Returns `Ok(None)` when the file is absent or blank, `Ok(Some((object,
-/// contents)))` when it parses to a well-typed JSON object (a user-edited config
-/// to preserve) paired with the exact bytes read from disk, and an error when it
-/// is malformed, not an object, or carries a preserved field whose JSON type is
-/// wrong. The raw contents are returned so [`render_config`] can perform its
-/// skip-if-identical comparison against the bytes validated here rather than
-/// re-reading the file, which both avoids a second unbounded read and closes the
-/// swap-between-validate-and-render race. V2 configs are parsed against the
-/// strict structured schema; legacy fields are type-checked only for V1
-/// migration.
-pub(super) fn validate_config(path: &Path) -> Result<ValidatedConfig, InitError> {
+/// Returns `Ok(None)` when the file is absent or blank, or validated data paired
+/// with the exact bytes read from disk. The raw contents are returned so
+/// [`render_config`] can avoid a second read. Strict V2 parsing rejects unknown
+/// fields, except obsolete V1 gate fields are removed when the remaining V2
+/// config validates; `needs_repair` then makes init rewrite that file.
+pub(super) fn validate_config(path: &Path) -> Result<OptionalValidatedConfig, InitError> {
     let contents = match read_if_exists(path)? {
         None => return Ok(None),
         Some(contents) if contents.trim().is_empty() => return Ok(None),
@@ -91,15 +89,33 @@ pub(super) fn validate_config(path: &Path) -> Result<ValidatedConfig, InitError>
             reason,
         }
     })?;
-    if object.get("version").and_then(Value::as_str) == Some("2") {
-        crate::config_v2::parse(&value).map_err(|error| InitError::MalformedConfig {
-            path: path.to_path_buf(),
-            reason: error.to_string(),
-        })?;
-    }
-    validate_optional_field(path, object, "languages", is_string_array)?;
-    validate_optional_field(path, object, "disabled_rules", is_string_array)?;
-    validate_optional_field(path, object, "severity_overrides", is_string_valued_object)?;
+    let is_v2 = object.get("version").and_then(Value::as_str) == Some("2");
+    let (object, needs_repair) = if is_v2 {
+        match crate::config_v2::parse(&value) {
+            Ok(_) => (object.clone(), false),
+            Err(error) => {
+                let mut repaired = object.clone();
+                let removed_languages = repaired.remove("languages").is_some();
+                let removed_commands = repaired.remove("required_commands").is_some();
+                let repaired_value = Value::Object(repaired.clone());
+                if (removed_languages || removed_commands)
+                    && crate::config_v2::parse(&repaired_value).is_ok()
+                {
+                    (repaired, true)
+                } else {
+                    return Err(InitError::MalformedConfig {
+                        path: path.to_path_buf(),
+                        reason: error.to_string(),
+                    });
+                }
+            }
+        }
+    } else {
+        validate_optional_field(path, object, "languages", is_string_array)?;
+        validate_optional_field(path, object, "disabled_rules", is_string_array)?;
+        validate_optional_field(path, object, "severity_overrides", is_string_valued_object)?;
+        (object.clone(), false)
+    };
     if let Some(value) = object.get("command_timeout_seconds")
         && !value
             .as_u64()
@@ -125,7 +141,11 @@ pub(super) fn validate_config(path: &Path) -> Result<ValidatedConfig, InitError>
         }
     }
 
-    Ok(Some((object.clone(), contents)))
+    Ok(Some(ValidatedConfig {
+        object,
+        contents,
+        needs_repair,
+    }))
 }
 
 fn validate_optional_field(
@@ -176,6 +196,7 @@ pub(super) fn render_config(
     workspaces: &[Workspace],
     existing_config: Option<Map<String, Value>>,
     existing_contents: &str,
+    needs_repair: bool,
     notes: &mut Vec<String>,
 ) -> Result<Option<Vec<u8>>, InitError> {
     let desired = match existing_config {
@@ -189,6 +210,12 @@ pub(super) fn render_config(
                         reason: error.to_string(),
                     })?;
             serde_json::to_value(migrated).expect("V2 config model serializes")
+        }
+        Some(existing) if needs_repair => {
+            notes.push(
+                "removed obsolete V1 languages and required_commands from V2 config".to_string(),
+            );
+            Value::Object(existing)
         }
         Some(_existing) => {
             notes.push("preserved existing .lgtm/config.json".to_string());

@@ -533,7 +533,7 @@ fn config_is_preserved_on_reinit() {
 }
 
 #[test]
-fn v2_config_with_legacy_fields_is_refused_without_mutation() {
+fn v2_config_with_legacy_fields_is_repaired() {
     let repo = TempRepo::new();
     let config = r#"{
         "version": "2",
@@ -543,6 +543,31 @@ fn v2_config_with_legacy_fields_is_refused_without_mutation() {
         "severity_overrides": {},
         "languages": ["python"],
         "required_commands": {"python": ["pytest"]}
+    }"#;
+    repo.write(".lgtm/config.json", config);
+
+    let output = run_init(&repo);
+    assert!(output.status.success());
+    let repaired = repo.read_json(".lgtm/config.json");
+    assert!(repaired.get("languages").is_none());
+    assert!(repaired.get("required_commands").is_none());
+    assert!(
+        String::from_utf8(output.stdout)
+            .expect("stderr utf-8")
+            .contains("removed obsolete V1 languages and required_commands")
+    );
+}
+
+#[test]
+fn v2_config_with_unrelated_unknown_field_is_refused_without_mutation() {
+    let repo = TempRepo::new();
+    let config = r#"{
+        "version": "2",
+        "profile": "default",
+        "workspaces": [],
+        "disabled_rules": [],
+        "severity_overrides": {},
+        "unexpected": true
     }"#;
     repo.write(".lgtm/config.json", config);
 
