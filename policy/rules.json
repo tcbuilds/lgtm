@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "sensitive-logging-review",
+    "title": "Review sensitive logging",
+    "description": "Logs must not expose passwords, tokens, cookies, auth headers, raw payloads, or PII.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [{"language": "all", "text": "good: redact auth headers before logging; bad: logger.info('token=%s', token)", "provenance": "codingStandards.md#observability-standards", "schematic": true}],
+    "limitations": ["Lexical signals are review findings; wrapper output is sanitized and no secret value is echoed."],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "security",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["logging", "auth", "credential", "payload"]},
+    "instruction": "Redact or remove credentials, auth headers, cookies, PII, and raw payloads from logs; never echo secret values in findings.",
+    "enforcement": {"mode": "static", "checks": ["native.sensitive-logging"]},
+    "overridable": true,
+    "evidence": {"required": ["check_result", "changed_locations"]},
+    "references": ["codingStandards.md#observability-standards"]
+  },
+  {
     "id": "structured-observability-review",
     "title": "Review structured service observability",
     "description": "Long-running services and workers should expose structured logs, correlation IDs, health checks, and metrics for latency, errors, queues, retries, and drops.",

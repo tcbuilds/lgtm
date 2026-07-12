@@ -15,6 +15,7 @@ pub mod diff;
 #[path = "gitleaks/api.rs"]
 pub mod gitleaks;
 pub mod languages;
+pub mod logging;
 pub mod modules;
 pub mod naming;
 pub mod ruff;
