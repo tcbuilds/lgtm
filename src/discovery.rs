@@ -409,6 +409,13 @@ mod tests {
         assert!(argv.iter().any(|command| {
             command.iter().map(String::as_str).collect::<Vec<_>>() == ["uv", "run", "mypy"]
         }));
+        assert!(argv.iter().any(|command| {
+            command.iter().map(String::as_str).collect::<Vec<_>>()
+                == ["uv", "run", "ruff", "format", "--check"]
+        }));
+        assert!(argv.iter().any(|command| {
+            command.iter().map(String::as_str).collect::<Vec<_>>() == ["uv", "run", "pytest"]
+        }));
         assert!(
             argv.iter()
                 .all(|command| !command.contains(&"--strict".to_string()))
