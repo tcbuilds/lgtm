@@ -62,9 +62,11 @@ test ! -e .githooks/pre-push || {
   echo 'Refusing to replace existing .githooks/pre-push' >&2
   exit 1
 }
+hook_tmp=$(mktemp .githooks/.pre-push.XXXXXX)
 curl -fsSL https://raw.githubusercontent.com/tcbuilds/lgtm/main/scripts/lgtm-pre-push \
-  -o .githooks/pre-push
-chmod +x .githooks/pre-push
+  -o "$hook_tmp"
+chmod 755 "$hook_tmp"
+mv "$hook_tmp" .githooks/pre-push
 git config core.hooksPath .githooks
 ```
 
