@@ -8,6 +8,15 @@ pub(super) fn render_gitignore(
 
     match existing {
         Some(contents) if evidence_is_ignored(&contents) => {
+            if contents
+                .lines()
+                .any(|line| line.trim() == "!.lgtm/evidence/")
+            {
+                notes.push(
+                    "contradictory .gitignore negation re-includes .lgtm/evidence/; remove it"
+                        .to_string(),
+                );
+            }
             if !gitignore_has_explicit_evidence_rule(&contents) {
                 notes.push(
                     ".gitignore ignores .lgtm/ wholesale; .lgtm/config.json will be untracked"
@@ -17,6 +26,15 @@ pub(super) fn render_gitignore(
             Ok(None)
         }
         Some(contents) => {
+            if contents
+                .lines()
+                .any(|line| line.trim() == "!.lgtm/evidence/")
+            {
+                notes.push(
+                    "contradictory .gitignore negation re-includes .lgtm/evidence/; remove it"
+                        .to_string(),
+                );
+            }
             let newline = if contents.contains("\r\n") {
                 "\r\n"
             } else {

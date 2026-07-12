@@ -209,11 +209,35 @@ fn version_mismatch_is_reported_as_malformed() {
     let temp = TempDir::new();
     temp.write(
         ".lgtm/config.json",
-        &json!({ "version": "2", "profile": "default" }).to_string(),
+        &json!({ "version": "3", "profile": "default" }).to_string(),
     );
     let stdin = json!({ "cwd": temp.path.to_string_lossy() }).to_string();
     let context = additional_context(&run_capture(&stdin));
-    assert!(context.contains("config version mismatch: expected `1`, found `2`"));
+    assert!(context.contains("config version mismatch: expected `1`, found `3`"));
+}
+
+#[test]
+fn v2_config_surfaces_workspace_languages_in_context() {
+    let temp = TempDir::new();
+    temp.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "frontend",
+                "language": "typescript",
+                "root": "frontend",
+                "commands": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    let stdin = json!({ "cwd": temp.path.to_string_lossy() }).to_string();
+    let context = additional_context(&run_capture(&stdin));
+    assert!(context.contains("Configured languages: typescript."));
 }
 
 #[test]

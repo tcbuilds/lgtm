@@ -70,6 +70,24 @@ fn parse_config(mut file: std::fs::File) -> ConfigState {
         Ok(compatibility) => compatibility,
         Err(error) => return ConfigState::Malformed(error),
     };
+    if compatibility == crate::policy::config_version::Compatibility::CurrentV2 {
+        let v2 = match crate::config_v2::parse(&value) {
+            Ok(config) => config,
+            Err(error) => return ConfigState::Malformed(error.to_string()),
+        };
+        let mut languages: Vec<String> = v2
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.language.clone())
+            .collect();
+        languages.sort();
+        languages.dedup();
+        return ConfigState::Present(Config {
+            profile: v2.profile,
+            languages,
+            is_legacy_version: false,
+        });
+    }
     match serde_json::from_value::<Config>(value) {
         Ok(mut config) => match crate::policy::profile::validate_name(&config.profile) {
             Ok(()) => {

@@ -72,6 +72,10 @@ pub fn preview(root: &Path) -> Result<InitSummary, InitError> {
     let _ = validate_config(&config_path)?;
     let mut notes = vec!["dry-run: no files changed".to_string()];
     note_unsupported_repo(&detection, &mut notes);
+    notes.push(
+        "track .lgtm/config.json and .claude/settings.json; only .lgtm/evidence/ is transient"
+            .to_string(),
+    );
     for workspace in &workspaces {
         if workspace.commands.is_empty() {
             notes.push(format!(
@@ -116,6 +120,10 @@ pub fn run(root: &Path) -> Result<InitSummary, InitError> {
     let mut notes = Vec::new();
 
     note_unsupported_repo(&detection, &mut notes);
+    notes.push(
+        "track .lgtm/config.json and .claude/settings.json; only .lgtm/evidence/ is transient"
+            .to_string(),
+    );
 
     let config_render = render_config(
         &detection,

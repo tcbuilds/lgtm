@@ -77,6 +77,21 @@ enum Command {
         #[command(subcommand)]
         command: PolicyCommand,
     },
+    /// Validate and inspect repository configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Validate the repository config without writing.
+    Validate,
+    /// Print the repository config as formatted JSON.
+    Show,
+    /// Report stale workspace paths and missing command binaries.
+    Doctor,
 }
 
 #[derive(Debug, Subcommand)]
@@ -170,6 +185,7 @@ fn run(command: Command) -> ExitCode {
         } => run_waive(&rule, &reason, &owner, &expires),
         Command::Update { check, version } => run_update(check, version.as_deref()),
         Command::Policy { command } => run_policy(command),
+        Command::Config { command } => run_config(command),
     }
 }
 
@@ -370,6 +386,105 @@ fn run_policy_explain(
     }
     println!("\npacket:\n{}", compiled.packet);
     ExitCode::SUCCESS
+}
+
+fn run_config(command: ConfigCommand) -> ExitCode {
+    let root = match std::env::current_dir() {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("config failed: resolve cwd ({error})");
+            return ExitCode::FAILURE;
+        }
+    };
+    let path = root.join(".lgtm/config.json");
+    let raw = lgtm::fsutil::read_optional_bounded(&path, 256 * 1024);
+    if raw.trim().is_empty() {
+        eprintln!("config failed: .lgtm/config.json is missing or empty");
+        return ExitCode::FAILURE;
+    }
+    let value: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("config failed: invalid JSON ({error})");
+            return ExitCode::FAILURE;
+        }
+    };
+    match command {
+        ConfigCommand::Validate => {
+            if value.get("version").and_then(serde_json::Value::as_str)
+                == Some(lgtm::config_v2::VERSION)
+            {
+                match lgtm::config_v2::parse(&value) {
+                    Ok(_) => println!("config valid: V2"),
+                    Err(error) => {
+                        eprintln!("config invalid: {error}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            } else if let Err(error) = lgtm::checks::commands::load(&root) {
+                eprintln!("config invalid: {error}");
+                return ExitCode::FAILURE;
+            } else {
+                println!("config valid: V1 compatibility");
+            }
+            ExitCode::SUCCESS
+        }
+        ConfigCommand::Show => write_json(&value),
+        ConfigCommand::Doctor => {
+            if value.get("version").and_then(serde_json::Value::as_str)
+                != Some(lgtm::config_v2::VERSION)
+            {
+                println!("config doctor: V1 compatibility mode; run `lgtm init --migrate-config`");
+                return ExitCode::SUCCESS;
+            }
+            let config = match lgtm::config_v2::parse(&value) {
+                Ok(config) => config,
+                Err(error) => {
+                    eprintln!("config doctor failed: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut findings = 0_usize;
+            for workspace in &config.workspaces {
+                let workspace_root = root.join(&workspace.root);
+                if !workspace_root.is_dir() {
+                    findings += 1;
+                    println!(
+                        "STALE workspace={} root={}",
+                        workspace.id,
+                        workspace.root.display()
+                    );
+                }
+                for command in &workspace.commands {
+                    if !command_available(&command.argv[0], &workspace_root) {
+                        findings += 1;
+                        println!(
+                            "MISSING workspace={} command={}",
+                            workspace.id, command.argv[0]
+                        );
+                    }
+                }
+            }
+            if findings == 0 {
+                println!("config doctor: clean");
+            } else {
+                println!(
+                    "config doctor: {findings} finding(s); propose repair with `lgtm init --dry-run`"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+fn command_available(command: &str, cwd: &Path) -> bool {
+    let path = Path::new(command);
+    if path.components().count() > 1 {
+        return cwd.join(path).is_file() || path.is_file();
+    }
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|directory| directory.join(command).is_file())
+    })
 }
 
 fn write_json<T: serde::Serialize>(value: &T) -> ExitCode {
@@ -656,6 +771,13 @@ mod tests {
     fn parses_doctor_subcommand() {
         let cli = Cli::try_parse_from(["lgtm", "doctor"]).expect("doctor should parse");
         assert!(matches!(cli.command, Command::Doctor));
+    }
+
+    #[test]
+    fn parses_config_subcommands() {
+        let cli =
+            Cli::try_parse_from(["lgtm", "config", "doctor"]).expect("config doctor should parse");
+        assert!(matches!(cli.command, Command::Config { .. }));
     }
 
     #[test]

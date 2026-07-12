@@ -17,6 +17,49 @@ pub fn select_rules<'a>(
     selected
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SelectionDecision {
+    pub rule_id: String,
+    pub selected: bool,
+    pub reason: String,
+}
+
+pub fn explain_rules(
+    context: &TaskContext,
+    rules: &[Rule],
+    change_type: ChangeType,
+) -> Vec<SelectionDecision> {
+    let mut decisions: Vec<_> = rules
+        .iter()
+        .map(|rule| SelectionDecision {
+            rule_id: rule.id.clone(),
+            selected: rule_matches(rule, context, change_type),
+            reason: selection_reason(rule, context, change_type),
+        })
+        .collect();
+    decisions.sort_unstable_by(|left, right| left.rule_id.cmp(&right.rule_id));
+    decisions
+}
+
+fn selection_reason(rule: &Rule, context: &TaskContext, change_type: ChangeType) -> String {
+    if !matches_values(&rule.applies_to.languages, &context.languages) {
+        return "language scope did not match".to_string();
+    }
+    if !matches_values(&rule.applies_to.domains, &context.domains) {
+        return "domain scope did not match".to_string();
+    }
+    if !matches_files(&rule.applies_to.file_patterns, &context.files_touched) {
+        return "file pattern did not match".to_string();
+    }
+    if !matches_change_type(&rule.activation.change_types, change_type) {
+        return "change type did not match".to_string();
+    }
+    if !matches_values(&rule.activation.signals, &context.risk_signals) {
+        return "activation signal did not match".to_string();
+    }
+    "all scope and activation conditions matched".to_string()
+}
+
 fn rule_matches(rule: &Rule, context: &TaskContext, change_type: ChangeType) -> bool {
     matches_values(&rule.applies_to.languages, &context.languages)
         && matches_values(&rule.applies_to.domains, &context.domains)

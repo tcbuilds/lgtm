@@ -512,7 +512,7 @@ fn reinit_adds_missing_version_but_refuses_mismatch() {
     assert_eq!(migrated["version"], "1");
     assert_eq!(migrated["profile"], "strict");
 
-    repo.write(".lgtm/config.json", r#"{"version":"2","profile":"strict"}"#);
+    repo.write(".lgtm/config.json", r#"{"version":"3","profile":"strict"}"#);
     let before = repo.read(".lgtm/config.json");
     let output = run_init(&repo);
     assert!(!output.status.success());

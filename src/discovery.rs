@@ -298,6 +298,14 @@ fn rust_commands() -> Vec<(Vec<String>, &'static str, &'static str)> {
             "test",
             "high",
         ),
+        (
+            vec!["cargo", "build"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            "build",
+            "high",
+        ),
     ]
 }
 
