@@ -9,6 +9,7 @@ Cargo.lock.orig
 # Local tooling
 .claude/settings.local.json
 .codegraph/
+implementation_plan.md
 *.log
 .DS_Store
 
