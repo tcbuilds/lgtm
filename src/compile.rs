@@ -106,6 +106,6 @@ mod tests {
                 rule.id
             );
         }
-        assert!(output.contains("42 rules validated."));
+        assert!(output.contains("43 rules validated."));
     }
 }

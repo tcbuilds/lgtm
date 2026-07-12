@@ -126,3 +126,13 @@ fn anti_slop_diff_review_flags_new_debug_output() {
     assert_eq!(results[5].status, Status::Warning);
     std::fs::remove_dir_all(root).expect("repo removable");
 }
+
+#[test]
+fn boundary_error_contract_review_distinguishes_structured_failures() {
+    assert!(contains_error_contract_signal(
+        "+ eprintln!(\"request failed\");"
+    ));
+    assert!(!contains_error_contract_signal(
+        "+ eprintln!(\"request failed: entity=request reason=timeout retryable=true\");"
+    ));
+}

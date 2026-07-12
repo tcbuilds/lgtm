@@ -18,6 +18,7 @@ struct Evaluation<'a> {
     dependency: bool,
     auth: bool,
     anti_slop: bool,
+    error_contract: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +106,7 @@ pub fn evaluate(
     let auth =
         changes.files.iter().any(|file| is_auth_path(file)) || contains_auth_signal(&changes.patch);
     let anti_slop = contains_anti_slop_signal(&changes.patch);
+    let error_contract = contains_error_contract_signal(&changes.patch);
     build_results(
         &changes,
         Evaluation {
@@ -115,6 +117,7 @@ pub fn evaluate(
             dependency,
             auth,
             anti_slop,
+            error_contract,
         },
     )
 }
@@ -155,7 +158,7 @@ fn build_results(changes: &ChangeSet, evaluation: Evaluation<'_>) -> Vec<Enforce
             warning_status(evaluation.auth),
             Severity::Warning,
             "Authentication or security-sensitive code changed; perform a focused security review.",
-            locations,
+            locations.clone(),
         ),
         result(
             "anti-slop-checklist",
@@ -163,6 +166,13 @@ fn build_results(changes: &ChangeSet, evaluation: Evaluation<'_>) -> Vec<Enforce
             Severity::Warning,
             "Diff contains a high-confidence anti-slop review signal; remove debug/scaffolding or document the suppression.",
             Vec::new(),
+        ),
+        result(
+            "error-contract-review",
+            warning_status(evaluation.error_contract),
+            Severity::Warning,
+            "New boundary failure text should include action, entity, reason, and retryability.",
+            locations,
         ),
     ]
 }
@@ -182,6 +192,20 @@ fn contains_anti_slop_signal(patch: &str) -> bool {
                 || lower.contains("# noqa")
                 || lower.contains("type: ignore")
                 || lower.contains("todo: remove")
+        })
+}
+
+fn contains_error_contract_signal(patch: &str) -> bool {
+    patch
+        .lines()
+        .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+        .any(|line| {
+            let lower = line.to_ascii_lowercase();
+            let failure_literal = lower.contains("failed") || lower.contains("error:");
+            failure_literal
+                && !lower.contains("entity=")
+                && !lower.contains("reason=")
+                && !lower.contains("retryable=")
         })
 }
 
@@ -303,6 +327,7 @@ fn rule_ids() -> impl Iterator<Item = &'static str> {
         "preserve-unrelated-user-changes",
         "new-dependency-review",
         "auth-change-security-review",
+        "error-contract-review",
     ]
     .into_iter()
 }

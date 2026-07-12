@@ -2365,6 +2365,61 @@
     ]
   },
   {
+    "id": "error-contract-review",
+    "title": "Review boundary error contracts",
+    "description": "Boundary failures should expose an action, entity, specific reason, and retryability instead of opaque messages.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [
+      {
+        "language": "all",
+        "text": "good: config load failed: entity=config reason=missing retryable=false; bad: failed",
+        "provenance": "codingStandards.md#error-contract",
+        "schematic": true
+      }
+    ],
+    "limitations": [
+      "The lexical check reviews newly added failure strings; it cannot prove every runtime boundary or typed error conversion."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "error-handling",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "error",
+        "exception"
+      ]
+    },
+    "instruction": "At system boundaries, include action, entity, specific reason, and retryable=true|false in failure output.",
+    "enforcement": {
+      "mode": "diff",
+      "checks": [
+        "git.diff"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#error-contract"
+    ]
+  },
+  {
     "id": "anti-slop-checklist",
     "title": "Review anti-slop checklist signals",
     "description": "Remove debug output, scaffolding, broad suppressions, and temporary code from diffs.",
