@@ -3,6 +3,7 @@ use super::*;
 /// Scaffold repo-local configuration and merge Claude Code hooks.
 pub fn run(root: &Path) -> Result<InitSummary, InitError> {
     let detection = detect(root);
+    let workspaces = crate::discovery::discover(root)?;
 
     let settings_path = root.join(".claude").join("settings.json");
     let validated_settings = validate_settings(&settings_path)?;
@@ -45,6 +46,7 @@ pub fn run(root: &Path) -> Result<InitSummary, InitError> {
 
     Ok(InitSummary {
         detection,
+        workspaces,
         files_written,
         notes,
     })

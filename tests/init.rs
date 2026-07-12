@@ -75,6 +75,26 @@ fn fresh_python_repo_creates_all_files() {
 }
 
 #[test]
+fn init_reports_nested_workspaces_without_executing_commands() {
+    let repo = TempRepo::new();
+    repo.write("backend/pyproject.toml", "[tool.ruff]\n");
+    repo.write(
+        "frontend/package.json",
+        "{\"scripts\":{\"lint\":\"eslint .\"}}\n",
+    );
+
+    let output = run_init(&repo);
+    assert!(
+        output.status.success(),
+        "init must discover nested workspaces"
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("workspaces: 2"));
+    assert!(text.contains("backend (python) cwd=backend"));
+    assert!(text.contains("frontend (typescript) cwd=frontend"));
+}
+
+#[test]
 fn uv_repo_gets_uv_pytest_while_plain_repo_gets_bare_pytest() {
     let uv_repo = TempRepo::new();
     uv_repo.write("pyproject.toml", "[tool.pytest.ini_options]\n");

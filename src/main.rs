@@ -357,6 +357,15 @@ fn report_init_summary(summary: &init::InitSummary) {
     println!("lgtm init complete");
     println!("  git repo: {}", summary.detection.is_git_repo);
     println!("  languages: {languages}");
+    println!("  workspaces: {}", summary.workspaces.len());
+    for workspace in &summary.workspaces {
+        println!(
+            "    {} ({}) cwd={}",
+            workspace.id,
+            workspace.language,
+            workspace.root.display()
+        );
+    }
     for (language, commands) in &summary.detection.required_commands {
         println!("  commands ({language}): {}", commands.join(", "));
     }

@@ -121,6 +121,8 @@ fn ignored_dir(name: &str) -> bool {
         ".git"
             | ".hg"
             | ".svn"
+            | ".lgtm"
+            | ".claude"
             | "node_modules"
             | "target"
             | "dist"

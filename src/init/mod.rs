@@ -22,6 +22,7 @@ use serde_json::{Map, Value, json};
 use thiserror::Error;
 
 use crate::detect::{Detection, detect};
+use crate::discovery::{DiscoveryError, Workspace};
 use crate::fsutil::open_regular_file;
 
 mod config;
@@ -107,6 +108,9 @@ struct HookWiring {
 /// or config file is reported without being overwritten.
 #[derive(Debug, Error)]
 pub enum InitError {
+    /// Workspace discovery could not safely inspect the repository.
+    #[error("workspace discovery failed: {0}")]
+    Discovery(#[from] DiscoveryError),
     /// Creating a directory under the target repo failed.
     #[error("create directory failed: path={path} reason={source} retryable=true")]
     CreateDir {
@@ -226,6 +230,8 @@ pub enum InitError {
 pub struct InitSummary {
     /// What init detected about the target repo.
     pub detection: Detection,
+    /// Nested workspaces discovered without executing repository commands.
+    pub workspaces: Vec<Workspace>,
     /// Repo-relative paths init created or modified, in write order.
     pub files_written: Vec<String>,
     /// Extra human-readable notes for stdout, e.g. preserved config or skipped
