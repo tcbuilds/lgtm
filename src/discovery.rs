@@ -453,7 +453,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("root");
         std::fs::write(
             root.join("package.json"),
-            "{\"workspaces\":[\"apps/*\"],\"scripts\":{\"lint\":\"eslint .\",\"build\":\"next build\"}}\n",
+            "{\"workspaces\":[\"apps/*\"],\"scripts\":{\"lint\":\"eslint .\",\"format\":\"prettier --check .\",\"typecheck\":\"tsc --noEmit\",\"test\":\"vitest run\",\"build\":\"next build\"}}\n",
         )
         .expect("package");
         std::fs::write(root.join("yarn.lock"), "# lockfile\n").expect("yarn lock");
@@ -468,6 +468,12 @@ mod tests {
         assert!(workspace.commands.iter().any(|command| {
             command.argv.iter().map(String::as_str).collect::<Vec<_>>() == ["yarn", "run", "build"]
         }));
+        for script in ["format", "typecheck", "test"] {
+            assert!(workspace.commands.iter().any(|command| {
+                command.argv.iter().map(String::as_str).collect::<Vec<_>>()
+                    == ["yarn", "run", script]
+            }));
+        }
         std::fs::remove_dir_all(root).ok();
     }
 
