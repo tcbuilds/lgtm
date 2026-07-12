@@ -15,6 +15,18 @@ fn policy_list_exposes_the_embedded_registry() {
 }
 
 #[test]
+fn policy_list_text_includes_capability_columns() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["policy", "list"])
+        .output()
+        .expect("policy list starts");
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("MECHANISM\tCONFIDENCE\tSTAGE"));
+    assert!(text.contains("no-committed-secrets\tmust\terror\tstatic\tnative\thigh"));
+}
+
+#[test]
 fn policy_show_reports_unknown_rule_without_panicking() {
     let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["policy", "show", "not-a-rule"])
@@ -22,6 +34,21 @@ fn policy_show_reports_unknown_rule_without_panicking() {
         .expect("policy show starts");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unknown rule"));
+}
+
+#[test]
+fn policy_show_text_exposes_examples_limitations_and_source() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["policy", "show", "external-call-timeout"])
+        .output()
+        .expect("policy show starts");
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("mechanism: native"));
+    assert!(
+        text.contains("examples: good: satisfy External calls require timeouts; bad: bypass it")
+    );
+    assert!(text.contains("references: codingStandards.md#non-negotiable-rules"));
 }
 
 #[test]

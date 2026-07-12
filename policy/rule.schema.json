@@ -9,6 +9,11 @@
     "id",
     "title",
     "description",
+    "mechanism",
+    "confidence",
+    "examples",
+    "limitations",
+    "enforcement_stage",
     "severity",
     "level",
     "category",
@@ -36,6 +41,46 @@
       "description": "What the rule requires and why, in plain language.",
       "type": "string",
       "minLength": 1
+    },
+    "mechanism": {
+      "description": "Honest enforcement capability, independent of the rule's task instruction.",
+      "type": "string",
+      "enum": ["native", "wrapped", "command", "instruction", "review", "evidence", "unsupported"]
+    },
+    "confidence": {
+      "description": "Confidence that the declared mechanism proves the rule for its scope.",
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+    "examples": {
+      "description": "Short good/bad examples shown when the rule is activated.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "maxItems": 4
+    },
+    "limitations": {
+      "description": "Explicit gaps or false-positive/false-negative boundaries.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "enforcement_stage": {
+      "description": "Lifecycle stage at which the capability runs.",
+      "type": "string",
+      "enum": ["session_start", "prompt", "pre_tool", "post_tool", "stop", "report", "none"]
+    },
+    "language_implementations": {
+      "description": "Optional language-specific checks that narrow the base capability.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mechanism", "checks", "limitations"],
+        "properties": {
+          "mechanism": { "type": "string", "enum": ["native", "wrapped", "command", "instruction", "review", "evidence", "unsupported"] },
+          "checks": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+          "limitations": { "type": "array", "items": { "type": "string" } }
+        }
+      }
     },
     "severity": {
       "description": "How a violation is reported by the enforcement runtime.",

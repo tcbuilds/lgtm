@@ -81,6 +81,13 @@ fn duplicate_rule_ids_are_rejected() {
     }
 }
 
+#[test]
+fn automated_capability_without_registered_check_is_rejected() {
+    let invalid = include_str!("fixtures/invalid_capability.json");
+    let error = policy::load_and_validate(invalid).expect_err("invalid capability must fail");
+    assert!(matches!(error, RegistryError::CapabilityViolation { .. }));
+}
+
 /// A registry that is valid JSON but not a JSON array is rejected as a schema
 /// violation naming the array requirement.
 #[test]

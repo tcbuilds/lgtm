@@ -8,23 +8,53 @@
     "category": "security",
     "applies_to": {
       "languages": [],
-      "domains": ["backend", "api", "worker", "infrastructure"],
-      "file_patterns": ["**/*"]
+      "domains": [
+        "backend",
+        "api",
+        "worker",
+        "infrastructure"
+      ],
+      "file_patterns": [
+        "**/*"
+      ]
     },
     "activation": {
-      "change_types": ["create", "modify"],
-      "signals": ["credential", "token", "private-key", "env-file"]
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "credential",
+        "token",
+        "private-key",
+        "env-file"
+      ]
     },
     "instruction": "Do not add secrets, tokens, private keys, or credentials to tracked files. Load them from environment variables or a secret manager.",
     "enforcement": {
       "mode": "static",
-      "checks": ["gitleaks.detect"]
+      "checks": [
+        "gitleaks.detect"
+      ]
     },
     "overridable": false,
     "evidence": {
-      "required": ["check_result"]
+      "required": [
+        "check_result"
+      ]
     },
-    "references": ["codingStandards.md#non-negotiable-rules"]
+    "references": [
+      "codingStandards.md#non-negotiable-rules"
+    ],
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": [
+      "good: satisfy No committed secrets; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "post_tool"
   },
   {
     "id": "no-swallowed-errors",
@@ -34,24 +64,66 @@
     "level": "must",
     "category": "error-handling",
     "applies_to": {
-      "languages": ["python"],
-      "domains": ["backend", "api", "worker", "infrastructure"],
-      "file_patterns": ["**/*.py"]
+      "languages": [
+        "python"
+      ],
+      "domains": [
+        "backend",
+        "api",
+        "worker",
+        "infrastructure"
+      ],
+      "file_patterns": [
+        "**/*.py"
+      ]
     },
     "activation": {
-      "change_types": ["create", "modify"],
-      "signals": ["exception-handler", "try-except", "bare-except"]
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "exception-handler",
+        "try-except",
+        "bare-except"
+      ]
     },
     "instruction": "Do not catch and suppress errors. Convert unknown external errors into typed domain errors, add context before propagating, and never leave a bare or empty except.",
     "enforcement": {
       "mode": "static",
-      "checks": ["ruff.check"]
+      "checks": [
+        "ruff.check"
+      ]
     },
     "overridable": false,
     "evidence": {
-      "required": ["check_result"]
+      "required": [
+        "check_result"
+      ]
     },
-    "references": ["codingStandards.md#error-handling"]
+    "references": [
+      "codingStandards.md#error-handling"
+    ],
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": [
+      "good: satisfy No swallowed errors; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "post_tool",
+    "language_implementations": {
+      "python": {
+        "mechanism": "native",
+        "checks": [
+          "ruff.check"
+        ],
+        "limitations": [
+          "Language-specific behavior may differ outside registered checks."
+        ]
+      }
+    }
   },
   {
     "id": "no-broad-exception-handling",
@@ -61,19 +133,66 @@
     "level": "must",
     "category": "error-handling",
     "applies_to": {
-      "languages": ["python"],
-      "domains": ["backend", "api", "worker", "infrastructure"],
-      "file_patterns": ["**/*.py"]
+      "languages": [
+        "python"
+      ],
+      "domains": [
+        "backend",
+        "api",
+        "worker",
+        "infrastructure"
+      ],
+      "file_patterns": [
+        "**/*.py"
+      ]
     },
     "activation": {
-      "change_types": ["create", "modify"],
-      "signals": ["exception-handler", "try-except", "bare-except"]
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "exception-handler",
+        "try-except",
+        "bare-except"
+      ]
     },
     "instruction": "Catch specific exception types. Do not use bare except or catch Exception without converting, contextualizing, or re-raising it.",
-    "enforcement": { "mode": "static", "checks": ["ruff.check"] },
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "ruff.check"
+      ]
+    },
     "overridable": false,
-    "evidence": { "required": ["check_result"] },
-    "references": ["codingStandards.md#error-handling"]
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#error-handling"
+    ],
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": [
+      "good: satisfy No broad exception handling; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "post_tool",
+    "language_implementations": {
+      "python": {
+        "mechanism": "native",
+        "checks": [
+          "ruff.check"
+        ],
+        "limitations": [
+          "Language-specific behavior may differ outside registered checks."
+        ]
+      }
+    }
   },
   {
     "id": "external-call-timeout",
@@ -83,120 +202,701 @@
     "level": "must",
     "category": "reliability",
     "applies_to": {
-      "languages": ["python"],
-      "domains": ["backend", "api", "worker", "infrastructure"],
-      "file_patterns": ["**/*.py"]
+      "languages": [
+        "python"
+      ],
+      "domains": [
+        "backend",
+        "api",
+        "worker",
+        "infrastructure"
+      ],
+      "file_patterns": [
+        "**/*.py"
+      ]
     },
     "activation": {
-      "change_types": ["create", "modify"],
-      "signals": ["http-client", "database-client", "subprocess", "lock", "external-api"]
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "http-client",
+        "database-client",
+        "subprocess",
+        "lock",
+        "external-api"
+      ]
     },
     "instruction": "Add an explicit timeout and ensure cancellation or cleanup is handled.",
     "enforcement": {
       "mode": "static",
-      "checks": ["semgrep.external-call-timeout"]
+      "checks": [
+        "semgrep.external-call-timeout"
+      ]
     },
     "overridable": false,
     "evidence": {
-      "required": ["check_result", "changed_locations"]
+      "required": [
+        "check_result",
+        "changed_locations"
+      ]
     },
-    "references": ["codingStandards.md#non-negotiable-rules"]
+    "references": [
+      "codingStandards.md#non-negotiable-rules"
+    ],
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": [
+      "good: satisfy External calls require timeouts; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "post_tool",
+    "language_implementations": {
+      "python": {
+        "mechanism": "native",
+        "checks": [
+          "semgrep.external-call-timeout"
+        ],
+        "limitations": [
+          "Language-specific behavior may differ outside registered checks."
+        ]
+      }
+    }
   },
   {
-    "id": "public-input-validation", "title": "Validate public input",
+    "id": "public-input-validation",
+    "title": "Validate public input",
     "description": "Public request input must be validated before use.",
-    "severity": "error", "level": "must", "category": "validation",
-    "applies_to": {"languages": ["python"], "domains": ["backend", "api"], "file_patterns": ["**/*.py"]},
-    "activation": {"change_types": ["create", "modify"], "signals": ["public-input"]},
+    "severity": "error",
+    "level": "must",
+    "category": "validation",
+    "applies_to": {
+      "languages": [
+        "python"
+      ],
+      "domains": [
+        "backend",
+        "api"
+      ],
+      "file_patterns": [
+        "**/*.py"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "public-input"
+      ]
+    },
     "instruction": "Validate and normalize public input with an explicit schema before use.",
-    "enforcement": {"mode": "static", "checks": ["semgrep.public-input-validation"]},
-    "overridable": false, "evidence": {"required": ["check_result"]},
-    "references": ["codingStandards.md#non-negotiable-rules"]
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "semgrep.public-input-validation"
+      ]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#non-negotiable-rules"
+    ],
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": [
+      "good: satisfy Validate public input; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "post_tool",
+    "language_implementations": {
+      "python": {
+        "mechanism": "native",
+        "checks": [
+          "semgrep.public-input-validation"
+        ],
+        "limitations": [
+          "Language-specific behavior may differ outside registered checks."
+        ]
+      }
+    }
   },
   {
-    "id": "sql-parameterization", "title": "Parameterize SQL",
+    "id": "sql-parameterization",
+    "title": "Parameterize SQL",
     "description": "SQL statements must not interpolate untrusted values.",
-    "severity": "error", "level": "must", "category": "security",
-    "applies_to": {"languages": ["python"], "domains": ["backend", "api", "worker"], "file_patterns": ["**/*.py"]},
-    "activation": {"change_types": ["create", "modify"], "signals": ["database-write", "database-client"]},
+    "severity": "error",
+    "level": "must",
+    "category": "security",
+    "applies_to": {
+      "languages": [
+        "python"
+      ],
+      "domains": [
+        "backend",
+        "api",
+        "worker"
+      ],
+      "file_patterns": [
+        "**/*.py"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "database-write",
+        "database-client"
+      ]
+    },
     "instruction": "Use driver parameters for every dynamic SQL value.",
-    "enforcement": {"mode": "static", "checks": ["semgrep.sql-parameterization"]},
-    "overridable": false, "evidence": {"required": ["check_result"]},
-    "references": ["codingStandards.md#security-standards"]
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "semgrep.sql-parameterization"
+      ]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#security-standards"
+    ],
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": [
+      "good: satisfy Parameterize SQL; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "post_tool",
+    "language_implementations": {
+      "python": {
+        "mechanism": "native",
+        "checks": [
+          "semgrep.sql-parameterization"
+        ],
+        "limitations": [
+          "Language-specific behavior may differ outside registered checks."
+        ]
+      }
+    }
   },
   {
-    "id": "bounded-retries-loops", "title": "Bound retries and loops",
+    "id": "bounded-retries-loops",
+    "title": "Bound retries and loops",
     "description": "Retry and worker loops must have explicit termination bounds.",
-    "severity": "error", "level": "must", "category": "reliability",
-    "applies_to": {"languages": ["python"], "domains": ["backend", "api", "worker"], "file_patterns": ["**/*.py"]},
-    "activation": {"change_types": ["create", "modify"], "signals": ["retry", "loop"]},
+    "severity": "error",
+    "level": "must",
+    "category": "reliability",
+    "applies_to": {
+      "languages": [
+        "python"
+      ],
+      "domains": [
+        "backend",
+        "api",
+        "worker"
+      ],
+      "file_patterns": [
+        "**/*.py"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "retry",
+        "loop"
+      ]
+    },
     "instruction": "Add an explicit attempt, time, or cancellation bound.",
-    "enforcement": {"mode": "static", "checks": ["semgrep.bounded-retries-loops"]},
-    "overridable": false, "evidence": {"required": ["check_result"]},
-    "references": ["codingStandards.md#non-negotiable-rules"]
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "semgrep.bounded-retries-loops"
+      ]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#non-negotiable-rules"
+    ],
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": [
+      "good: satisfy Bound retries and loops; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "post_tool",
+    "language_implementations": {
+      "python": {
+        "mechanism": "native",
+        "checks": [
+          "semgrep.bounded-retries-loops"
+        ],
+        "limitations": [
+          "Language-specific behavior may differ outside registered checks."
+        ]
+      }
+    }
   },
   {
-    "id": "destructive-operation-safeguards", "title": "Safeguard destructive operations",
+    "id": "destructive-operation-safeguards",
+    "title": "Safeguard destructive operations",
     "description": "Recursive destructive operations require explicit safeguards.",
-    "severity": "error", "level": "must", "category": "security",
-    "applies_to": {"languages": ["python"], "domains": ["backend", "api", "worker", "infrastructure"], "file_patterns": ["**/*.py"]},
-    "activation": {"change_types": ["create", "modify"], "signals": ["destructive-operation"]},
+    "severity": "error",
+    "level": "must",
+    "category": "security",
+    "applies_to": {
+      "languages": [
+        "python"
+      ],
+      "domains": [
+        "backend",
+        "api",
+        "worker",
+        "infrastructure"
+      ],
+      "file_patterns": [
+        "**/*.py"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "destructive-operation"
+      ]
+    },
     "instruction": "Require explicit confirmation and validate the target before recursive deletion.",
-    "enforcement": {"mode": "static", "checks": ["semgrep.destructive-operation-safeguards"]},
-    "overridable": false, "evidence": {"required": ["check_result"]},
-    "references": ["codingStandards.md#security-standards"]
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "semgrep.destructive-operation-safeguards"
+      ]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#security-standards"
+    ],
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": [
+      "good: satisfy Safeguard destructive operations; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "post_tool",
+    "language_implementations": {
+      "python": {
+        "mechanism": "native",
+        "checks": [
+          "semgrep.destructive-operation-safeguards"
+        ],
+        "limitations": [
+          "Language-specific behavior may differ outside registered checks."
+        ]
+      }
+    }
   },
   {
-    "id": "regression-test-required", "title": "Regression tests required", "description": "Observable bug fixes require regression coverage.",
-    "severity": "error", "level": "must", "category": "testing",
-    "applies_to": {"languages": ["python"], "domains": [], "file_patterns": ["**/*.py"]}, "activation": {"change_types": ["modify"], "signals": ["bug-fix"]},
-    "instruction": "Add a deterministic regression test for observable bug fixes.", "enforcement": {"mode": "diff", "checks": ["git.diff"]},
-    "overridable": true, "evidence": {"required": ["check_result", "changed_locations"]}, "references": ["codingStandards.md#testing-standards"]
+    "id": "regression-test-required",
+    "title": "Regression tests required",
+    "description": "Observable bug fixes require regression coverage.",
+    "severity": "error",
+    "level": "must",
+    "category": "testing",
+    "applies_to": {
+      "languages": [
+        "python"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*.py"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "modify"
+      ],
+      "signals": [
+        "bug-fix"
+      ]
+    },
+    "instruction": "Add a deterministic regression test for observable bug fixes.",
+    "enforcement": {
+      "mode": "diff",
+      "checks": [
+        "git.diff"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result",
+        "changed_locations"
+      ]
+    },
+    "references": [
+      "codingStandards.md#testing-standards"
+    ],
+    "mechanism": "review",
+    "confidence": "medium",
+    "examples": [
+      "good: satisfy Regression tests required; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "stop",
+    "language_implementations": {
+      "python": {
+        "mechanism": "review",
+        "checks": [
+          "git.diff"
+        ],
+        "limitations": [
+          "Language-specific behavior may differ outside registered checks."
+        ]
+      }
+    }
   },
   {
-    "id": "new-behavior-tests-required", "title": "New behavior tests required", "description": "Source behavior changes require corresponding tests.",
-    "severity": "error", "level": "must", "category": "testing",
-    "applies_to": {"languages": ["python"], "domains": [], "file_patterns": ["**/*.py"]}, "activation": {"change_types": ["create", "modify"], "signals": []},
-    "instruction": "Add deterministic tests for new or changed source behavior.", "enforcement": {"mode": "diff", "checks": ["git.diff"]},
-    "overridable": true, "evidence": {"required": ["check_result", "changed_locations"]}, "references": ["codingStandards.md#testing-standards"]
+    "id": "new-behavior-tests-required",
+    "title": "New behavior tests required",
+    "description": "Source behavior changes require corresponding tests.",
+    "severity": "error",
+    "level": "must",
+    "category": "testing",
+    "applies_to": {
+      "languages": [
+        "python"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*.py"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Add deterministic tests for new or changed source behavior.",
+    "enforcement": {
+      "mode": "diff",
+      "checks": [
+        "git.diff"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result",
+        "changed_locations"
+      ]
+    },
+    "references": [
+      "codingStandards.md#testing-standards"
+    ],
+    "mechanism": "review",
+    "confidence": "medium",
+    "examples": [
+      "good: satisfy New behavior tests required; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "stop",
+    "language_implementations": {
+      "python": {
+        "mechanism": "review",
+        "checks": [
+          "git.diff"
+        ],
+        "limitations": [
+          "Language-specific behavior may differ outside registered checks."
+        ]
+      }
+    }
   },
   {
-    "id": "preserve-unrelated-user-changes", "title": "Preserve unrelated user changes", "description": "Do not modify files outside the current task scope.",
-    "severity": "error", "level": "must", "category": "change-management",
-    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]}, "activation": {"change_types": ["create", "modify", "delete"], "signals": []},
-    "instruction": "Preserve unrelated work and restrict edits to files recorded for this task.", "enforcement": {"mode": "evidence", "checks": ["git.diff"]},
-    "overridable": false, "evidence": {"required": ["check_result", "changed_locations"]}, "references": ["codingStandards.md#review-and-change-standards"]
+    "id": "preserve-unrelated-user-changes",
+    "title": "Preserve unrelated user changes",
+    "description": "Do not modify files outside the current task scope.",
+    "severity": "error",
+    "level": "must",
+    "category": "change-management",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify",
+        "delete"
+      ],
+      "signals": []
+    },
+    "instruction": "Preserve unrelated work and restrict edits to files recorded for this task.",
+    "enforcement": {
+      "mode": "evidence",
+      "checks": [
+        "git.diff"
+      ]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": [
+        "check_result",
+        "changed_locations"
+      ]
+    },
+    "references": [
+      "codingStandards.md#review-and-change-standards"
+    ],
+    "mechanism": "evidence",
+    "confidence": "high",
+    "examples": [
+      "good: satisfy Preserve unrelated user changes; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "stop"
   },
   {
-    "id": "new-dependency-review", "title": "Review new dependencies", "description": "Dependency changes require focused risk review.",
-    "severity": "warning", "level": "review", "category": "dependencies",
-    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]}, "activation": {"change_types": ["create", "modify"], "signals": ["dependency"]},
-    "instruction": "Review necessity, license, maintenance, transitive size, and security posture.", "enforcement": {"mode": "diff", "checks": ["git.diff"]},
-    "overridable": false, "evidence": {"required": ["check_result"]}, "references": ["codingStandards.md#dependency-standards"]
+    "id": "new-dependency-review",
+    "title": "Review new dependencies",
+    "description": "Dependency changes require focused risk review.",
+    "severity": "warning",
+    "level": "review",
+    "category": "dependencies",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "dependency"
+      ]
+    },
+    "instruction": "Review necessity, license, maintenance, transitive size, and security posture.",
+    "enforcement": {
+      "mode": "diff",
+      "checks": [
+        "git.diff"
+      ]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#dependency-standards"
+    ],
+    "mechanism": "review",
+    "confidence": "medium",
+    "examples": [
+      "good: satisfy Review new dependencies; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "stop"
   },
   {
-    "id": "auth-change-security-review", "title": "Review auth and security changes", "description": "Authentication and security-sensitive changes require focused review.",
-    "severity": "warning", "level": "review", "category": "security",
-    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]}, "activation": {"change_types": ["create", "modify"], "signals": ["authentication", "authorization"]},
-    "instruction": "Perform a focused authentication, authorization, and sensitive-data review.", "enforcement": {"mode": "diff", "checks": ["git.diff"]},
-    "overridable": false, "evidence": {"required": ["check_result"]}, "references": ["codingStandards.md#security-standards"]
+    "id": "auth-change-security-review",
+    "title": "Review auth and security changes",
+    "description": "Authentication and security-sensitive changes require focused review.",
+    "severity": "warning",
+    "level": "review",
+    "category": "security",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": [
+        "authentication",
+        "authorization"
+      ]
+    },
+    "instruction": "Perform a focused authentication, authorization, and sensitive-data review.",
+    "enforcement": {
+      "mode": "diff",
+      "checks": [
+        "git.diff"
+      ]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#security-standards"
+    ],
+    "mechanism": "review",
+    "confidence": "medium",
+    "examples": [
+      "good: satisfy Review auth and security changes; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "stop"
   },
   {
-    "id": "required-repository-commands", "title": "Required repository commands pass",
+    "id": "required-repository-commands",
+    "title": "Required repository commands pass",
     "description": "Repository-configured validation commands must pass before Stop completes.",
-    "severity": "error", "level": "must", "category": "testing",
-    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
-    "activation": {"change_types": ["create", "modify"], "signals": []},
+    "severity": "error",
+    "level": "must",
+    "category": "testing",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
     "instruction": "Run every configured repository validation command and fix failures.",
-    "enforcement": {"mode": "command", "checks": ["command.required"]},
-    "overridable": false, "evidence": {"required": ["check_result", "command_result"]},
-    "references": ["codingStandards.md#review-and-change-standards"]
+    "enforcement": {
+      "mode": "command",
+      "checks": [
+        "command.required"
+      ]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": [
+        "check_result",
+        "command_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#review-and-change-standards"
+    ],
+    "mechanism": "command",
+    "confidence": "high",
+    "examples": [
+      "good: satisfy Required repository commands pass; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "stop"
   },
   {
-    "id": "evidence-claims-honest", "title": "Verification claims require evidence", "description": "Assistant verification claims must match current successful command evidence.",
-    "severity": "error", "level": "must", "category": "ai-agent-behavior",
-    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]}, "activation": {"change_types": ["create", "modify", "delete"], "signals": []},
-    "instruction": "Do not claim a command or tests passed unless current Stop evidence proves exit status 0.", "enforcement": {"mode": "evidence", "checks": ["transcript.claims"]},
-    "overridable": false, "evidence": {"required": ["check_result"]}, "references": ["codingStandards.md#review-and-change-standards"]
+    "id": "evidence-claims-honest",
+    "title": "Verification claims require evidence",
+    "description": "Assistant verification claims must match current successful command evidence.",
+    "severity": "error",
+    "level": "must",
+    "category": "ai-agent-behavior",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify",
+        "delete"
+      ],
+      "signals": []
+    },
+    "instruction": "Do not claim a command or tests passed unless current Stop evidence proves exit status 0.",
+    "enforcement": {
+      "mode": "evidence",
+      "checks": [
+        "transcript.claims"
+      ]
+    },
+    "overridable": false,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#review-and-change-standards"
+    ],
+    "mechanism": "evidence",
+    "confidence": "high",
+    "examples": [
+      "good: satisfy Verification claims require evidence; bad: bypass it"
+    ],
+    "limitations": [
+      "Automated checks cover only registered patterns; review other implementations."
+    ],
+    "enforcement_stage": "stop"
   }
 ]

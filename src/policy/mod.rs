@@ -74,6 +74,78 @@ pub enum EnforcementMode {
     Hybrid,
 }
 
+/// Declared capability of a rule. This is intentionally separate from the
+/// injected instruction so a rule cannot imply automation it does not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mechanism {
+    Native,
+    Wrapped,
+    Command,
+    Instruction,
+    Review,
+    Evidence,
+    Unsupported,
+}
+
+impl fmt::Display for Mechanism {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Native => "native",
+            Self::Wrapped => "wrapped",
+            Self::Command => "command",
+            Self::Instruction => "instruction",
+            Self::Review => "review",
+            Self::Evidence => "evidence",
+            Self::Unsupported => "unsupported",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    High,
+    Medium,
+    Low,
+}
+
+impl fmt::Display for Confidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementStage {
+    SessionStart,
+    Prompt,
+    PreTool,
+    PostTool,
+    Stop,
+    Report,
+    None,
+}
+
+impl fmt::Display for EnforcementStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::SessionStart => "session_start",
+            Self::Prompt => "prompt",
+            Self::PreTool => "pre_tool",
+            Self::PostTool => "post_tool",
+            Self::Stop => "stop",
+            Self::Report => "report",
+            Self::None => "none",
+        })
+    }
+}
+
 impl fmt::Display for EnforcementMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {
@@ -203,6 +275,14 @@ pub struct Enforcement {
     pub checks: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LanguageImplementation {
+    pub mechanism: Mechanism,
+    pub checks: Vec<String>,
+    pub limitations: Vec<String>,
+}
+
 /// Evidence artifacts a task must produce for a rule.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -217,6 +297,13 @@ pub struct Rule {
     pub id: String,
     pub title: String,
     pub description: String,
+    pub mechanism: Mechanism,
+    pub confidence: Confidence,
+    pub examples: Vec<String>,
+    pub limitations: Vec<String>,
+    pub enforcement_stage: EnforcementStage,
+    #[serde(default)]
+    pub language_implementations: std::collections::BTreeMap<String, LanguageImplementation>,
     pub severity: Severity,
     pub level: Level,
     pub category: Category,
@@ -255,6 +342,10 @@ pub enum RegistryError {
         first_index: usize,
         duplicate_index: usize,
     },
+    /// A capability declaration promises automation without a registered
+    /// executable check, or declares an unsupported mechanism with checks.
+    #[error("invalid capability for rule `{rule_id}`: {reason}")]
+    CapabilityViolation { rule_id: String, reason: String },
     /// The registry is valid against the schema but does not deserialize into
     /// the rule model.
     ///
@@ -315,7 +406,78 @@ pub fn load_and_validate(registry_json: &str) -> Result<Vec<Rule>, RegistryError
 
     check_unique_ids(rules_array)?;
 
-    serde_json::from_value(registry_value).map_err(RegistryError::Deserialize)
+    let rules: Vec<Rule> =
+        serde_json::from_value(registry_value).map_err(RegistryError::Deserialize)?;
+    validate_capabilities(&rules)?;
+    Ok(rules)
+}
+
+fn validate_capabilities(rules: &[Rule]) -> Result<(), RegistryError> {
+    for rule in rules {
+        let automated = matches!(
+            rule.mechanism,
+            Mechanism::Native | Mechanism::Wrapped | Mechanism::Command
+        );
+        if automated && rule.enforcement.checks.is_empty() {
+            return Err(RegistryError::CapabilityViolation {
+                rule_id: rule.id.clone(),
+                reason: "automated mechanism requires at least one registered check".to_string(),
+            });
+        }
+        if automated
+            && rule
+                .enforcement
+                .checks
+                .iter()
+                .any(|check| !registered_check(check))
+        {
+            return Err(RegistryError::CapabilityViolation {
+                rule_id: rule.id.clone(),
+                reason: "automated mechanism references an unknown check".to_string(),
+            });
+        }
+        if matches!(rule.mechanism, Mechanism::Unsupported) && !rule.enforcement.checks.is_empty() {
+            return Err(RegistryError::CapabilityViolation {
+                rule_id: rule.id.clone(),
+                reason: "unsupported mechanism cannot register executable checks".to_string(),
+            });
+        }
+        for (language, implementation) in &rule.language_implementations {
+            let automated = matches!(
+                implementation.mechanism,
+                Mechanism::Native | Mechanism::Wrapped | Mechanism::Command
+            );
+            if automated && implementation.checks.is_empty() {
+                return Err(RegistryError::CapabilityViolation {
+                    rule_id: rule.id.clone(),
+                    reason: format!(
+                        "language implementation `{language}` needs a registered check"
+                    ),
+                });
+            }
+            if automated
+                && implementation
+                    .checks
+                    .iter()
+                    .any(|check| !registered_check(check))
+            {
+                return Err(RegistryError::CapabilityViolation {
+                    rule_id: rule.id.clone(),
+                    reason: format!(
+                        "language implementation `{language}` references an unknown check"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn registered_check(check: &str) -> bool {
+    matches!(
+        check,
+        "gitleaks.detect" | "ruff.check" | "command.required" | "git.diff" | "transcript.claims"
+    ) || check.starts_with("semgrep.")
 }
 
 /// Reject a registry in which two rules share the same `id`.

@@ -146,14 +146,17 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
             if json {
                 return write_json(&rules);
             }
-            println!("ID\tLEVEL\tSEVERITY\tMODE\tCATEGORY\tTITLE");
+            println!("ID\tLEVEL\tSEVERITY\tMODE\tMECHANISM\tCONFIDENCE\tSTAGE\tCATEGORY\tTITLE");
             for rule in rules {
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     rule.id,
                     rule.level,
                     rule.severity,
                     rule.enforcement.mode,
+                    rule.mechanism,
+                    rule.confidence,
+                    rule.enforcement_stage,
                     rule.category,
                     rule.title
                 );
@@ -175,11 +178,16 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
             println!("severity: {}", rule.severity);
             println!("category: {}", rule.category);
             println!("enforcement: {}", rule.enforcement.mode);
+            println!("mechanism: {}", rule.mechanism);
+            println!("confidence: {}", rule.confidence);
+            println!("enforcement stage: {}", rule.enforcement_stage);
             println!("checks: {}", rule.enforcement.checks.join(", "));
             println!("languages: {}", rule.applies_to.languages.join(", "));
             println!("domains: {}", rule.applies_to.domains.join(", "));
             println!("files: {}", rule.applies_to.file_patterns.join(", "));
             println!("instruction: {}", rule.instruction);
+            println!("examples: {}", rule.examples.join(" | "));
+            println!("limitations: {}", rule.limitations.join(" | "));
             println!("evidence: {}", rule.evidence.required.join(", "));
             println!("overridable: {}", rule.overridable);
             println!("references: {}", rule.references.join(", "));

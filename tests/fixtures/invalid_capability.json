@@ -1,0 +1,22 @@
+[
+  {
+    "id": "invalid-capability",
+    "title": "Automated rule without a check",
+    "description": "This fixture claims native enforcement without registering a check.",
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": ["good: register a check; bad: claim automation without one"],
+    "limitations": ["Fixture intentionally violates the capability contract."],
+    "enforcement_stage": "post_tool",
+    "severity": "error",
+    "level": "must",
+    "category": "security",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["modify"], "signals": []},
+    "instruction": "Register a check before claiming automated enforcement.",
+    "enforcement": {"mode": "static", "checks": []},
+    "overridable": false,
+    "evidence": {"required": ["check_result"]},
+    "references": ["codingStandards.md#non-negotiable-rules"]
+  }
+]
