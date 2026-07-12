@@ -268,6 +268,12 @@ mod tests {
         assert_eq!(typescript.functions[0].name, "render");
         let go = analyze_source("go", "func Run(value string) {\n}\n").expect("Go analysis");
         assert_eq!(go.functions[0].name, "Run");
+        let javascript = analyze_source(
+            "javascript",
+            "function render(value) {\n  return value;\n}\n",
+        )
+        .expect("JavaScript analysis");
+        assert_eq!(javascript.functions[0].name, "render");
         assert!(matches!(
             analyze_source("typescript", "function broken() {"),
             Err(AnalysisError::UnbalancedBraces)
@@ -277,5 +283,15 @@ mod tests {
             Err(AnalysisError::UnbalancedBraces)
         ));
         assert!(is_excluded_path(Path::new("target/generated.rs")));
+    }
+
+    #[test]
+    fn every_supported_language_obeys_the_same_resource_bounds() {
+        for language in ["python", "typescript", "javascript", "rust", "go"] {
+            assert!(matches!(
+                analyze_source(language, &"t ".repeat(MAX_TOKENS + 1)),
+                Err(AnalysisError::TooManyTokens)
+            ));
+        }
     }
 }
