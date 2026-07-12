@@ -222,6 +222,12 @@ mod tests {
             argv: Vec::new(),
             cwd: None,
             workspace_id: None,
+            config_digest: None,
+            touched_files_digest: None,
+            policy_version: None,
+            binary_version: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         }];
         assert!(claims.iter().all(|claim| is_proven(claim, &evidence)));
     }
@@ -236,6 +242,12 @@ mod tests {
             argv: Vec::new(),
             cwd: None,
             workspace_id: None,
+            config_digest: None,
+            touched_files_digest: None,
+            policy_version: None,
+            binary_version: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         }];
         assert!(!is_proven(&claim, &evidence));
         assert!(!is_proven(&claim, &[]));
@@ -252,6 +264,12 @@ mod tests {
             argv: Vec::new(),
             cwd: None,
             workspace_id: None,
+            config_digest: None,
+            touched_files_digest: None,
+            policy_version: None,
+            binary_version: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         }];
         assert!(claims.iter().all(|claim| is_proven(claim, &evidence)));
     }
@@ -265,6 +283,12 @@ mod tests {
             argv: Vec::new(),
             cwd: None,
             workspace_id: None,
+            config_digest: None,
+            touched_files_digest: None,
+            policy_version: None,
+            binary_version: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         }];
         assert!(!is_proven(&Claim::TestsPassed, &evidence));
     }

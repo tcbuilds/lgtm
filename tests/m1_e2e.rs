@@ -150,6 +150,31 @@ fn secret_blocks_then_clean_stop_writes_well_formed_evidence() {
                 .as_str()
                 .is_some_and(|value| !value.is_empty())
         );
+        if let Some(command) = record["commands"]
+            .as_array()
+            .and_then(|items| items.first())
+        {
+            assert!(
+                command["config_digest"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(
+                command["touched_files_digest"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(
+                command["policy_version"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(
+                command["binary_version"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+        }
     }
 }
 

@@ -139,11 +139,12 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     results.extend(crate::checks::boundary::scan(&paths));
     results.extend(crate::checks::logging::scan(&paths));
     results.extend(crate::checks::determinism::scan(&paths));
-    let command_run = run_repository_commands(
+    let mut command_run = run_repository_commands(
         &root,
         hook_input.workspace.as_deref(),
         hook_input.tier.as_deref(),
     );
+    bind_command_provenance(&root, &paths, &mut command_run.evidence);
     results.extend(command_run.results);
     if !hook_input.check {
         results.push(crate::checks::claims::evaluate(
@@ -222,6 +223,24 @@ fn run_repository_commands(
             results: vec![commands::config_unverified(&reason)],
             evidence: Vec::new(),
         },
+    }
+}
+
+fn bind_command_provenance(
+    root: &Path,
+    paths: &[String],
+    evidence: &mut [commands::CommandEvidence],
+) {
+    let config_digest = digest_bytes(&crate::fsutil::read_optional_bounded(
+        &root.join(".lgtm/config.json"),
+        256 * 1024,
+    ));
+    let touched_files_digest = digest_paths(root, paths);
+    for item in evidence {
+        item.config_digest = Some(config_digest.clone());
+        item.touched_files_digest = Some(touched_files_digest.clone());
+        item.policy_version = Some(crate::policy::POLICY_BUNDLE_VERSION.to_string());
+        item.binary_version = Some(env!("CARGO_PKG_VERSION").to_string());
     }
 }
 

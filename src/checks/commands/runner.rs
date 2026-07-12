@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::checks::Status;
 
@@ -33,6 +34,7 @@ pub fn run_structured(root: &Path, commands: &[StructuredCommand]) -> RunResults
     }
     for command in commands {
         let display = command.argv.join(" ");
+        let started_at_ms = unix_ms();
         let started = Instant::now();
         let mut process = Command::new(&command.argv[0]);
         process
@@ -50,6 +52,12 @@ pub fn run_structured(root: &Path, commands: &[StructuredCommand]) -> RunResults
             argv: command.argv.clone(),
             cwd: Some(command.cwd.to_string_lossy().into_owned()),
             workspace_id: Some(command.workspace_id.clone()),
+            config_digest: None,
+            touched_files_digest: None,
+            policy_version: None,
+            binary_version: None,
+            started_at_ms: Some(started_at_ms),
+            finished_at_ms: Some(unix_ms()),
         });
         output.results.push(classify(&display, details));
     }
@@ -72,6 +80,12 @@ fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mu
                 argv: Vec::new(),
                 cwd: None,
                 workspace_id: None,
+                config_digest: None,
+                touched_files_digest: None,
+                policy_version: None,
+                binary_version: None,
+                started_at_ms: None,
+                finished_at_ms: None,
             });
             return;
         }
@@ -92,8 +106,20 @@ fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mu
         argv: Vec::new(),
         cwd: None,
         workspace_id: None,
+        config_digest: None,
+        touched_files_digest: None,
+        policy_version: None,
+        binary_version: None,
+        started_at_ms: None,
+        finished_at_ms: None,
     });
     output.results.push(classify(command, details));
+}
+
+fn unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis())
 }
 
 fn classify(

@@ -143,6 +143,8 @@ fn config_v2_loads_structured_argv_and_workspace_cwd() {
     assert_eq!(evidence[0]["argv"][0], script);
     assert_eq!(evidence[0]["cwd"], ".");
     assert_eq!(evidence[0]["workspace_id"], "root");
+    assert!(evidence[0]["started_at_ms"].is_number());
+    assert!(evidence[0]["finished_at_ms"].is_number());
 }
 
 #[test]
