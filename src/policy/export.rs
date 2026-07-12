@@ -23,6 +23,10 @@ fn artifacts() -> Vec<(&'static str, String)> {
             crate::config_v2::SCHEMA_JSON.to_string(),
         ),
         (
+            "repository-overlay.schema.json",
+            super::overlay::SCHEMA_JSON.to_string(),
+        ),
+        (
             "semgrep-python.yml",
             include_str!("../../policy/semgrep-python.yml").to_string(),
         ),
