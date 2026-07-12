@@ -1969,5 +1969,194 @@
     "references": [
       "codingStandards.md#code-organization"
     ]
+  },
+  {
+    "id": "shell-safety-review",
+    "title": "Review shell safety",
+    "description": "Quote variables, use safe parsing, and check command availability in shell glue.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [
+      "good: validate and bound the change; bad: apply unreviewed mutable configuration"
+    ],
+    "limitations": [
+      "This is review guidance; semantic shell/IaC/config safety is not claimed as static proof."
+    ],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "infrastructure",
+    "applies_to": {
+      "languages": [
+        "shell"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Quote variables, use safe parsing, and check command availability in shell glue.",
+    "enforcement": {
+      "mode": "instruction",
+      "checks": []
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "review_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#shell"
+    ]
+  },
+  {
+    "id": "shell-idempotency-review",
+    "title": "Review shell idempotency",
+    "description": "Shell automation should be idempotent and use bounded failure handling.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [
+      "good: validate and bound the change; bad: apply unreviewed mutable configuration"
+    ],
+    "limitations": [
+      "This is review guidance; semantic shell/IaC/config safety is not claimed as static proof."
+    ],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "infrastructure",
+    "applies_to": {
+      "languages": [
+        "shell"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Shell automation should be idempotent and use bounded failure handling.",
+    "enforcement": {
+      "mode": "instruction",
+      "checks": []
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "review_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#shell"
+    ]
+  },
+  {
+    "id": "iac-validation-review",
+    "title": "Review infrastructure validation",
+    "description": "Infrastructure changes require format, validation, least privilege, and rollback evidence.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [
+      "good: validate and bound the change; bad: apply unreviewed mutable configuration"
+    ],
+    "limitations": [
+      "This is review guidance; semantic shell/IaC/config safety is not claimed as static proof."
+    ],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "infrastructure",
+    "applies_to": {
+      "languages": [
+        "terraform"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Infrastructure changes require format, validation, least privilege, and rollback evidence.",
+    "enforcement": {
+      "mode": "instruction",
+      "checks": []
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "review_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#infrastructure-as-code"
+    ]
+  },
+  {
+    "id": "config-schema-review",
+    "title": "Review configuration schemas",
+    "description": "YAML, JSON, and shared configuration should use schemas and avoid duplicate keys or secret outputs.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [
+      "good: validate and bound the change; bad: apply unreviewed mutable configuration"
+    ],
+    "limitations": [
+      "This is review guidance; semantic shell/IaC/config safety is not claimed as static proof."
+    ],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "infrastructure",
+    "applies_to": {
+      "languages": [
+        "yaml",
+        "json"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "YAML, JSON, and shared configuration should use schemas and avoid duplicate keys or secret outputs.",
+    "enforcement": {
+      "mode": "instruction",
+      "checks": []
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "review_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#yaml-json-and-config"
+    ]
   }
 ]

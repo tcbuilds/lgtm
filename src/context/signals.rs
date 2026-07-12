@@ -38,8 +38,10 @@ fn add_language(path: &str, languages: &mut BTreeSet<String>) {
     let language = match path.rsplit_once('.').map(|(_, extension)| extension) {
         Some("py") => Some("python"),
         Some("rs") => Some("rust"),
+        Some("go") => Some("go"),
         Some("ts" | "tsx") => Some("typescript"),
         Some("js" | "jsx") => Some("javascript"),
+        Some("sh" | "bash") => Some("shell"),
         Some("tf") => Some("terraform"),
         Some("css" | "scss") => Some("css"),
         _ => None,

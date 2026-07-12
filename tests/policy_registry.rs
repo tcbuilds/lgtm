@@ -48,6 +48,10 @@ fn embedded_registry_validates_against_schema() {
             "function-size",
             "file-size",
             "function-complexity",
+            "shell-safety-review",
+            "shell-idempotency-review",
+            "iac-validation-review",
+            "config-schema-review",
         ]
     );
 }
