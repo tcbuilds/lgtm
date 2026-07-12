@@ -6,6 +6,7 @@
 
 pub mod checks;
 pub mod compile;
+pub mod config_v2;
 pub mod context;
 pub mod detect;
 pub mod discovery;

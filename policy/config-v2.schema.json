@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tcbuilds/lgtm/config-v2.schema.json",
+  "title": "lgtm structured repository configuration V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "profile", "workspaces", "disabled_rules", "severity_overrides"],
+  "properties": {
+    "version": {"const": "2"},
+    "profile": {"type": "string", "minLength": 1},
+    "workspaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "language", "root", "commands"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+          "language": {"type": "string", "minLength": 1},
+          "root": {"type": "string", "minLength": 1},
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["argv", "cwd", "timeout_seconds", "tier", "purpose", "source", "confidence"],
+              "properties": {
+                "argv": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+                "cwd": {"type": "string", "minLength": 1},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+                "tier": {"type": "string", "enum": ["fast", "targeted", "full"]},
+                "purpose": {"type": "string", "minLength": 1},
+                "source": {"type": "string", "minLength": 1},
+                "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
+              }
+            }
+          }
+        }
+      }
+    },
+    "disabled_rules": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "severity_overrides": {"type": "object", "additionalProperties": {"type": "string"}}
+  }
+}

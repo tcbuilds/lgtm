@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::fsutil::read_optional_bounded;
@@ -13,7 +13,7 @@ const MAX_WORKSPACES: usize = 64;
 const MAX_ENTRIES: usize = 4096;
 const MAX_METADATA_BYTES: u64 = 256 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Workspace {
     pub id: String,
     pub language: String,
@@ -21,7 +21,7 @@ pub struct Workspace {
     pub commands: Vec<CommandSpec>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CommandSpec {
     pub argv: Vec<String>,
     pub cwd: PathBuf,
