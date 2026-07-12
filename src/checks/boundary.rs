@@ -29,7 +29,15 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
             let trimmed = line.trim();
             let boundary = trimmed.starts_with("except") || trimmed.starts_with("catch");
             let retry = trimmed.to_ascii_lowercase().contains("retry");
-            if !boundary && !retry {
+            let unguarded_open =
+                extension == "py" && trimmed.contains("open(") && !trimmed.starts_with("with ");
+            let log_rethrow = (trimmed.contains("log") || trimmed.contains("logger"))
+                && lines
+                    .iter()
+                    .skip(index + 1)
+                    .take(4)
+                    .any(|value| value.contains("raise") || value.contains("throw"));
+            if !boundary && !retry && !unguarded_open && !log_rethrow {
                 continue;
             }
             let followup = lines.get(index + 1).map_or("", |value| value.trim());
@@ -51,7 +59,7 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
                 && !nearby.contains("jitter")
                 && !nearby.contains("cancel")
                 && !nearby.contains("timeout");
-            if empty_handler || unbounded_retry {
+            if empty_handler || unbounded_retry || unguarded_open || log_rethrow {
                 locations.push(Location {
                     file: file.clone(),
                     line: Some((index + 1) as u64),
@@ -115,6 +123,18 @@ mod tests {
         assert_eq!(scan(std::slice::from_ref(&file))[0].status, Status::Warning);
         std::fs::write(&path, "for retry in range(3):\n    backoff_and_cancel()\n")
             .expect("bounded fixture");
+        assert_eq!(scan(&[file])[0].status, Status::Passed);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn flags_unguarded_python_open() {
+        let path = std::env::temp_dir().join(format!("lgtm-open-{}.py", std::process::id()));
+        std::fs::write(&path, "handle = open(path)\n").expect("open fixture");
+        let file = path.to_string_lossy().into_owned();
+        assert_eq!(scan(std::slice::from_ref(&file))[0].status, Status::Warning);
+        std::fs::write(&path, "with open(path) as handle:\n    read(handle)\n")
+            .expect("context fixture");
         assert_eq!(scan(&[file])[0].status, Status::Passed);
         std::fs::remove_file(path).ok();
     }
