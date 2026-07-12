@@ -1,0 +1,20 @@
+{
+  "id": "fixture-rule",
+  "title": "Fixture rule",
+  "description": "Deterministic authoring fixture.",
+  "mechanism": "instruction",
+  "confidence": "high",
+  "examples": [],
+  "limitations": ["Fixture only."],
+  "enforcement_stage": "none",
+  "severity": "info",
+  "level": "review",
+  "category": "documentation",
+  "applies_to": {"languages": [], "domains": [], "file_patterns": []},
+  "activation": {"change_types": [], "signals": []},
+  "instruction": "Review this fixture rule.",
+  "enforcement": {"mode": "instruction", "checks": []},
+  "overridable": true,
+  "evidence": {"required": []},
+  "references": ["fixture"]
+}

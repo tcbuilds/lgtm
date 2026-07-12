@@ -173,6 +173,27 @@ enum PolicyCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Validate a rule object or registry JSON file without embedding it.
+    Validate {
+        /// Rule object or registry array to validate.
+        #[arg(long)]
+        input: PathBuf,
+    },
+    /// Append a validated rule object to a registry atomically.
+    Add {
+        /// Registry JSON file to update.
+        #[arg(long)]
+        registry: PathBuf,
+        /// Complete rule object to append.
+        #[arg(long)]
+        rule: PathBuf,
+    },
+    /// Validate fixture files; names containing `.invalid.` must fail.
+    Test {
+        /// Directory containing JSON fixtures.
+        #[arg(long)]
+        fixtures: PathBuf,
+    },
 }
 
 /// The five native agent lifecycle events wired by the Claude Code adapter.
@@ -394,6 +415,40 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
                 counts[0], counts[1], counts[2]
             );
             ExitCode::SUCCESS
+        }
+        PolicyCommand::Validate { input } => match lgtm::policy::authoring::validate_file(&input) {
+            Ok(count) => {
+                println!("policy valid: {count} rule(s)");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("policy validate failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        PolicyCommand::Add { registry, rule } => {
+            match lgtm::policy::authoring::add_rule(&registry, &rule) {
+                Ok(count) => {
+                    println!("policy updated: {count} rule(s) in {}", registry.display());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("policy add failed: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        PolicyCommand::Test { fixtures } => {
+            match lgtm::policy::authoring::test_fixtures(&fixtures) {
+                Ok((passed, total)) => {
+                    println!("policy fixtures passed: {passed}/{total}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("policy test failed: {error}");
+                    ExitCode::FAILURE
+                }
+            }
         }
     }
 }
