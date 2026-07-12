@@ -99,6 +99,25 @@ fn policy_explain_covers_backend_frontend_rust_docs_and_unknown_files() {
 }
 
 #[test]
+fn policy_examples_keeps_full_guidance_out_of_default_context() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args([
+            "policy",
+            "examples",
+            "typescript-no-any",
+            "--language",
+            "typescript",
+        ])
+        .output()
+        .expect("policy examples starts");
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("language: typescript"));
+    assert!(text.contains("good: use the supported pattern"));
+    assert!(text.contains("limitations:"));
+}
+
+#[test]
 fn policy_coverage_reports_every_normative_section() {
     let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["policy", "coverage", "--json"])

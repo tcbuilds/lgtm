@@ -143,6 +143,14 @@ enum PolicyCommand {
         #[arg(long)]
         check: bool,
     },
+    /// Inspect full rule examples without injecting them into normal packets.
+    Examples {
+        /// Stable rule identifier.
+        rule_id: String,
+        /// Optional language label for the displayed guidance.
+        #[arg(long)]
+        language: Option<String>,
+    },
     /// Show standards coverage status.
     Coverage {
         /// Emit machine-readable JSON.
@@ -286,6 +294,24 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        PolicyCommand::Examples { rule_id, language } => {
+            let Some(rule) = rules.iter().find(|rule| rule.id == rule_id) else {
+                eprintln!("policy examples failed: unknown rule `{rule_id}`");
+                return ExitCode::FAILURE;
+            };
+            println!("rule: {}", rule.id);
+            println!("language: {}", language.as_deref().unwrap_or("all"));
+            println!("examples:");
+            if rule.examples.is_empty() {
+                println!("  (none embedded)");
+            } else {
+                for example in &rule.examples {
+                    println!("  - {}", example);
+                }
+            }
+            println!("limitations: {}", rule.limitations.join(" | "));
+            ExitCode::SUCCESS
+        }
         PolicyCommand::Coverage { json } => {
             let report = match lgtm::policy::coverage::report() {
                 Ok(report) => report,
