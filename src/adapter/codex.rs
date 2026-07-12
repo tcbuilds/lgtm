@@ -13,8 +13,34 @@ use super::{EncodedResponse, HookAdapter, HookEvent, HookRequest, HookResponse, 
 pub struct CodexAdapter;
 
 impl HookAdapter for CodexAdapter {
-    fn parse_request(&self, _event: HookEvent, _stdin_json: &str) -> Result<HookRequest, String> {
-        Err("Codex request parsing is not implemented yet".to_string())
+    fn parse_request(&self, event: HookEvent, stdin_json: &str) -> Result<HookRequest, String> {
+        let value = if stdin_json.trim().is_empty() {
+            Value::Object(serde_json::Map::new())
+        } else {
+            serde_json::from_str(stdin_json).map_err(|error| format!("parse stdin ({error})"))?
+        };
+        if !value.is_object() {
+            return Err("parse stdin (payload is not a JSON object)".to_string());
+        }
+        if let Some(payload_event) = string_field(&value, "hookEventName")
+            .or_else(|| string_field(&value, "hook_event_name"))
+            && payload_event != event_name(event)
+        {
+            return Err(format!(
+                "parse stdin (hook event {payload_event} does not match {})",
+                event_name(event)
+            ));
+        }
+        Ok(HookRequest {
+            event,
+            tool_name: string_field(&value, "tool_name").map(canonical_tool_name),
+            tool_input: value.get("tool_input").cloned(),
+            prompt: string_field(&value, "prompt").or_else(|| string_field(&value, "user_prompt")),
+            session_id: string_field(&value, "session_id"),
+            cwd: string_field(&value, "cwd"),
+            transcript_path: string_field(&value, "transcript_path"),
+            source: string_field(&value, "source"),
+        })
     }
 
     fn encode_response(
@@ -90,6 +116,19 @@ fn invalid_combination(event: HookEvent, response: &str) -> String {
         "encode response ({response} is not valid for {})",
         event_name(event)
     )
+}
+
+fn string_field(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn canonical_tool_name(name: String) -> String {
+    match name.as_str() {
+        "apply_patch" | "Edit" => "Edit".to_string(),
+        "Write" => "Write".to_string(),
+        "exec_command" | "unified_exec" | "Bash" => "Bash".to_string(),
+        _ => name,
+    }
 }
 
 #[cfg(test)]
@@ -204,5 +243,57 @@ mod tests {
                 .expect_err("unsupported response pair must be rejected");
             assert!(error.contains("encode response"));
         }
+    }
+
+    #[test]
+    fn parses_codex_pre_tool_use_fixture_and_normalizes_edit_tool() {
+        let request = CodexAdapter
+            .parse_request(
+                HookEvent::PreToolUse,
+                include_str!("../../tests/fixtures/codex/pre_tool_use.json"),
+            )
+            .expect("Codex fixture parses");
+        assert_eq!(request.event, HookEvent::PreToolUse);
+        assert_eq!(request.tool_name.as_deref(), Some("Edit"));
+        assert_eq!(request.session_id.as_deref(), Some("session-123"));
+        assert_eq!(request.cwd.as_deref(), Some("/workspace/repo"));
+        assert_eq!(request.transcript_path.as_deref(), Some("/tmp/codex.jsonl"));
+        assert_eq!(
+            request.tool_input,
+            Some(json!({"patch": "*** Begin Patch"}))
+        );
+    }
+
+    #[test]
+    fn normalizes_codex_command_tool_names() {
+        for (codex_name, expected) in [
+            ("apply_patch", "Edit"),
+            ("Edit", "Edit"),
+            ("Write", "Write"),
+            ("exec_command", "Bash"),
+            ("unified_exec", "Bash"),
+            ("Bash", "Bash"),
+        ] {
+            let payload =
+                format!("{{\"hookEventName\":\"PostToolUse\",\"tool_name\":\"{codex_name}\"}}");
+            let request = CodexAdapter
+                .parse_request(HookEvent::PostToolUse, &payload)
+                .expect("tool payload parses");
+            assert_eq!(request.tool_name.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_non_object_and_mismatched_event_payloads() {
+        for payload in ["{ not json", "null", "[]", "\"text\""] {
+            let error = CodexAdapter
+                .parse_request(HookEvent::Stop, payload)
+                .expect_err("malformed payload must fail");
+            assert!(error.contains("parse stdin"));
+        }
+        let error = CodexAdapter
+            .parse_request(HookEvent::Stop, r#"{"hookEventName":"PreToolUse"}"#)
+            .expect_err("mismatched event must fail");
+        assert!(error.contains("does not match Stop"));
     }
 }

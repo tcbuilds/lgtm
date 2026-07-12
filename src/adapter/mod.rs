@@ -116,12 +116,13 @@ pub trait HookAdapter {
     /// Encode a normalized [`HookResponse`] into harness bytes, stream, and exit
     /// code for the given event.
     ///
-    /// Only event-valid pairs encode: a context injection belongs to
-    /// SessionStart or UserPromptSubmit, a deny to PreToolUse, and a block to
-    /// PostToolUse or Stop; an allow is valid for any event. Any other pair is
-    /// an invalid contract and returns `Err` rather than emitting plausible but
-    /// wrong bytes. Callers MUST treat an `Err` as fail-open per lgtm's
-    /// fail-safe design: exit 0 with no output rather than blocking the agent.
+    /// Only event-valid pairs encode. Each adapter owns its event capability
+    /// matrix; a Claude context injection is limited to SessionStart and
+    /// UserPromptSubmit, while Codex also supports its own PostToolUse and
+    /// PreToolUse context forms. Any unsupported pair returns `Err` rather than
+    /// emitting plausible but wrong bytes. Callers MUST treat an `Err` as
+    /// fail-open per lgtm's fail-safe design: exit 0 with no output rather than
+    /// blocking the agent.
     fn encode_response(
         &self,
         event: HookEvent,

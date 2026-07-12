@@ -1,0 +1,8 @@
+{
+  "session_id": "session-123",
+  "cwd": "/workspace/repo",
+  "hookEventName": "PreToolUse",
+  "tool_name": "apply_patch",
+  "tool_input": {"patch": "*** Begin Patch"},
+  "transcript_path": "/tmp/codex.jsonl"
+}
