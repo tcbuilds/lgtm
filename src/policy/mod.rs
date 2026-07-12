@@ -561,7 +561,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 63);
+        assert_eq!(rules.len(), 64);
     }
 
     #[test]
@@ -632,6 +632,7 @@ mod tests {
                 "shell-idempotency-review",
                 "iac-validation-review",
                 "config-schema-review",
+                "endpoint-controls-review",
                 "public-endpoint-review",
                 "safe-construction-review",
                 "justification-metadata",
@@ -687,6 +688,7 @@ mod tests {
                     | "shell-idempotency-review"
                     | "iac-validation-review"
                     | "config-schema-review"
+                    | "endpoint-controls-review"
                     | "public-endpoint-review"
                     | "safe-construction-review"
                     | "sql-migration-review"

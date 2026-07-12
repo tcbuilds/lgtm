@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "endpoint-controls-review",
+    "title": "Review endpoint security controls",
+    "description": "Public and expensive routes need input validation, server-side authorization, rate limiting, secure cookies/CORS/CSRF, and non-debug defaults.",
+    "mechanism": "instruction",
+    "confidence": "low",
+    "examples": [{"language": "all", "text": "good: validate, authorize, rate-limit; bad: trust raw public input and ship debug mode", "provenance": "codingStandards.md#security-standards", "schematic": true}],
+    "limitations": ["Framework-specific auth, rate-limit, cookie, CORS, and CSRF semantics remain review unless a registered checker proves them."],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "security",
+    "applies_to": {"languages": ["python", "typescript", "javascript"], "domains": ["api"], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["endpoint", "route", "api", "public", "auth"]},
+    "instruction": "For each public or expensive route, document runtime validation, server-side authentication/authorization, rate limiting, secure cookies/CORS/CSRF, and non-debug defaults; report unknown semantics as review.",
+    "enforcement": {"mode": "instruction", "checks": []},
+    "overridable": true,
+    "evidence": {"required": ["review_result"]},
+    "references": ["codingStandards.md#security-standards"]
+  },
+  {
     "id": "public-endpoint-review",
     "title": "Review public endpoint controls",
     "description": "Detected public endpoints require boundary validation, server-side authentication/authorization, rate limits, and secure cookie/CORS/CSRF/debug defaults.",
