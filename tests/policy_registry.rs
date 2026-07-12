@@ -38,6 +38,8 @@ fn embedded_registry_validates_against_schema() {
             "react-effect-cleanup",
             "react-error-loading-states",
             "react-accessibility-review",
+            "rust-async-timeout-review",
+            "rust-id-unit-newtype-review",
         ]
     );
 }

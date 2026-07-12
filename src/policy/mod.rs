@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 27);
+        assert_eq!(rules.len(), 29);
     }
 
     #[test]
@@ -588,6 +588,8 @@ mod tests {
                 "react-effect-cleanup",
                 "react-error-loading-states",
                 "react-accessibility-review",
+                "rust-async-timeout-review",
+                "rust-id-unit-newtype-review",
             ]
         );
     }
@@ -607,6 +609,8 @@ mod tests {
                     | "react-effect-cleanup"
                     | "react-error-loading-states"
                     | "react-accessibility-review"
+                    | "rust-async-timeout-review"
+                    | "rust-id-unit-newtype-review"
                     | "typescript-no-any"
                     | "typescript-unsafe-unknown"
                     | "typescript-api-response-validation"

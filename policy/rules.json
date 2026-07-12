@@ -1488,5 +1488,99 @@
     "references": [
       "codingStandards.md#react"
     ]
+  },
+  {
+    "id": "rust-async-timeout-review",
+    "title": "Review Rust external async timeouts",
+    "description": "External Rust async work should use explicit timeout and cancellation boundaries.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [
+      "good: make boundaries typed and cancellable; bad: pass loose strings or detached work"
+    ],
+    "limitations": [
+      "This is review guidance; semantic async and domain modeling proof is not claimed."
+    ],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "rust"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "External Rust async work should use explicit timeout and cancellation boundaries.",
+    "enforcement": {
+      "mode": "instruction",
+      "checks": []
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "review_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#rust"
+    ]
+  },
+  {
+    "id": "rust-id-unit-newtype-review",
+    "title": "Review Rust IDs and units",
+    "description": "Rust IDs, units, and validated strings should use domain newtypes at boundaries.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [
+      "good: make boundaries typed and cancellable; bad: pass loose strings or detached work"
+    ],
+    "limitations": [
+      "This is review guidance; semantic async and domain modeling proof is not claimed."
+    ],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "rust"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Rust IDs, units, and validated strings should use domain newtypes at boundaries.",
+    "enforcement": {
+      "mode": "instruction",
+      "checks": []
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "review_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#rust"
+    ]
   }
 ]

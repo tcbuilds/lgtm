@@ -91,6 +91,18 @@ fn scan_rule(rule: &RuleSpec, files: &[String]) -> EnforcementResult {
     }
     let mut locations = Vec::new();
     for file in applicable {
+        let language = match Path::new(file)
+            .extension()
+            .and_then(|extension| extension.to_str())
+        {
+            Some("rs") => "rust",
+            Some("ts" | "tsx") => "typescript",
+            Some("js" | "jsx") => "javascript",
+            _ => "unsupported",
+        };
+        if crate::structure::analyze_file(Path::new(file), language).is_err() {
+            return result(rule, Status::Unverified, Vec::new());
+        }
         let Ok(metadata) = std::fs::metadata(file) else {
             return result(rule, Status::Unverified, Vec::new());
         };

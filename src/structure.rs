@@ -59,7 +59,10 @@ pub fn analyze_file(path: &Path, language: &str) -> Result<Analysis, AnalysisErr
 }
 
 pub fn analyze_source(language: &str, source: &str) -> Result<Analysis, AnalysisError> {
-    if !matches!(language, "python" | "rust" | "typescript" | "javascript") {
+    if !matches!(
+        language,
+        "python" | "rust" | "typescript" | "javascript" | "go"
+    ) {
         return Err(AnalysisError::UnsupportedLanguage(language.to_string()));
     }
     if source.len() as u64 > MAX_SOURCE_BYTES {
@@ -141,10 +144,10 @@ fn function_header(line: &str, language: &str) -> Option<(String, usize)> {
             .trim();
         return (!name.is_empty()).then(|| (name.to_string(), indent));
     }
-    let marker = if language == "rust" {
-        "fn "
-    } else {
-        "function "
+    let marker = match language {
+        "rust" => "fn ",
+        "go" => "func ",
+        _ => "function ",
     };
     let start = trimmed.find(marker)? + marker.len();
     let name = trimmed[start..].split(['(', '<', ' ']).next()?.trim();
@@ -253,5 +256,26 @@ mod tests {
             analyze_source("python", &"x\n".repeat(MAX_LINES + 1)),
             Err(AnalysisError::TooManyLines)
         ));
+    }
+
+    #[test]
+    fn bounded_typescript_and_go_functions_are_supported() {
+        let typescript = analyze_source(
+            "typescript",
+            "function render(value: unknown) {\n  return value;\n}\n",
+        )
+        .expect("TypeScript analysis");
+        assert_eq!(typescript.functions[0].name, "render");
+        let go = analyze_source("go", "func Run(value string) {\n}\n").expect("Go analysis");
+        assert_eq!(go.functions[0].name, "Run");
+        assert!(matches!(
+            analyze_source("typescript", "function broken() {"),
+            Err(AnalysisError::UnbalancedBraces)
+        ));
+        assert!(matches!(
+            analyze_source("go", "func broken() {"),
+            Err(AnalysisError::UnbalancedBraces)
+        ));
+        assert!(is_excluded_path(Path::new("target/generated.rs")));
     }
 }
