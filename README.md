@@ -4,27 +4,32 @@
 
 The current release supports Python repositories on x86_64 Linux and macOS.
 
-## Quick Start
+## Quick Install
 
-Install Rust, clone this repository, then install the CLI:
+Linux and macOS:
 
 ```bash
-git clone https://github.com/tcbuilds/lgtm.git
-cd lgtm
-cargo install --path .
+curl -fsSL https://raw.githubusercontent.com/tcbuilds/lgtm/main/scripts/install.sh | sh
 lgtm --version
 ```
 
-After public releases are enabled, a cloned checkout can install the latest prebuilt binary without Rust:
+This downloads the latest release, verifies its SHA-256 checksum, and installs `lgtm` to `~/.local/bin`. Add that directory to `PATH` if needed:
 
 ```bash
-./scripts/install.sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc # or ~/.zshrc
 ```
 
-Move to the Python repository you want to protect and initialize LGTM:
+> The current Linux binary requires GLIBC 2.39. On older Linux systems, install from source with Rust:
 
 ```bash
-cd ../my-python-project
+cargo install --git https://github.com/tcbuilds/lgtm
+```
+
+## Initialize a Project
+
+From the Python repository you want to protect:
+
+```bash
 lgtm init
 lgtm doctor
 ```
