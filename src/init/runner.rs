@@ -72,6 +72,14 @@ pub fn preview(root: &Path) -> Result<InitSummary, InitError> {
     let _ = validate_config(&config_path)?;
     let mut notes = vec!["dry-run: no files changed".to_string()];
     note_unsupported_repo(&detection, &mut notes);
+    for workspace in &workspaces {
+        if workspace.commands.is_empty() {
+            notes.push(format!(
+                "missing gates: workspace `{}` has no recognized quality commands",
+                workspace.id
+            ));
+        }
+    }
     Ok(InitSummary {
         detection,
         workspaces,
