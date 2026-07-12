@@ -143,7 +143,13 @@ fn examples_markdown() -> String {
             rule.limitations.join(" ")
         ));
         for example in rule.examples {
-            markdown.push_str(&format!("- {}\n", example.replace('\n', " ")));
+            markdown.push_str(&format!(
+                "- [{}] {} (provenance: {}; schematic: {})\n",
+                example.language,
+                example.text.replace('\n', " "),
+                example.provenance,
+                example.schematic
+            ));
         }
         markdown.push('\n');
     }

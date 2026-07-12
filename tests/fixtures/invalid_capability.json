@@ -5,7 +5,7 @@
     "description": "This fixture claims native enforcement without registering a check.",
     "mechanism": "native",
     "confidence": "high",
-    "examples": ["good: register a check; bad: claim automation without one"],
+    "examples": [{"language": "all", "text": "good: register a check; bad: claim automation without one", "provenance": "codingStandards.md#non-negotiable-rules", "schematic": true}],
     "limitations": ["Fixture intentionally violates the capability contract."],
     "enforcement_stage": "post_tool",
     "severity": "error",

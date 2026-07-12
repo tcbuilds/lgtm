@@ -49,7 +49,12 @@
     "mechanism": "native",
     "confidence": "high",
     "examples": [
-      "good: satisfy No committed secrets; bad: bypass it"
+      {
+        "language": "all",
+        "text": "good: satisfy No committed secrets; bad: bypass it",
+        "provenance": "codingStandards.md#non-negotiable-rules",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -107,7 +112,12 @@
     "mechanism": "native",
     "confidence": "high",
     "examples": [
-      "good: satisfy No swallowed errors; bad: bypass it"
+      {
+        "language": "python",
+        "text": "good: satisfy No swallowed errors; bad: bypass it",
+        "provenance": "codingStandards.md#error-handling",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -176,7 +186,12 @@
     "mechanism": "native",
     "confidence": "high",
     "examples": [
-      "good: satisfy No broad exception handling; bad: bypass it"
+      {
+        "language": "python",
+        "text": "good: satisfy No broad exception handling; bad: bypass it",
+        "provenance": "codingStandards.md#error-handling",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -248,7 +263,12 @@
     "mechanism": "native",
     "confidence": "high",
     "examples": [
-      "good: satisfy External calls require timeouts; bad: bypass it"
+      {
+        "language": "python",
+        "text": "good: satisfy External calls require timeouts; bad: bypass it",
+        "provenance": "codingStandards.md#non-negotiable-rules",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -313,7 +333,12 @@
     "mechanism": "native",
     "confidence": "high",
     "examples": [
-      "good: satisfy Validate public input; bad: bypass it"
+      {
+        "language": "python",
+        "text": "good: satisfy Validate public input; bad: bypass it",
+        "provenance": "codingStandards.md#non-negotiable-rules",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -380,7 +405,12 @@
     "mechanism": "native",
     "confidence": "high",
     "examples": [
-      "good: satisfy Parameterize SQL; bad: bypass it"
+      {
+        "language": "python",
+        "text": "good: satisfy Parameterize SQL; bad: bypass it",
+        "provenance": "codingStandards.md#security-standards",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -447,7 +477,12 @@
     "mechanism": "native",
     "confidence": "high",
     "examples": [
-      "good: satisfy Bound retries and loops; bad: bypass it"
+      {
+        "language": "python",
+        "text": "good: satisfy Bound retries and loops; bad: bypass it",
+        "provenance": "codingStandards.md#non-negotiable-rules",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -514,7 +549,12 @@
     "mechanism": "native",
     "confidence": "high",
     "examples": [
-      "good: satisfy Safeguard destructive operations; bad: bypass it"
+      {
+        "language": "python",
+        "text": "good: satisfy Safeguard destructive operations; bad: bypass it",
+        "provenance": "codingStandards.md#security-standards",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -576,7 +616,12 @@
     "mechanism": "review",
     "confidence": "medium",
     "examples": [
-      "good: satisfy Regression tests required; bad: bypass it"
+      {
+        "language": "python",
+        "text": "good: satisfy Regression tests required; bad: bypass it",
+        "provenance": "codingStandards.md#testing-standards",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -637,7 +682,12 @@
     "mechanism": "review",
     "confidence": "medium",
     "examples": [
-      "good: satisfy New behavior tests required; bad: bypass it"
+      {
+        "language": "python",
+        "text": "good: satisfy New behavior tests required; bad: bypass it",
+        "provenance": "codingStandards.md#testing-standards",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -697,7 +747,12 @@
     "mechanism": "evidence",
     "confidence": "high",
     "examples": [
-      "good: satisfy Preserve unrelated user changes; bad: bypass it"
+      {
+        "language": "all",
+        "text": "good: satisfy Preserve unrelated user changes; bad: bypass it",
+        "provenance": "codingStandards.md#review-and-change-standards",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -746,7 +801,12 @@
     "mechanism": "review",
     "confidence": "medium",
     "examples": [
-      "good: satisfy Review new dependencies; bad: bypass it"
+      {
+        "language": "all",
+        "text": "good: satisfy Review new dependencies; bad: bypass it",
+        "provenance": "codingStandards.md#dependency-standards",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -796,7 +856,12 @@
     "mechanism": "review",
     "confidence": "medium",
     "examples": [
-      "good: satisfy Review auth and security changes; bad: bypass it"
+      {
+        "language": "all",
+        "text": "good: satisfy Review auth and security changes; bad: bypass it",
+        "provenance": "codingStandards.md#security-standards",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -844,7 +909,12 @@
     "mechanism": "command",
     "confidence": "high",
     "examples": [
-      "good: satisfy Required repository commands pass; bad: bypass it"
+      {
+        "language": "all",
+        "text": "good: satisfy Required repository commands pass; bad: bypass it",
+        "provenance": "codingStandards.md#review-and-change-standards",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -892,7 +962,12 @@
     "mechanism": "evidence",
     "confidence": "high",
     "examples": [
-      "good: satisfy Verification claims require evidence; bad: bypass it"
+      {
+        "language": "all",
+        "text": "good: satisfy Verification claims require evidence; bad: bypass it",
+        "provenance": "codingStandards.md#review-and-change-standards",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Automated checks cover only registered patterns; review other implementations."
@@ -906,7 +981,12 @@
     "mechanism": "native",
     "confidence": "medium",
     "examples": [
-      "good: use the supported pattern; bad: bypass it"
+      {
+        "language": "rust",
+        "text": "good: use the supported pattern; bad: bypass it",
+        "provenance": "codingStandards.md#rust",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The native check is lexical and requires review for complex syntax."
@@ -955,7 +1035,12 @@
     "mechanism": "native",
     "confidence": "medium",
     "examples": [
-      "good: use the supported pattern; bad: bypass it"
+      {
+        "language": "rust",
+        "text": "good: use the supported pattern; bad: bypass it",
+        "provenance": "codingStandards.md#rust",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The native check is lexical and requires review for complex syntax."
@@ -1004,7 +1089,12 @@
     "mechanism": "native",
     "confidence": "medium",
     "examples": [
-      "good: use the supported pattern; bad: bypass it"
+      {
+        "language": "typescript",
+        "text": "good: use the supported pattern; bad: bypass it",
+        "provenance": "codingStandards.md#typescript",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The native check is lexical and requires review for complex syntax."
@@ -1054,7 +1144,12 @@
     "mechanism": "native",
     "confidence": "low",
     "examples": [
-      "good: use the supported pattern; bad: bypass it"
+      {
+        "language": "typescript",
+        "text": "good: use the supported pattern; bad: bypass it",
+        "provenance": "codingStandards.md#react",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The native check is lexical and requires review for complex syntax."
@@ -1104,7 +1199,12 @@
     "mechanism": "native",
     "confidence": "low",
     "examples": [
-      "good: use the supported pattern; bad: bypass it"
+      {
+        "language": "typescript",
+        "text": "good: use the supported pattern; bad: bypass it",
+        "provenance": "codingStandards.md#react",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The native check is lexical and requires review for complex syntax."
@@ -1154,7 +1254,12 @@
     "mechanism": "native",
     "confidence": "low",
     "examples": [
-      "good: validate at the boundary; bad: trust raw JSON"
+      {
+        "language": "typescript",
+        "text": "good: validate at the boundary; bad: trust raw JSON",
+        "provenance": "codingStandards.md#typescript-and-javascript",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The lexical check identifies common boundary calls and requires review for wrappers and schema libraries."
@@ -1204,7 +1309,12 @@
     "mechanism": "native",
     "confidence": "low",
     "examples": [
-      "good: validate at the boundary; bad: trust raw JSON"
+      {
+        "language": "typescript",
+        "text": "good: validate at the boundary; bad: trust raw JSON",
+        "provenance": "codingStandards.md#typescript-and-javascript",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The lexical check identifies common boundary calls and requires review for wrappers and schema libraries."
@@ -1254,7 +1364,12 @@
     "mechanism": "native",
     "confidence": "low",
     "examples": [
-      "good: propagate cancellation and errors; bad: detach work"
+      {
+        "language": "rust",
+        "text": "good: propagate cancellation and errors; bad: detach work",
+        "provenance": "codingStandards.md#rust",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The lexical check identifies common spawn/global syntax and requires review for wrappers and macros."
@@ -1303,7 +1418,12 @@
     "mechanism": "native",
     "confidence": "low",
     "examples": [
-      "good: propagate cancellation and errors; bad: detach work"
+      {
+        "language": "rust",
+        "text": "good: propagate cancellation and errors; bad: detach work",
+        "provenance": "codingStandards.md#rust",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The lexical check identifies common spawn/global syntax and requires review for wrappers and macros."
@@ -1352,7 +1472,12 @@
     "mechanism": "review",
     "confidence": "low",
     "examples": [
-      "good: make the state explicit; bad: rely on implicit null behavior"
+      {
+        "language": "typescript",
+        "text": "good: make the state explicit; bad: rely on implicit null behavior",
+        "provenance": "codingStandards.md#react",
+        "schematic": true
+      }
     ],
     "limitations": [
       "This is review guidance; semantic UI quality is not claimed as static proof."
@@ -1400,7 +1525,12 @@
     "mechanism": "review",
     "confidence": "low",
     "examples": [
-      "good: make the state explicit; bad: rely on implicit null behavior"
+      {
+        "language": "typescript",
+        "text": "good: make the state explicit; bad: rely on implicit null behavior",
+        "provenance": "codingStandards.md#react",
+        "schematic": true
+      }
     ],
     "limitations": [
       "This is review guidance; semantic UI quality is not claimed as static proof."
@@ -1448,7 +1578,12 @@
     "mechanism": "review",
     "confidence": "low",
     "examples": [
-      "good: make the state explicit; bad: rely on implicit null behavior"
+      {
+        "language": "typescript",
+        "text": "good: make the state explicit; bad: rely on implicit null behavior",
+        "provenance": "codingStandards.md#react",
+        "schematic": true
+      }
     ],
     "limitations": [
       "This is review guidance; semantic UI quality is not claimed as static proof."
@@ -1496,7 +1631,12 @@
     "mechanism": "review",
     "confidence": "low",
     "examples": [
-      "good: make boundaries typed and cancellable; bad: pass loose strings or detached work"
+      {
+        "language": "rust",
+        "text": "good: make boundaries typed and cancellable; bad: pass loose strings or detached work",
+        "provenance": "codingStandards.md#rust",
+        "schematic": true
+      }
     ],
     "limitations": [
       "This is review guidance; semantic async and domain modeling proof is not claimed."
@@ -1543,7 +1683,12 @@
     "mechanism": "review",
     "confidence": "low",
     "examples": [
-      "good: make boundaries typed and cancellable; bad: pass loose strings or detached work"
+      {
+        "language": "rust",
+        "text": "good: make boundaries typed and cancellable; bad: pass loose strings or detached work",
+        "provenance": "codingStandards.md#rust",
+        "schematic": true
+      }
     ],
     "limitations": [
       "This is review guidance; semantic async and domain modeling proof is not claimed."
@@ -1590,7 +1735,12 @@
     "mechanism": "native",
     "confidence": "low",
     "examples": [
-      "good: handle and wrap causes; bad: discard or detach errors"
+      {
+        "language": "go",
+        "text": "good: handle and wrap causes; bad: discard or detach errors",
+        "provenance": "codingStandards.md#go",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The lexical check identifies common patterns and requires review for interfaces, generated code, and wrappers."
@@ -1639,7 +1789,12 @@
     "mechanism": "native",
     "confidence": "low",
     "examples": [
-      "good: handle and wrap causes; bad: discard or detach errors"
+      {
+        "language": "go",
+        "text": "good: handle and wrap causes; bad: discard or detach errors",
+        "provenance": "codingStandards.md#go",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The lexical check identifies common patterns and requires review for interfaces, generated code, and wrappers."
@@ -1688,7 +1843,12 @@
     "mechanism": "native",
     "confidence": "low",
     "examples": [
-      "good: handle and wrap causes; bad: discard or detach errors"
+      {
+        "language": "go",
+        "text": "good: handle and wrap causes; bad: discard or detach errors",
+        "provenance": "codingStandards.md#go",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The lexical check identifies common patterns and requires review for interfaces, generated code, and wrappers."
@@ -1737,7 +1897,12 @@
     "mechanism": "native",
     "confidence": "low",
     "examples": [
-      "good: handle and wrap causes; bad: discard or detach errors"
+      {
+        "language": "go",
+        "text": "good: handle and wrap causes; bad: discard or detach errors",
+        "provenance": "codingStandards.md#go",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The lexical check identifies common patterns and requires review for interfaces, generated code, and wrappers."
@@ -1786,7 +1951,12 @@
     "mechanism": "review",
     "confidence": "low",
     "examples": [
-      "good: func Run(ctx context.Context, ...); bad: hide context in globals"
+      {
+        "language": "go",
+        "text": "good: func Run(ctx context.Context, ...); bad: hide context in globals",
+        "provenance": "codingStandards.md#go",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Context placement is review guidance until grammar-backed analysis is available."
@@ -1833,7 +2003,12 @@
     "mechanism": "native",
     "confidence": "medium",
     "examples": [
-      "good: split cohesive responsibilities; bad: grow one multi-concern function"
+      {
+        "language": "all",
+        "text": "good: split cohesive responsibilities; bad: grow one multi-concern function",
+        "provenance": "codingStandards.md#code-organization",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Lexical spans do not prove semantic cohesion; untouched legacy debt is not baselined yet."
@@ -1881,7 +2056,12 @@
     "mechanism": "native",
     "confidence": "medium",
     "examples": [
-      "good: keep one abstraction level; bad: combine unrelated branches"
+      {
+        "language": "all",
+        "text": "good: keep one abstraction level; bad: combine unrelated branches",
+        "provenance": "codingStandards.md#code-organization",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Lexical metrics are review signals; generated code and legacy baselines need repository policy."
@@ -1929,7 +2109,12 @@
     "mechanism": "native",
     "confidence": "medium",
     "examples": [
-      "good: keep one abstraction level; bad: combine unrelated branches"
+      {
+        "language": "all",
+        "text": "good: keep one abstraction level; bad: combine unrelated branches",
+        "provenance": "codingStandards.md#code-organization",
+        "schematic": true
+      }
     ],
     "limitations": [
       "Lexical metrics are review signals; generated code and legacy baselines need repository policy."
@@ -1977,7 +2162,12 @@
     "mechanism": "review",
     "confidence": "low",
     "examples": [
-      "good: validate and bound the change; bad: apply unreviewed mutable configuration"
+      {
+        "language": "shell",
+        "text": "good: validate and bound the change; bad: apply unreviewed mutable configuration",
+        "provenance": "codingStandards.md#shell",
+        "schematic": true
+      }
     ],
     "limitations": [
       "This is review guidance; semantic shell/IaC/config safety is not claimed as static proof."
@@ -2024,7 +2214,12 @@
     "mechanism": "review",
     "confidence": "low",
     "examples": [
-      "good: validate and bound the change; bad: apply unreviewed mutable configuration"
+      {
+        "language": "shell",
+        "text": "good: validate and bound the change; bad: apply unreviewed mutable configuration",
+        "provenance": "codingStandards.md#shell",
+        "schematic": true
+      }
     ],
     "limitations": [
       "This is review guidance; semantic shell/IaC/config safety is not claimed as static proof."
@@ -2071,7 +2266,12 @@
     "mechanism": "review",
     "confidence": "low",
     "examples": [
-      "good: validate and bound the change; bad: apply unreviewed mutable configuration"
+      {
+        "language": "terraform",
+        "text": "good: validate and bound the change; bad: apply unreviewed mutable configuration",
+        "provenance": "codingStandards.md#infrastructure-as-code",
+        "schematic": true
+      }
     ],
     "limitations": [
       "This is review guidance; semantic shell/IaC/config safety is not claimed as static proof."
@@ -2118,7 +2318,12 @@
     "mechanism": "review",
     "confidence": "low",
     "examples": [
-      "good: validate and bound the change; bad: apply unreviewed mutable configuration"
+      {
+        "language": "yaml",
+        "text": "good: validate and bound the change; bad: apply unreviewed mutable configuration",
+        "provenance": "codingStandards.md#yaml-json-and-config",
+        "schematic": true
+      }
     ],
     "limitations": [
       "This is review guidance; semantic shell/IaC/config safety is not claimed as static proof."
@@ -2166,7 +2371,12 @@
     "mechanism": "native",
     "confidence": "medium",
     "examples": [
-      "good: ship focused code; bad: leave debug output or temporary suppressions"
+      {
+        "language": "all",
+        "text": "good: ship focused code; bad: leave debug output or temporary suppressions",
+        "provenance": "codingStandards.md#anti-slop-checklist",
+        "schematic": true
+      }
     ],
     "limitations": [
       "The diff check covers high-confidence lexical signals only; architectural slop remains review."

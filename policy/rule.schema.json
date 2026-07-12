@@ -55,7 +55,17 @@
     "examples": {
       "description": "Short good/bad examples shown when the rule is activated.",
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["language", "text", "provenance", "schematic"],
+        "properties": {
+          "language": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1 },
+          "provenance": { "type": "string", "minLength": 1 },
+          "schematic": { "type": "boolean" }
+        }
+      },
       "maxItems": 4
     },
     "limitations": {

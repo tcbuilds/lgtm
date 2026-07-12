@@ -254,7 +254,14 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
             println!("domains: {}", rule.applies_to.domains.join(", "));
             println!("files: {}", rule.applies_to.file_patterns.join(", "));
             println!("instruction: {}", rule.instruction);
-            println!("examples: {}", rule.examples.join(" | "));
+            println!(
+                "examples: {}",
+                rule.examples
+                    .iter()
+                    .map(|example| example.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
             println!("limitations: {}", rule.limitations.join(" | "));
             println!("evidence: {}", rule.evidence.required.join(", "));
             println!("overridable: {}", rule.overridable);
@@ -306,7 +313,10 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
                 println!("  (none embedded)");
             } else {
                 for example in &rule.examples {
-                    println!("  - {}", example);
+                    println!(
+                        "  - [{}] {} (provenance: {}; schematic: {})",
+                        example.language, example.text, example.provenance, example.schematic
+                    );
                 }
             }
             println!("limitations: {}", rule.limitations.join(" | "));

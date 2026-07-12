@@ -304,6 +304,16 @@ pub struct Evidence {
     pub required: Vec<String>,
 }
 
+/// A compact, inspectable example attached to a rule.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Example {
+    pub language: String,
+    pub text: String,
+    pub provenance: String,
+    pub schematic: bool,
+}
+
 /// A single canonical engineering rule.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -313,7 +323,7 @@ pub struct Rule {
     pub description: String,
     pub mechanism: Mechanism,
     pub confidence: Confidence,
-    pub examples: Vec<String>,
+    pub examples: Vec<Example>,
     pub limitations: Vec<String>,
     pub enforcement_stage: EnforcementStage,
     #[serde(default)]
@@ -552,6 +562,20 @@ mod tests {
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
         assert_eq!(rules.len(), 42);
+    }
+
+    #[test]
+    fn examples_are_bounded_attributed_and_secret_free() {
+        let rules = load_embedded_registry().expect("embedded registry must validate");
+        for rule in rules {
+            for example in rule.examples {
+                assert!(!example.language.trim().is_empty());
+                assert!(!example.text.trim().is_empty());
+                assert!(!example.provenance.trim().is_empty());
+                assert!(example.text.len() <= 512);
+                assert!(!example.text.contains("sk-") && !example.text.contains("AKIA"));
+            }
+        }
     }
 
     #[test]

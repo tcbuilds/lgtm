@@ -58,7 +58,7 @@ fn append_examples(packet: &mut String, rules: &[&Rule]) {
     let examples: BTreeSet<_> = rules
         .iter()
         .filter_map(|rule| rule.examples.first())
-        .map(|example| bounded_line(example))
+        .map(|example| bounded_line(&example.text))
         .collect();
     if examples.is_empty() {
         return;
