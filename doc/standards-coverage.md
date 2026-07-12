@@ -11,7 +11,7 @@
 | Design For Debugging | partial | review | all | Observability semantics remain review guidance. |
 | Error Handling | partial | native | all, python, typescript, javascript | Wrappers cover selected Python patterns; boundary conversion, cleanup, and retry semantics remain review. |
 | Testing Standards | partial | evidence | all | Coverage, property, golden, contract, and fuzz quality remain review. |
-| Observability Standards | unsupported | unsupported | all | No universal log, metric, or trace proof is implemented. |
+| Observability Standards | partial | review | all | No universal log, metric, or trace proof is implemented. |
 | Performance Standards | unsupported | unsupported | all | Performance claims require measured evidence not yet automated. |
 | Security Standards | partial | review | all | Secure defaults and authorization remain language/framework work. |
 | Dependency Standards | partial | review | all | License, maintenance, transitive, and runtime analysis is planned. |

@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "structured-observability-review",
+    "title": "Review structured service observability",
+    "description": "Long-running services and workers should expose structured logs, correlation IDs, health checks, and metrics for latency, errors, queues, retries, and drops.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [{"language": "all", "text": "good: correlate request logs and measure queue latency; bad: emit unstructured messages with no health signal", "provenance": "codingStandards.md#observability-standards", "schematic": true}],
+    "limitations": ["Static analysis does not prove semantic observability coverage; this rule only requests focused review."],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "observability",
+    "applies_to": {"languages": [], "domains": ["service", "worker", "queue"], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["service", "worker", "queue", "long-running"]},
+    "instruction": "Review structured log keys, correlation IDs, health checks, and metrics for latency, errors, queue depth, retries, and drops; do not claim static proof.",
+    "enforcement": {"mode": "instruction", "checks": []},
+    "overridable": true,
+    "evidence": {"required": ["review_result"]},
+    "references": ["codingStandards.md#observability-standards"]
+  },
+  {
     "id": "boundary-error-review",
     "title": "Review boundary error handling",
     "description": "External errors must be contextualized, converted, rethrown, or deliberately handled; empty exception paths are not acceptable.",
