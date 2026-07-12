@@ -55,13 +55,13 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
         };
         analyses.push((file.clone(), analysis));
     }
-    let function_findings = analyses
+    let function_review_findings = analyses
         .iter()
         .flat_map(|(file, analysis)| {
             analysis
                 .functions
                 .iter()
-                .filter(|function| function.lines > HARD_FUNCTION_LINES)
+                .filter(|function| function.lines > 30)
                 .map(|function| Location {
                     file: file.clone(),
                     line: Some(function.start_line as u64),
@@ -94,9 +94,9 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
     vec![
         result(
             "function-size",
-            status(&function_findings),
-            function_findings,
-            "Function-size review found oversized functions.",
+            threshold_status(&function_review_findings, &analyses),
+            function_review_findings,
+            "Function-size review found functions above the target threshold.",
         ),
         result(
             "file-size",
@@ -121,6 +121,25 @@ fn status(locations: &[Location]) -> Status {
     }
 }
 
+fn threshold_status(
+    locations: &[Location],
+    analyses: &[(String, crate::structure::Analysis)],
+) -> Status {
+    let has_hard_violation = analyses.iter().any(|(_, analysis)| {
+        analysis
+            .functions
+            .iter()
+            .any(|function| function.lines > HARD_FUNCTION_LINES)
+    });
+    if has_hard_violation {
+        Status::Failed
+    } else if locations.is_empty() {
+        Status::Passed
+    } else {
+        Status::Warning
+    }
+}
+
 fn result(
     rule_id: &str,
     status: Status,
@@ -131,7 +150,11 @@ fn result(
     EnforcementResult {
         rule_id: rule_id.to_string(),
         status,
-        severity: Severity::Warning,
+        severity: if rule_id == "function-size" && failed {
+            Severity::Error
+        } else {
+            Severity::Warning
+        },
         message: if failed {
             format!("{summary} ({} finding(s)).", locations.len())
         } else {
@@ -179,6 +202,19 @@ mod tests {
         let findings = scan(&files);
         assert_eq!(findings[0].status, Status::Failed);
         assert_eq!(findings[0].locations[0].line, Some(1));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn target_threshold_warns_before_hard_limit() {
+        let path =
+            std::env::temp_dir().join(format!("lgtm-function-target-{}.py", std::process::id()));
+        let mut source = String::from("def medium():\n");
+        source.push_str(&"    value = 1\n".repeat(31));
+        std::fs::write(&path, source).expect("fixture source");
+        let findings = scan(&[path.to_string_lossy().into_owned()]);
+        assert_eq!(findings[0].status, Status::Warning);
+        assert_eq!(findings[0].severity, Severity::Warning);
         std::fs::remove_file(path).ok();
     }
 }
