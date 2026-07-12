@@ -574,6 +574,12 @@ mod tests {
                 assert!(!example.provenance.trim().is_empty());
                 assert!(example.text.len() <= 512);
                 assert!(!example.text.contains("sk-") && !example.text.contains("AKIA"));
+                assert!(example.schematic);
+                assert!(
+                    example.text.to_ascii_lowercase().contains("good:")
+                        && example.text.to_ascii_lowercase().contains("bad:")
+                );
+                assert!(!example.text.contains("http://") && !example.text.contains("https://"));
             }
         }
     }
