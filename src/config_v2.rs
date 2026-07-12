@@ -79,6 +79,39 @@ pub fn validate(config: &ConfigV2) -> Result<(), ConfigV2Error> {
                 )));
             }
         }
+        for coverage in &workspace.coverage {
+            if coverage.argv.is_empty() {
+                return Err(ConfigV2Error::Invalid(format!(
+                    "workspace `{}` contains an empty coverage argv",
+                    workspace.id
+                )));
+            }
+            validate_relative_path(&coverage.cwd, "coverage cwd")?;
+            if !(1..=3600).contains(&coverage.timeout_seconds) {
+                return Err(ConfigV2Error::Invalid(format!(
+                    "workspace `{}` has an invalid coverage timeout",
+                    workspace.id
+                )));
+            }
+            if coverage.argv.iter().any(|arg| contains_shell_operator(arg)) {
+                return Err(ConfigV2Error::Invalid(format!(
+                    "workspace `{}` coverage command contains a shell operator",
+                    workspace.id
+                )));
+            }
+            if coverage
+                .line_threshold_percent
+                .is_some_and(|value| value > 100)
+                || coverage
+                    .branch_threshold_percent
+                    .is_some_and(|value| value > 100)
+            {
+                return Err(ConfigV2Error::Invalid(format!(
+                    "workspace `{}` has an invalid coverage threshold",
+                    workspace.id
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -132,6 +165,7 @@ pub fn migrate_v1(value: &Value) -> Result<ConfigV2, ConfigV2Error> {
             language: language.clone(),
             root: ".".into(),
             commands: specs,
+            coverage: Vec::new(),
         });
     }
     let config = ConfigV2 {

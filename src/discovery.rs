@@ -19,6 +19,18 @@ pub struct Workspace {
     pub language: String,
     pub root: PathBuf,
     pub commands: Vec<CommandSpec>,
+    #[serde(default)]
+    pub coverage: Vec<CoverageSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct CoverageSpec {
+    pub argv: Vec<String>,
+    pub cwd: PathBuf,
+    pub timeout_seconds: u64,
+    pub scope: String,
+    pub line_threshold_percent: Option<u8>,
+    pub branch_threshold_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -200,6 +212,7 @@ fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
                 confidence: confidence.to_string(),
             })
             .collect(),
+        coverage: Vec::new(),
     })
 }
 
