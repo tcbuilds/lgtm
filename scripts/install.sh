@@ -17,7 +17,7 @@ os=$(uname -s)
 arch=$(uname -m)
 test "$arch" = "x86_64" || fail "unsupported architecture: $arch (supported: x86_64)"
 case "$os" in
-  Linux) target=x86_64-unknown-linux-gnu ;;
+  Linux) target=x86_64-unknown-linux-musl ;;
   Darwin) target=x86_64-apple-darwin ;;
   *) fail "unsupported operating system: $os (supported: Linux, Darwin)" ;;
 esac

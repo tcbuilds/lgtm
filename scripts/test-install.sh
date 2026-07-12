@@ -17,7 +17,7 @@ trap cleanup EXIT HUP INT TERM
 
 printf '#!/bin/sh\nprintf "fixture lgtm\\n"\n' > "$ASSETS/lgtm"
 chmod 755 "$ASSETS/lgtm"
-archive="$ASSETS/lgtm-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+archive="$ASSETS/lgtm-v0.1.0-x86_64-unknown-linux-musl.tar.gz"
 tar -C "$ASSETS" -czf "$archive" lgtm
 (cd "$ASSETS" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
 

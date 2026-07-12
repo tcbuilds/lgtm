@@ -21,6 +21,6 @@ Install through `scripts/install.sh`, which downloads public release assets with
 ## Consequences
 
 - Consumers need `curl` and either `sha256sum` or `shasum`.
-- Supported release platforms are Linux x86_64 and macOS x86_64.
+- Supported release platforms are statically linked Linux x86_64 (musl) and macOS x86_64. Static Linux linking avoids depending on the build runner's newer GLIBC version.
 - Tags must match the Cargo package version. Failed cross-platform attempts remain immutable; the corrected first release is the first tag whose full release workflow passes.
 - No `rust-toolchain.toml` is added: hosted stable Rust is selected explicitly in CI, avoiding repository-wide toolchain pin churn.

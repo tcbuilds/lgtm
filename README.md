@@ -19,7 +19,7 @@ This downloads the latest release, verifies its SHA-256 checksum, and installs `
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc # or ~/.zshrc
 ```
 
-> The current Linux binary requires GLIBC 2.39. On older Linux systems, install from source with Rust:
+To install from source instead, use Rust:
 
 ```bash
 cargo install --git https://github.com/tcbuilds/lgtm
