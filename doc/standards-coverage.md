@@ -31,7 +31,7 @@
 | C And C++ | unsupported | unsupported | c, cpp | C and C++ support is a later V2 slice. |
 | SQL | partial | review | sql | Migrations and query-plan standards remain review guidance. |
 | Shell | partial | review | shell | Shell review guidance and optional ShellCheck discovery are active; lexical shell safety checks remain planned. |
-| HTML, CSS, And UI Styling | unsupported | unsupported | html, css | UI accessibility and responsive checks are a later V2 slice. |
+| HTML, CSS, And UI Styling | partial | native | html, css, typescript, javascript | Lexical checks cover common missing-alt/label and brittle-style signals; visual quality, contrast, focus, and layout stability remain review. |
 | Infrastructure As Code | partial | review | terraform, yaml | Terraform discovery and review guidance are active; semantic least-privilege and rollback proof remain review. |
 | YAML, JSON, And Config | partial | review | yaml, json | Embedded/runtime JSON schemas are validated; consumer duplicate-key and schema discovery remain review. |
 | AI-Assisted Coding Standards | partial | evidence | all | Broader generated-code quality checks are planned. |

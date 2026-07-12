@@ -23,6 +23,7 @@ pub mod ruff;
 pub mod semgrep;
 pub mod structure;
 pub mod tiers;
+pub mod ui;
 
 use serde::{Deserialize, Serialize};
 

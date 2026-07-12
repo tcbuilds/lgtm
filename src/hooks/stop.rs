@@ -128,6 +128,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     results.extend(crate::checks::boundary::scan(&paths));
     results.extend(crate::checks::logging::scan(&paths));
     results.extend(crate::checks::determinism::scan(&paths));
+    results.extend(crate::checks::ui::scan(&paths));
     let mut command_run = run_repository_commands(
         &root,
         hook_input.workspace.as_deref(),
