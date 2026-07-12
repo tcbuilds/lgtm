@@ -15,6 +15,7 @@ pub mod determinism;
 pub mod diff;
 #[path = "gitleaks/api.rs"]
 pub mod gitleaks;
+pub mod justification;
 pub mod languages;
 pub mod logging;
 pub mod modules;

@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "justification-metadata",
+    "title": "Require temporary-code justification",
+    "description": "Temporary, TODO, disabled, or suppressed code needs a reason, owner, ISO expiry, and deletion condition.",
+    "mechanism": "native",
+    "confidence": "high",
+    "examples": [{"language": "all", "text": "good: TODO reason=legacy owner=team expires=2099-01-01 delete=remove-after-migration; bad: TODO fix later", "provenance": "codingStandards.md#refactoring-standards", "schematic": true}],
+    "limitations": ["Existing debt is surfaced when touched; semantic completeness of a reason or deletion condition remains review."],
+    "enforcement_stage": "post_tool",
+    "severity": "error",
+    "level": "must",
+    "category": "refactoring",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["todo", "temporary", "disable", "suppress"]},
+    "instruction": "Temporary or disabled code must carry reason=, owner=, expires=YYYY-MM-DD, and delete=... metadata; expired markers fail the gate.",
+    "enforcement": {"mode": "static", "checks": ["native.justification"]},
+    "overridable": false,
+    "evidence": {"required": ["check_result", "changed_locations"]},
+    "references": ["codingStandards.md#refactoring-standards"]
+  },
+  {
     "id": "sql-migration-review",
     "title": "Review SQL migrations and queries",
     "description": "SQL changes need parameterized input, explicit columns, transaction and constraint review, reversible migrations, rollback evidence, and hot-query plan review.",

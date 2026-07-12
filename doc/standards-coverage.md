@@ -17,7 +17,7 @@
 | Dependency Standards | partial | review | all | License, maintenance, transitive, and runtime analysis is planned. |
 | Documentation Standards | partial | review | all | Documentation drift detection is planned. |
 | Review And Change Standards | partial | evidence | all | PR metadata generation remains planned. |
-| Refactoring Standards | partial | review | all | Structural and diff checks are not universal yet. |
+| Refactoring Standards | partial | native | all | Structural and diff checks are not universal yet; semantic justification quality remains review. |
 | Debugging Protocol | partial | instruction | all | Evidence is requested but semantic hypothesis and reproduction quality are not proven. |
 | Anti-Slop Checklist | partial | native | all | Diff checks cover debug/scaffolding/suppression signals only; architectural slop remains review. |
 | Rust | partial | native | rust | Native checks are lexical; async timeout and newtype rules are review guidance, not semantic proof. |
