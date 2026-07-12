@@ -61,7 +61,7 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
             analysis
                 .functions
                 .iter()
-                .filter(|function| function.lines > 30)
+                .filter(|function| !function.exempt && function.lines > 30)
                 .map(|function| Location {
                     file: file.clone(),
                     line: Some(function.start_line as u64),
@@ -83,7 +83,11 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
                 .functions
                 .iter()
                 .filter(|function| {
-                    function.complexity > 10 || function.max_nesting > 3 || function.parameters > 4
+                    !function.exempt && {
+                        function.complexity > 10
+                            || function.max_nesting > 3
+                            || function.parameters > 4
+                    }
                 })
                 .map(|function| Location {
                     file: file.clone(),
@@ -129,7 +133,7 @@ fn threshold_status(
         analysis
             .functions
             .iter()
-            .any(|function| function.lines > HARD_FUNCTION_LINES)
+            .any(|function| !function.exempt && function.lines > HARD_FUNCTION_LINES)
     });
     if has_hard_violation {
         Status::Failed
@@ -215,6 +219,20 @@ mod tests {
         let findings = scan(&[path.to_string_lossy().into_owned()]);
         assert_eq!(findings[0].status, Status::Warning);
         assert_eq!(findings[0].severity, Severity::Warning);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn complete_exemption_metadata_avoids_function_size_finding() {
+        let path =
+            std::env::temp_dir().join(format!("lgtm-function-exempt-{}.py", std::process::id()));
+        let mut source = String::from(
+            "# lgtm: exempt reason=parser state machine owner=team expires=2099-01-01\ndef parser():\n",
+        );
+        source.push_str(&"    value = 1\n".repeat(51));
+        std::fs::write(&path, source).expect("fixture source");
+        let findings = scan(&[path.to_string_lossy().into_owned()]);
+        assert_eq!(findings[0].status, Status::Passed);
         std::fs::remove_file(path).ok();
     }
 }

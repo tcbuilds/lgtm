@@ -25,6 +25,7 @@ pub struct FunctionMetric {
     pub parameters: usize,
     pub complexity: usize,
     pub max_nesting: usize,
+    pub exempt: bool,
 }
 
 #[derive(Debug, Error)]
@@ -79,14 +80,14 @@ pub fn analyze_source(language: &str, source: &str) -> Result<Analysis, Analysis
     let brace_language = !matches!(language, "python");
     let mut brace_depth = 0_usize;
     let mut functions = Vec::new();
-    let mut active: Option<(String, usize, usize, usize)> = None;
+    let mut active: Option<(String, usize, usize, usize, bool)> = None;
     for (index, raw_line) in lines.iter().enumerate() {
         let line_number = index + 1;
         let line = strip_comment(raw_line, language);
         if brace_language {
             brace_depth = update_brace_depth(&line, brace_depth)?;
         }
-        if let Some((name, start, start_depth, start_indent)) = active.as_ref() {
+        if let Some((name, start, start_depth, start_indent, exempt)) = active.as_ref() {
             let ended = if brace_language {
                 brace_depth < *start_depth && line.contains('}')
             } else {
@@ -102,6 +103,7 @@ pub fn analyze_source(language: &str, source: &str) -> Result<Analysis, Analysis
                     line_number,
                     &lines[*start - 1..=index],
                     language,
+                    *exempt,
                 ));
                 active = None;
             }
@@ -109,16 +111,18 @@ pub fn analyze_source(language: &str, source: &str) -> Result<Analysis, Analysis
         if active.is_none()
             && let Some((name, indent)) = function_header(&line, language)
         {
-            active = Some((name, line_number, brace_depth, indent));
+            let exempt = line_number > 1 && has_exemption_marker(lines[line_number - 2]);
+            active = Some((name, line_number, brace_depth, indent, exempt));
         }
     }
-    if let Some((name, start, _, _)) = active {
+    if let Some((name, start, _, _, exempt)) = active {
         functions.push(metric(
             &name,
             start,
             lines.len(),
             &lines[start - 1..],
             language,
+            exempt,
         ));
     }
     if brace_language && brace_depth != 0 {
@@ -154,7 +158,14 @@ fn function_header(line: &str, language: &str) -> Option<(String, usize)> {
     (!name.is_empty()).then(|| (name.to_string(), indent))
 }
 
-fn metric(name: &str, start: usize, end: usize, lines: &[&str], _language: &str) -> FunctionMetric {
+fn metric(
+    name: &str,
+    start: usize,
+    end: usize,
+    lines: &[&str],
+    _language: &str,
+    exempt: bool,
+) -> FunctionMetric {
     let text = lines.join("\n");
     let parameters = text
         .split_once('(')
@@ -184,7 +195,16 @@ fn metric(name: &str, start: usize, end: usize, lines: &[&str], _language: &str)
         parameters,
         complexity,
         max_nesting,
+        exempt,
     }
+}
+
+fn has_exemption_marker(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("lgtm: exempt")
+        && lower.contains("reason=")
+        && lower.contains("owner=")
+        && lower.contains("expires=")
 }
 
 fn update_brace_depth(line: &str, depth: usize) -> Result<usize, AnalysisError> {
