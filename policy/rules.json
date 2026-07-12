@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "boundary-error-review",
+    "title": "Review boundary error handling",
+    "description": "External errors must be contextualized, converted, rethrown, or deliberately handled; empty exception paths are not acceptable.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [{"language": "python", "text": "good: except ExternalError: raise DomainError('context'); bad: except Exception: pass", "provenance": "codingStandards.md#error-handling", "schematic": true}],
+    "limitations": ["Lexical review covers clear empty Python and JavaScript-family handlers; typed conversion, cleanup, retries, and log duplication remain language-specific review."],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "error-handling",
+    "applies_to": {"languages": ["python", "typescript", "javascript"], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["exception-handler", "catch", "boundary"]},
+    "instruction": "At boundaries, add context and convert or rethrow unknown errors; do not leave empty exception handlers.",
+    "enforcement": {"mode": "static", "checks": ["native.boundary-errors"]},
+    "overridable": true,
+    "evidence": {"required": ["check_result", "changed_locations"]},
+    "references": ["codingStandards.md#error-handling"]
+  },
+  {
     "id": "contextual-design-guidance",
     "title": "Apply contextual maintainability design guidance",
     "description": "When a task touches domain models, boundaries, or architecture, prefer illegal-state prevention, validated-domain conversion, pure cores with side-effect edges, explicit data flow, dependency injection for external effects, and simple designs before distributed abstractions.",

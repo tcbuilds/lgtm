@@ -9,7 +9,7 @@
 | Code Organization | partial | native | all | Lexical spans and metrics are bounded; architectural layering and unsupported language imports remain review-tier. |
 | Naming Standards | partial | native | python, rust, typescript, javascript, go | Only clearly placeholder function names are flagged; language-specific style and protocol fields remain review. |
 | Design For Debugging | partial | review | all | Observability semantics remain review guidance. |
-| Error Handling | partial | native | all, python | Wrappers cover selected Python patterns; boundary and retry semantics remain review. |
+| Error Handling | partial | native | all, python, typescript, javascript | Wrappers cover selected Python patterns; boundary conversion, cleanup, and retry semantics remain review. |
 | Testing Standards | partial | evidence | all | Coverage, property, golden, contract, and fuzz quality remain review. |
 | Observability Standards | unsupported | unsupported | all | No universal log, metric, or trace proof is implemented. |
 | Performance Standards | unsupported | unsupported | all | Performance claims require measured evidence not yet automated. |
