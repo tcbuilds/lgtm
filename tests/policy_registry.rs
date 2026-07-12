@@ -33,6 +33,8 @@ fn embedded_registry_validates_against_schema() {
             "react-unstable-key",
             "typescript-unsafe-unknown",
             "typescript-api-response-validation",
+            "rust-spawn-cancellation",
+            "rust-no-mutable-global",
         ]
     );
 }

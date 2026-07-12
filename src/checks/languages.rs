@@ -15,7 +15,7 @@ struct RuleSpec {
     message: &'static str,
 }
 
-const RULES: [RuleSpec; 7] = [
+const RULES: [RuleSpec; 9] = [
     RuleSpec {
         id: "rust-no-unsafe",
         extensions: &["rs"],
@@ -27,6 +27,18 @@ const RULES: [RuleSpec; 7] = [
         extensions: &["rs"],
         needles: &[".unwrap(", ".expect("],
         message: "Rust production paths should use typed error handling instead of unwrap/expect.",
+    },
+    RuleSpec {
+        id: "rust-spawn-cancellation",
+        extensions: &["rs"],
+        needles: &["tokio::spawn(", "thread::spawn("],
+        message: "Spawned Rust tasks require cancellation and error reporting.",
+    },
+    RuleSpec {
+        id: "rust-no-mutable-global",
+        extensions: &["rs"],
+        needles: &["static mut "],
+        message: "Mutable Rust globals require an explicit architecture review.",
     },
     RuleSpec {
         id: "typescript-no-any",
@@ -142,6 +154,14 @@ mod tests {
             .expect("rule");
         assert_eq!(rule.status, Status::Failed);
         assert_eq!(rule.locations[0].line, Some(2));
+        assert_eq!(
+            results
+                .iter()
+                .find(|result| result.rule_id == "rust-spawn-cancellation")
+                .unwrap()
+                .status,
+            Status::Passed
+        );
         std::fs::remove_file(path).ok();
     }
 

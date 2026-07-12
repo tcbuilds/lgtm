@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 22);
+        assert_eq!(rules.len(), 24);
     }
 
     #[test]
@@ -583,6 +583,8 @@ mod tests {
                 "react-unstable-key",
                 "typescript-unsafe-unknown",
                 "typescript-api-response-validation",
+                "rust-spawn-cancellation",
+                "rust-no-mutable-global",
             ]
         );
     }
@@ -597,6 +599,8 @@ mod tests {
                     | "new-behavior-tests-required"
                     | "rust-no-unsafe"
                     | "rust-no-unwrap-expect"
+                    | "rust-spawn-cancellation"
+                    | "rust-no-mutable-global"
                     | "typescript-no-any"
                     | "typescript-unsafe-unknown"
                     | "typescript-api-response-validation"

@@ -20,7 +20,7 @@
 | Refactoring Standards | partial | review | all | Structural and diff checks are not universal yet. |
 | Debugging Protocol | partial | instruction | all | Full hypothesis and reproduction capture is planned. |
 | Anti-Slop Checklist | unsupported | unsupported | all | Checklist items are not a deterministic universal linter. |
-| Rust | partial | native | rust | Native checks are lexical; parser-backed ownership and async checks remain planned. |
+| Rust | partial | native | rust | Native checks are lexical; parser-backed ownership, async timeout, and newtype checks remain planned. |
 | Python | partial | wrapped | python | Typed models, dependency injection, and full configured scopes remain planned. |
 | TypeScript And JavaScript | partial | native | typescript, javascript | Native checks are lexical; strict compiler and runtime schema gates remain workspace commands. |
 | React | partial | native | typescript, javascript | Checks cover common lexical patterns; AST state/effect analysis remains planned. |

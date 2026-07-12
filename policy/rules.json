@@ -1246,5 +1246,103 @@
     "references": [
       "codingStandards.md#typescript-and-javascript"
     ]
+  },
+  {
+    "id": "rust-spawn-cancellation",
+    "title": "Bound Rust spawned tasks",
+    "description": "Spawned Rust tasks require cancellation and error reporting.",
+    "mechanism": "native",
+    "confidence": "low",
+    "examples": [
+      "good: propagate cancellation and errors; bad: detach work"
+    ],
+    "limitations": [
+      "The lexical check identifies common spawn/global syntax and requires review for wrappers and macros."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "rust"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Spawned Rust tasks require cancellation and error reporting.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.rust-spawn-cancellation"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#rust"
+    ]
+  },
+  {
+    "id": "rust-no-mutable-global",
+    "title": "Avoid mutable Rust globals",
+    "description": "Mutable Rust globals require explicit architecture review.",
+    "mechanism": "native",
+    "confidence": "low",
+    "examples": [
+      "good: propagate cancellation and errors; bad: detach work"
+    ],
+    "limitations": [
+      "The lexical check identifies common spawn/global syntax and requires review for wrappers and macros."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "rust"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Mutable Rust globals require explicit architecture review.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.rust-no-mutable-global"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#rust"
+    ]
   }
 ]
