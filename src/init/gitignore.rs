@@ -7,7 +7,7 @@ pub(super) fn render_gitignore(
     let existing = read_if_exists(path)?;
 
     match existing {
-        Some(contents) if evidence_is_ignored(&contents) => {
+        Some(contents) if gitignore_has_nested_evidence_rule(&contents) => {
             if contents
                 .lines()
                 .any(|line| line.trim() == "!**/.lgtm/evidence/")
@@ -17,10 +17,9 @@ pub(super) fn render_gitignore(
                         .to_string(),
                 );
             }
-            if !gitignore_has_explicit_evidence_rule(&contents) {
+            if !evidence_is_ignored(&contents) {
                 notes.push(
-                    ".gitignore ignores .lgtm/ wholesale; .lgtm/config.json will be untracked"
-                        .to_string(),
+                    "contradictory .gitignore rules leave nested evidence visible".to_string(),
                 );
             }
             Ok(None)
@@ -92,15 +91,10 @@ fn gitignore_pattern_matches_evidence(pattern: &str) -> bool {
     normalized == ".lgtm" || normalized == ".lgtm/evidence" || normalized == "**/.lgtm/evidence"
 }
 
-/// True when the file carries an explicit, non-negated evidence rule (as opposed
-/// to only matching via a wholesale `.lgtm/` rule), so the untracked-config note
-/// is suppressed when the evidence directory is ignored by its own line.
-fn gitignore_has_explicit_evidence_rule(contents: &str) -> bool {
+fn gitignore_has_nested_evidence_rule(contents: &str) -> bool {
     contents.lines().any(|line| {
         let trimmed = line.trim();
-        trimmed == EVIDENCE_GITIGNORE_LINE
-            || trimmed == ".lgtm/evidence"
-            || trimmed == "**/.lgtm/evidence"
+        trimmed == EVIDENCE_GITIGNORE_LINE || trimmed == "**/.lgtm/evidence"
     })
 }
 
