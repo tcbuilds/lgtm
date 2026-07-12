@@ -13,17 +13,44 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions/checkout@v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.0 --profile minimal
       - name: Run full LGTM policy check
+        id: lgtm
+        continue-on-error: true
         run: |
           set -o pipefail
           cargo run --locked -- check --tier full 2>&1 | tee lgtm-check.log
+      - name: Annotate failed MUST results
+        if: always()
+        run: |
+          if test -f .lgtm/evidence/evidence.jsonl; then
+            tail -n 1 .lgtm/evidence/evidence.jsonl | jq -r '
+              .results[] | select(.status == "failed" and .severity == "error") |
+              if (.locations | length) > 0 then
+                .locations[] | "::error file=\(.file),line=\(.line // 1),title=LGTM MUST \(.rule_id)::\(.message)"
+              else
+                "::error title=LGTM MUST \(.rule_id)::\(.message)"
+              end' || true
+          fi
+      - name: Enforce unresolved MUST failures only
+        if: always()
+        run: |
+          if grep -Eq 'failed=[1-9][0-9]*' lgtm-check.log; then
+            echo "LGTM found unresolved error-severity MUST failures"
+            exit 1
+          fi
+          if test "${{ steps.lgtm.outcome }}" = failure; then
+            echo "LGTM check command failed before producing a policy decision"
+            exit 1
+          fi
       - name: Upload bounded LGTM evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: lgtm-check-output
-          path: lgtm-check.log
+          path: |
+            lgtm-check.log
+            .lgtm/evidence/evidence.jsonl
           retention-days: 14
