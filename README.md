@@ -61,6 +61,26 @@ checks the target path and records a baseline. After edits, fast checks run;
 pushes and CI can run the full gate. You can also run the binary directly with
 `lgtm check --tier full`.
 
+## Context Efficiency
+
+LGTM avoids pasting the full standards document into every agent turn. A
+representative tokenizer benchmark measured these payloads:
+
+| Payload | Tokens |
+| --- | ---: |
+| Full standards document | 4,263 |
+| Session-start contract | 136 |
+| Bug-fix Rust policy packet | 518 |
+| Feature Rust policy packet | 460 |
+
+That makes the standards portion of a turn about 85–86% smaller: roughly
+3,600 tokens saved per prompt. The session contract is sent at session start;
+later prompts usually receive only the smaller, task-specific packet. Across a
+20-turn session, this can save roughly 70,000–75,000 standards tokens.
+
+These are measured standards-only values using an OpenAI-compatible tokenizer.
+Actual total context also includes conversation history, code, and tool output.
+
 For Codex, Git hooks, or CI, run the same checks directly:
 
 ```bash
