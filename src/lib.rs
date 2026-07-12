@@ -14,3 +14,4 @@ pub mod init;
 pub mod policy;
 pub mod report;
 pub mod select;
+pub mod update;

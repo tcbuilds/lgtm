@@ -41,6 +41,10 @@ Commit the generated `.lgtm/config.json`, `.claude/settings.json`, and `.gitigno
 ## Common Commands
 
 ```bash
+# Check for or install the latest LGTM release
+lgtm update --check
+lgtm update
+
 # Check that the bundled policy is valid
 lgtm compile --validate
 

@@ -56,6 +56,15 @@ enum Command {
         #[arg(long)]
         expires: String,
     },
+    /// Check for or install a newer LGTM release.
+    Update {
+        /// Report the available version without replacing the binary.
+        #[arg(long)]
+        check: bool,
+        /// Install a specific v-prefixed release instead of the latest.
+        #[arg(long)]
+        version: Option<String>,
+    },
 }
 
 /// The five native agent lifecycle events wired by the Claude Code adapter.
@@ -90,6 +99,20 @@ fn run(command: Command) -> ExitCode {
             owner,
             expires,
         } => run_waive(&rule, &reason, &owner, &expires),
+        Command::Update { check, version } => run_update(check, version.as_deref()),
+    }
+}
+
+fn run_update(check: bool, version: Option<&str>) -> ExitCode {
+    match lgtm::update::run(check, version) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(reason) => {
+            eprintln!("update failed: {reason}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -310,6 +333,19 @@ mod tests {
     fn parses_report_subcommand() {
         let cli = Cli::try_parse_from(["lgtm", "report"]).expect("report should parse");
         assert!(matches!(cli.command, Command::Report { .. }));
+    }
+
+    #[test]
+    fn parses_update_options() {
+        let cli = Cli::try_parse_from(["lgtm", "update", "--check", "--version", "v1.2.3"])
+            .expect("update should parse");
+        assert!(matches!(
+            cli.command,
+            Command::Update {
+                check: true,
+                version: Some(ref version)
+            } if version == "v1.2.3"
+        ));
     }
 
     #[test]
