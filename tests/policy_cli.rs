@@ -10,7 +10,7 @@ fn policy_list_exposes_the_embedded_registry() {
         .expect("policy list starts");
     assert!(output.status.success());
     let rules: Value = serde_json::from_slice(&output.stdout).expect("policy list is JSON");
-    assert_eq!(rules.as_array().expect("rule array").len(), 59);
+    assert_eq!(rules.as_array().expect("rule array").len(), 60);
     assert_eq!(rules[0]["id"], "no-committed-secrets");
 }
 

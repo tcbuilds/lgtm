@@ -172,6 +172,7 @@ fn is_marker(name: Option<&str>) -> bool {
         || name.ends_with(".tf")
         || name.ends_with(".csproj")
         || name.ends_with(".sln")
+        || name.ends_with(".sql")
 }
 
 fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
@@ -213,6 +214,8 @@ fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
         ("shell", shell_commands(path, &markers))
     } else if markers.iter().any(|marker| marker.ends_with(".tf")) {
         ("terraform", terraform_commands())
+    } else if markers.iter().any(|marker| marker.ends_with(".sql")) {
+        ("sql", sql_commands())
     } else {
         return None;
     };
@@ -558,6 +561,21 @@ fn shell_commands(
     vec![(argv, "lint", "high")]
 }
 
+fn sql_commands() -> Vec<(Vec<String>, &'static str, &'static str)> {
+    if command_on_path("sqlfluff") {
+        vec![(
+            vec!["sqlfluff", "lint"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            "lint",
+            "high",
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
 fn terraform_commands() -> Vec<(Vec<String>, &'static str, &'static str)> {
     if !command_on_path("terraform") {
         return Vec::new();
@@ -793,6 +811,24 @@ mod tests {
             workspaces
                 .iter()
                 .any(|workspace| workspace.language == "cpp")
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn discovers_sql_migration_files_without_guessing_database_tools() {
+        let root = std::env::temp_dir().join(format!("lgtm-discovery-sql-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("migrations")).expect("root");
+        std::fs::write(
+            root.join("migrations/001_init.sql"),
+            "CREATE TABLE items(id INT);\n",
+        )
+        .expect("sql marker");
+        let workspaces = discover(&root).expect("discovery");
+        assert!(
+            workspaces
+                .iter()
+                .any(|workspace| workspace.language == "sql")
         );
         std::fs::remove_dir_all(root).ok();
     }
