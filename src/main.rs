@@ -55,6 +55,13 @@ enum Command {
         #[arg(long)]
         task: Option<String>,
     },
+    /// Summarize local evidence without network transmission.
+    Stats {
+        #[arg(long)]
+        evidence: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Create or replace an audited, expiring waiver for a non-protected rule.
     Waive {
         #[arg(long)]
@@ -238,6 +245,7 @@ fn run(command: Command) -> ExitCode {
         Command::Doctor => run_doctor(),
         Command::Compile { validate } => run_compile(validate),
         Command::Report { evidence, task } => run_report(evidence, task),
+        Command::Stats { evidence, json } => run_stats(evidence, json),
         Command::Waive {
             rule,
             reason,
@@ -716,6 +724,42 @@ fn run_report(evidence: Option<PathBuf>, task: Option<String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_stats(evidence: Option<PathBuf>, json: bool) -> ExitCode {
+    let path = evidence.unwrap_or_else(|| PathBuf::from(".lgtm/evidence/evidence.jsonl"));
+    let report = match lgtm::stats::summarize(&path) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("stats failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if json {
+        return write_json(&report);
+    }
+    println!("records: {}", report.records);
+    println!("statuses: {}", format_counts(&report.status_counts));
+    println!("missing tools: {}", report.missing_tools);
+    println!("slowest commands (ms): {:?}", report.slowest_commands_ms);
+    println!(
+        "noisy rules: {}",
+        report
+            .noisy_rules
+            .iter()
+            .map(|item| format!("{}={}", item.rule_id, item.findings))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    ExitCode::SUCCESS
+}
+
+fn format_counts(counts: &std::collections::BTreeMap<String, usize>) -> String {
+    counts
+        .iter()
+        .map(|(status, count)| format!("{status}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Handle `lgtm compile`.
