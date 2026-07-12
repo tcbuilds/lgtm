@@ -1,8 +1,9 @@
 # LGTM
 
-`lgtm` adds automated engineering checks to Claude Code. It checks edits, blocks unresolved policy violations before Claude stops, and records what was actually verified.
+`lgtm` adds automated engineering checks to agent workflows. It checks edits, blocks unresolved policy violations before completion, and records what was actually verified.
 
-The current release supports Python repositories on x86_64 Linux and macOS.
+The current release supports Python, TypeScript/JavaScript, Rust, Go, shell,
+Terraform, JVM, C#, C/C++, SQL, and mixed repositories on x86_64 Linux and macOS.
 
 ## Quick Install
 
@@ -37,6 +38,15 @@ lgtm doctor
 `lgtm init` adds the project configuration and Claude Code hooks without replacing existing settings. `lgtm doctor` shows any optional checking tools you still need to install, including `gitleaks`, `ruff`, and `semgrep`.
 
 Commit the generated `.lgtm/config.json`, `.claude/settings.json`, and `.gitignore` changes. Claude Code will run LGTM automatically during future sessions.
+
+For Codex or CI, run the same checks directly:
+
+```bash
+lgtm check --tier full
+```
+
+See [the Codex adapter contract](doc/adapters/codex.md) for exit statuses and
+platform limits.
 
 ## Common Commands
 
