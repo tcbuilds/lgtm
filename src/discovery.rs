@@ -137,19 +137,19 @@ fn ignored_dir(name: &str) -> bool {
 }
 
 fn is_marker(name: Option<&str>) -> bool {
+    let Some(name) = name else { return false };
     matches!(
         name,
-        Some(
-            "pyproject.toml"
-                | "setup.py"
-                | "setup.cfg"
-                | "requirements.txt"
-                | "package.json"
-                | "tsconfig.json"
-                | "Cargo.toml"
-                | "go.mod"
-        )
-    )
+        "pyproject.toml"
+            | "setup.py"
+            | "setup.cfg"
+            | "requirements.txt"
+            | "package.json"
+            | "tsconfig.json"
+            | "Cargo.toml"
+            | "go.mod"
+    ) || name.ends_with(".sh")
+        || name.ends_with(".tf")
 }
 
 fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
@@ -172,6 +172,10 @@ fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
         ("rust", rust_commands())
     } else if markers.contains("go.mod") {
         ("go", go_commands())
+    } else if markers.iter().any(|marker| marker.ends_with(".sh")) {
+        ("shell", shell_commands(path, &markers))
+    } else if markers.iter().any(|marker| marker.ends_with(".tf")) {
+        ("terraform", terraform_commands())
     } else {
         return None;
     };
@@ -349,6 +353,50 @@ fn go_commands() -> Vec<(Vec<String>, &'static str, &'static str)> {
     commands
 }
 
+fn shell_commands(
+    root: &Path,
+    markers: &BTreeSet<String>,
+) -> Vec<(Vec<String>, &'static str, &'static str)> {
+    if !command_on_path("shellcheck") {
+        return Vec::new();
+    }
+    let mut argv = vec!["shellcheck".to_string()];
+    argv.extend(
+        markers
+            .iter()
+            .filter(|marker| marker.ends_with(".sh"))
+            .cloned(),
+    );
+    if argv.len() == 1 || !root.is_dir() {
+        return Vec::new();
+    }
+    vec![(argv, "lint", "high")]
+}
+
+fn terraform_commands() -> Vec<(Vec<String>, &'static str, &'static str)> {
+    if !command_on_path("terraform") {
+        return Vec::new();
+    }
+    vec![
+        (
+            vec!["terraform", "fmt", "-check"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            "format",
+            "high",
+        ),
+        (
+            vec!["terraform", "validate"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            "validate",
+            "high",
+        ),
+    ]
+}
+
 fn command_on_path(command: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| {
         std::env::split_paths(&paths).any(|directory| directory.join(command).is_file())
@@ -491,6 +539,29 @@ mod tests {
                     == ["yarn", "run", script]
             }));
         }
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn shell_and_terraform_markers_are_discovered_without_guessing_tools() {
+        let root =
+            std::env::temp_dir().join(format!("lgtm-discovery-infra-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("scripts")).expect("scripts");
+        std::fs::create_dir_all(root.join("infra")).expect("infra");
+        std::fs::write(root.join("scripts/check.sh"), "#!/bin/sh\nset -eu\n")
+            .expect("shell marker");
+        std::fs::write(root.join("infra/main.tf"), "terraform {}\n").expect("terraform marker");
+        let workspaces = discover(&root).expect("discovery");
+        assert!(
+            workspaces
+                .iter()
+                .any(|workspace| workspace.language == "shell")
+        );
+        assert!(
+            workspaces
+                .iter()
+                .any(|workspace| workspace.language == "terraform")
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
