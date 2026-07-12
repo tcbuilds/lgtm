@@ -15,6 +15,7 @@ pub mod diff;
 pub mod gitleaks;
 pub mod languages;
 pub mod modules;
+pub mod naming;
 pub mod ruff;
 pub mod semgrep;
 pub mod structure;

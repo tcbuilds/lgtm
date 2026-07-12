@@ -113,6 +113,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
     results.extend(crate::checks::languages::scan(&paths));
     results.extend(crate::checks::structure::scan(&paths));
     results.extend(crate::checks::modules::scan(&paths));
+    results.extend(crate::checks::naming::scan(&paths));
     let command_run = run_repository_commands(&root);
     results.extend(command_run.results);
     results.push(crate::checks::claims::evaluate(

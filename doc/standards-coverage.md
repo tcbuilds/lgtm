@@ -7,7 +7,7 @@
 | Core Principles | partial | instruction | all | Principles are contextual guidance, not static semantic proof. |
 | Non-Negotiable Rules | partial | native | all | Only listed rules have deterministic checks; remaining bullets require review. |
 | Code Organization | partial | native | all | Lexical spans and metrics are bounded; architectural layering and unsupported language imports remain review-tier. |
-| Naming Standards | unsupported | unsupported | all | No universal naming proof is implemented. |
+| Naming Standards | partial | native | python, rust, typescript, javascript, go | Only clearly placeholder function names are flagged; language-specific style and protocol fields remain review. |
 | Design For Debugging | partial | review | all | Observability semantics remain review guidance. |
 | Error Handling | partial | native | all, python | Wrappers cover selected Python patterns; boundary and retry semantics remain review. |
 | Testing Standards | partial | evidence | all | Coverage, property, golden, contract, and fuzz quality remain review. |

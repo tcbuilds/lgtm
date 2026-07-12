@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "naming-review",
+    "title": "Review identifier naming",
+    "description": "Use specific, verb-first names and avoid placeholder identifiers in production code.",
+    "mechanism": "native",
+    "confidence": "medium",
+    "examples": [{"language": "all", "text": "good: validate_request; bad: foo", "provenance": "codingStandards.md#naming", "schematic": true}],
+    "limitations": ["Only clearly placeholder function names are flagged; naming quality and protocol fields remain review."],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "refactoring",
+    "applies_to": {"languages": ["python", "rust", "typescript", "javascript", "go"], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["function", "identifier"]},
+    "instruction": "Use domain-specific, verb-first names; avoid placeholder identifiers such as foo, bar, tmp, or thing.",
+    "enforcement": {"mode": "static", "checks": ["native.naming"]},
+    "overridable": true,
+    "evidence": {"required": ["check_result", "changed_locations"]},
+    "references": ["codingStandards.md#naming"]
+  },
+  {
     "id": "module-boundary-review",
     "title": "Review module boundaries",
     "description": "Modules should not form deterministic dependency cycles; domain code should remain separated from infrastructure concerns.",
