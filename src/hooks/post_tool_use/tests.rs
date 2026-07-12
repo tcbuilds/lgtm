@@ -90,6 +90,19 @@ fn post_tool_native_language_check_reports_rust_violation() {
 }
 
 #[test]
+fn post_tool_native_language_check_reports_go_violation() {
+    let temp = TempDir::new();
+    let file = temp.path.join("main.go");
+    std::fs::write(&file, "package main\nfunc Run() { go func() {} }\n").expect("fixture source");
+    let results = scan_target(&temp.path, &file.to_string_lossy());
+    let finding = results
+        .iter()
+        .find(|result| result.rule_id == "go-goroutine-cancellation")
+        .expect("native Go rule result");
+    assert_eq!(finding.status, Status::Failed);
+}
+
+#[test]
 fn edited_file_only_matches_edit_tools() {
     let mut input = HookInput {
         tool_name: Some("Read".to_string()),

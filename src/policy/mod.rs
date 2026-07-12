@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 29);
+        assert_eq!(rules.len(), 34);
     }
 
     #[test]
@@ -590,6 +590,11 @@ mod tests {
                 "react-accessibility-review",
                 "rust-async-timeout-review",
                 "rust-id-unit-newtype-review",
+                "go-ignored-error",
+                "go-goroutine-cancellation",
+                "go-mutable-global",
+                "go-error-wrapping",
+                "go-context-first-review",
             ]
         );
     }
@@ -611,6 +616,11 @@ mod tests {
                     | "react-accessibility-review"
                     | "rust-async-timeout-review"
                     | "rust-id-unit-newtype-review"
+                    | "go-ignored-error"
+                    | "go-goroutine-cancellation"
+                    | "go-mutable-global"
+                    | "go-error-wrapping"
+                    | "go-context-first-review"
                     | "typescript-no-any"
                     | "typescript-unsafe-unknown"
                     | "typescript-api-response-validation"

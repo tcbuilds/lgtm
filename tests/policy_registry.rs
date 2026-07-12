@@ -40,6 +40,11 @@ fn embedded_registry_validates_against_schema() {
             "react-accessibility-review",
             "rust-async-timeout-review",
             "rust-id-unit-newtype-review",
+            "go-ignored-error",
+            "go-goroutine-cancellation",
+            "go-mutable-global",
+            "go-error-wrapping",
+            "go-context-first-review",
         ]
     );
 }

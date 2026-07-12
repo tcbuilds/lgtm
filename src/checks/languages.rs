@@ -15,7 +15,7 @@ struct RuleSpec {
     message: &'static str,
 }
 
-const RULES: [RuleSpec; 9] = [
+const RULES: [RuleSpec; 13] = [
     RuleSpec {
         id: "rust-no-unsafe",
         extensions: &["rs"],
@@ -70,6 +70,30 @@ const RULES: [RuleSpec; 9] = [
         needles: &["key={index}", "key={i}"],
         message: "React list keys must use stable domain IDs instead of array indexes.",
     },
+    RuleSpec {
+        id: "go-ignored-error",
+        extensions: &["go"],
+        needles: &["_ = err", "_ = "],
+        message: "Go errors should be checked or deliberately documented, not discarded.",
+    },
+    RuleSpec {
+        id: "go-goroutine-cancellation",
+        extensions: &["go"],
+        needles: &["go func(", "go ", "go\t"],
+        message: "Go goroutines require cancellation and error reporting.",
+    },
+    RuleSpec {
+        id: "go-mutable-global",
+        extensions: &["go"],
+        needles: &["var global", "var Global"],
+        message: "Go package-level mutable state requires explicit review.",
+    },
+    RuleSpec {
+        id: "go-error-wrapping",
+        extensions: &["go"],
+        needles: &["fmt.Errorf("],
+        message: "Go wrapped errors should preserve causes with %w where appropriate.",
+    },
 ];
 
 pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
@@ -96,6 +120,7 @@ fn scan_rule(rule: &RuleSpec, files: &[String]) -> EnforcementResult {
             .and_then(|extension| extension.to_str())
         {
             Some("rs") => "rust",
+            Some("go") => "go",
             Some("ts" | "tsx") => "typescript",
             Some("js" | "jsx") => "javascript",
             _ => "unsupported",
@@ -226,6 +251,29 @@ mod tests {
                 .status,
             Status::Failed
         );
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn go_error_and_goroutine_patterns_are_review_findings() {
+        let path = std::env::temp_dir().join(format!("lgtm-go-check-{}.go", std::process::id()));
+        std::fs::write(&path, "package main\nimport \"fmt\"\nfunc Run() { go func() {}; _ = err; fmt.Errorf(\"bad\") }\n")
+            .expect("source");
+        let results = scan(&[path.to_string_lossy().into_owned()]);
+        for id in [
+            "go-ignored-error",
+            "go-goroutine-cancellation",
+            "go-error-wrapping",
+        ] {
+            assert_eq!(
+                results
+                    .iter()
+                    .find(|result| result.rule_id == id)
+                    .unwrap()
+                    .status,
+                Status::Failed
+            );
+        }
         std::fs::remove_file(path).ok();
     }
 }

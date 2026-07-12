@@ -76,7 +76,7 @@ fn compile_validate_prints_summary_and_exits_zero() {
         "summary must list seed rule ids"
     );
     assert!(
-        stdout.contains("29 rules validated."),
+        stdout.contains("34 rules validated."),
         "summary must report the validated rule count"
     );
 }

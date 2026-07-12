@@ -310,7 +310,7 @@ fn rust_commands() -> Vec<(Vec<String>, &'static str, &'static str)> {
 }
 
 fn go_commands() -> Vec<(Vec<String>, &'static str, &'static str)> {
-    vec![
+    let mut commands = vec![
         (
             vec!["gofmt", "-l", "."]
                 .into_iter()
@@ -335,7 +335,24 @@ fn go_commands() -> Vec<(Vec<String>, &'static str, &'static str)> {
             "test",
             "high",
         ),
-    ]
+    ];
+    if command_on_path("staticcheck") {
+        commands.push((
+            vec!["staticcheck", "./..."]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            "static analysis",
+            "high",
+        ));
+    }
+    commands
+}
+
+fn command_on_path(command: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|directory| directory.join(command).is_file())
+    })
 }
 
 fn has_table(text: &str, name: &str) -> bool {

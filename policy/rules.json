@@ -1582,5 +1582,248 @@
     "references": [
       "codingStandards.md#rust"
     ]
+  },
+  {
+    "id": "go-ignored-error",
+    "title": "Check Go ignored errors",
+    "description": "Go errors should be checked or deliberately documented, not discarded.",
+    "mechanism": "native",
+    "confidence": "low",
+    "examples": [
+      "good: handle and wrap causes; bad: discard or detach errors"
+    ],
+    "limitations": [
+      "The lexical check identifies common patterns and requires review for interfaces, generated code, and wrappers."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "go"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Go errors should be checked or deliberately documented, not discarded.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.go-ignored-error"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#go"
+    ]
+  },
+  {
+    "id": "go-goroutine-cancellation",
+    "title": "Review Go goroutine cancellation",
+    "description": "Go goroutines require cancellation and error reporting.",
+    "mechanism": "native",
+    "confidence": "low",
+    "examples": [
+      "good: handle and wrap causes; bad: discard or detach errors"
+    ],
+    "limitations": [
+      "The lexical check identifies common patterns and requires review for interfaces, generated code, and wrappers."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "go"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Go goroutines require cancellation and error reporting.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.go-goroutine-cancellation"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#go"
+    ]
+  },
+  {
+    "id": "go-mutable-global",
+    "title": "Review Go mutable globals",
+    "description": "Go package-level mutable state requires explicit review.",
+    "mechanism": "native",
+    "confidence": "low",
+    "examples": [
+      "good: handle and wrap causes; bad: discard or detach errors"
+    ],
+    "limitations": [
+      "The lexical check identifies common patterns and requires review for interfaces, generated code, and wrappers."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "go"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Go package-level mutable state requires explicit review.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.go-mutable-global"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#go"
+    ]
+  },
+  {
+    "id": "go-error-wrapping",
+    "title": "Review Go error wrapping",
+    "description": "Go wrapped errors should preserve causes with %w where appropriate.",
+    "mechanism": "native",
+    "confidence": "low",
+    "examples": [
+      "good: handle and wrap causes; bad: discard or detach errors"
+    ],
+    "limitations": [
+      "The lexical check identifies common patterns and requires review for interfaces, generated code, and wrappers."
+    ],
+    "enforcement_stage": "post_tool",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "go"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Go wrapped errors should preserve causes with %w where appropriate.",
+    "enforcement": {
+      "mode": "static",
+      "checks": [
+        "native.go-error-wrapping"
+      ]
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "check_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#go"
+    ]
+  },
+  {
+    "id": "go-context-first-review",
+    "title": "Review Go context placement",
+    "description": "Request-scoped Go functions should accept context.Context as the first parameter.",
+    "mechanism": "review",
+    "confidence": "low",
+    "examples": [
+      "good: func Run(ctx context.Context, ...); bad: hide context in globals"
+    ],
+    "limitations": [
+      "Context placement is review guidance until grammar-backed analysis is available."
+    ],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "language-specific",
+    "applies_to": {
+      "languages": [
+        "go"
+      ],
+      "domains": [],
+      "file_patterns": [
+        "**/*"
+      ]
+    },
+    "activation": {
+      "change_types": [
+        "create",
+        "modify"
+      ],
+      "signals": []
+    },
+    "instruction": "Review request-scoped Go functions for context.Context as the first parameter.",
+    "enforcement": {
+      "mode": "instruction",
+      "checks": []
+    },
+    "overridable": true,
+    "evidence": {
+      "required": [
+        "review_result"
+      ]
+    },
+    "references": [
+      "codingStandards.md#go"
+    ]
   }
 ]
