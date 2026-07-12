@@ -139,7 +139,16 @@ fn ignored_dir(name: &str) -> bool {
 fn is_marker(name: Option<&str>) -> bool {
     matches!(
         name,
-        Some("pyproject.toml" | "package.json" | "tsconfig.json" | "Cargo.toml" | "go.mod")
+        Some(
+            "pyproject.toml"
+                | "setup.py"
+                | "setup.cfg"
+                | "requirements.txt"
+                | "package.json"
+                | "tsconfig.json"
+                | "Cargo.toml"
+                | "go.mod"
+        )
     )
 }
 
@@ -151,7 +160,11 @@ fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
         relative
     };
     let markers = marker_set(path);
-    let (language, commands) = if markers.contains("pyproject.toml") {
+    let (language, commands) = if markers.contains("pyproject.toml")
+        || markers.contains("setup.py")
+        || markers.contains("setup.cfg")
+        || markers.contains("requirements.txt")
+    {
         ("python", python_commands(path))
     } else if markers.contains("package.json") || markers.contains("tsconfig.json") {
         ("typescript", typescript_commands(path))
@@ -200,10 +213,18 @@ fn python_commands(root: &Path) -> Vec<(Vec<String>, &'static str, &'static str)
     let pyproject = read_optional_bounded(&root.join("pyproject.toml"), MAX_METADATA_BYTES);
     let uv =
         root.join("uv.lock").is_file() || pyproject.lines().any(|line| line.trim() == "[tool.uv]");
-    let prefix: Vec<String> = if uv { vec!["uv", "run"] } else { Vec::new() }
-        .into_iter()
-        .map(String::from)
-        .collect();
+    let prefix: Vec<String> = if uv {
+        vec!["uv", "run"]
+    } else if root.join("poetry.lock").is_file() {
+        vec!["poetry", "run"]
+    } else if root.join("pdm.lock").is_file() {
+        vec!["pdm", "run"]
+    } else {
+        Vec::new()
+    }
+    .into_iter()
+    .map(String::from)
+    .collect();
     let configured = has_table(&pyproject, "tool.ruff")
         || has_table(&pyproject, "tool.mypy")
         || pyproject
@@ -380,6 +401,30 @@ mod tests {
             argv.iter()
                 .all(|command| !command.contains(&"--strict".to_string()))
         );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn python_requirements_and_poetry_markers_are_supported() {
+        let root =
+            std::env::temp_dir().join(format!("lgtm-discovery-poetry-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("service")).expect("service");
+        std::fs::write(root.join("service/requirements.txt"), "pytest\n").expect("requirements");
+        std::fs::write(root.join("service/poetry.lock"), "# lock\n").expect("poetry lock");
+        let workspace = discover(&root)
+            .expect("discovery")
+            .into_iter()
+            .find(|workspace| workspace.language == "python")
+            .expect("python workspace");
+        assert!(workspace.commands.iter().all(|command| {
+            command
+                .argv
+                .iter()
+                .take(2)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                == ["poetry", "run"]
+        }));
         std::fs::remove_dir_all(root).ok();
     }
 
