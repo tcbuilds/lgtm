@@ -2365,6 +2365,26 @@
     ]
   },
   {
+    "id": "test-quality-guidance",
+    "title": "Select appropriate test types",
+    "description": "Choose test forms that match the changed behavior: table-driven and property tests for parsers/validators/classifiers, golden tests for stable generated output, contract tests at service/schema boundaries, and integration tests for public APIs.",
+    "mechanism": "instruction",
+    "confidence": "low",
+    "examples": [{"language": "all", "text": "good: use a golden test for stable JSON output; bad: assert only that a function did not throw", "provenance": "codingStandards.md#testing-standards", "schematic": true}],
+    "limitations": ["Signals request review; they do not prove assertion strength or coverage percentage."],
+    "enforcement_stage": "prompt",
+    "severity": "warning",
+    "level": "review",
+    "category": "testing",
+    "applies_to": {"languages": [], "domains": [], "file_patterns": ["**/*"]},
+    "activation": {"change_types": ["create", "modify"], "signals": ["parser", "validator", "classifier", "generated-output", "service-boundary", "schema", "public-api"]},
+    "instruction": "Match test style to the change: table-driven/property/fuzz tests for parsers and validators; golden tests for stable output; contract tests at service/schema boundaries; integration tests for public APIs.",
+    "enforcement": {"mode": "instruction", "checks": []},
+    "overridable": true,
+    "evidence": {"required": ["review_result"]},
+    "references": ["codingStandards.md#testing-standards"]
+  },
+  {
     "id": "debugging-protocol",
     "title": "Follow the debugging protocol",
     "description": "Bug fixes should record reproduction inputs, environment and version, one hypothesis, a root-cause repair, a regression test, and removal or conversion of temporary diagnostics.",
