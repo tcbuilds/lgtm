@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by ADR-0012
 
 ## Date
 
@@ -34,7 +34,7 @@ The `lgtm` spec (`idea.md`, "Key Decisions (Resolved)") locks 17 decisions in it
 
 9. **Dogfood target: one active Python revenue repo.** Candidate is internal-python-repo or alternate-python-repo — whichever has the most active Python agent work when the build starts. Rationale: prove the Claude Code loop on a real revenue repo before expanding.
 
-10. **Codex adapter: post-MVP.** Built only after the Claude Code loop is proven on the dogfood repo. The core harness stays agent-neutral; only the adapter differs, and it reuses the same policy registry, rule IDs, and evidence schema.
+10. **Codex adapter: post-MVP, now superseded.** The original MVP deferred Codex until the Claude Code loop was proven. ADR-0012 now accepts the native Codex adapter while keeping the same policy registry, rule IDs, and evidence schema.
 
 11. **Revenue model: internal accelerator.** `lgtm` is a force multiplier for all revenue repos with no direct monetization.
 
