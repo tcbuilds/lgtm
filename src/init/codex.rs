@@ -147,6 +147,43 @@ pub(super) fn render_execpolicy(
     Ok((Some(output.into_bytes()), notes))
 }
 
+/// Report whether Codex's external config appears to contain a trust record
+/// for this project's hook file. This is intentionally advisory: LGTM never
+/// writes Codex's private trust state or treats a stale hash as trusted.
+pub(super) fn trust_note(hooks_path: &Path) -> String {
+    let Some(home) = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".codex"))
+        })
+    else {
+        return codex_trust_note("trust state unavailable; review `/hooks`");
+    };
+    let config = home.join("config.toml");
+    let Ok(metadata) = std::fs::metadata(&config) else {
+        return codex_trust_note("no trust record detected; review `/hooks`");
+    };
+    if metadata.len() > 512 * 1_024 {
+        return codex_trust_note("trust config too large to inspect; review `/hooks`");
+    }
+    let Ok(contents) = std::fs::read_to_string(config) else {
+        return codex_trust_note("trust state unreadable; review `/hooks`");
+    };
+    let path = hooks_path.to_string_lossy();
+    let has_record = contents.contains(path.as_ref()) && contents.contains("trusted_hash");
+    if has_record {
+        codex_trust_note("existing trust record detected; verify it in `/hooks`")
+    } else {
+        codex_trust_note("no matching trust record detected; review `/hooks`")
+    }
+}
+
+fn codex_trust_note(status: &str) -> String {
+    format!(
+        "Codex SHA-256-pins hook definitions; {status}. Trust state is managed by Codex outside this repository and is not auto-approved by init."
+    )
+}
+
 fn validate_execpolicy(config: &ExecPolicyConfig) -> Result<(), String> {
     if config.prohibited_commands.len() > 256 || config.prohibited_paths.len() > 256 {
         return Err("maximum 256 prohibited commands and paths".to_string());

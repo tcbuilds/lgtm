@@ -81,7 +81,7 @@ pub fn preview_with_agent(root: &Path, agent: InitAgent) -> Result<InitSummary, 
     note_unsupported_repo(&detection, &mut notes);
     notes.push(track_note(agent));
     if agent == InitAgent::Codex {
-        notes.push(codex_trust_note().to_string());
+        notes.push(codex::trust_note(&settings_path));
     }
     for workspace in &workspaces {
         if workspace.commands.is_empty() {
@@ -174,7 +174,7 @@ pub fn run_with_agent(
     note_unsupported_repo(&detection, &mut notes);
     notes.push(track_note(agent));
     if agent == InitAgent::Codex {
-        notes.push(codex_trust_note().to_string());
+        notes.push(codex::trust_note(&settings_path));
     }
 
     let config_render = render_config(
@@ -238,10 +238,6 @@ fn track_note(agent: InitAgent) -> String {
         "track .lgtm/config.json and {}; **/.lgtm/evidence/ is transient",
         hooks_label(agent)
     )
-}
-
-fn codex_trust_note() -> &'static str {
-    "Codex SHA-256-pins hook definitions; review the lgtm entries in `/hooks` before they run. Trust state is managed by Codex outside this repository and is not auto-approved by init."
 }
 
 type PlannedWrite<'a> = (&'a Path, &'static str, Option<Vec<u8>>);
