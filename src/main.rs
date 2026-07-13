@@ -227,12 +227,15 @@ enum PolicyCommand {
     },
 }
 
-/// The five native agent lifecycle events wired by the Claude Code adapter.
+/// Native agent lifecycle events exposed by the CLI adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum HookEvent {
     SessionStart,
     UserPromptSubmit,
     PreToolUse,
+    PermissionRequest,
+    SubagentStart,
+    SubagentStop,
     PostToolUse,
     Stop,
 }
@@ -912,6 +915,8 @@ fn run_hook(event: HookEvent, adapter: AgentKind) -> ExitCode {
             let stdout = io::stdout();
             pre_tool_use::run(&mut stdin.lock(), &mut stdout.lock())
         }
+        HookEvent::PermissionRequest => ExitCode::SUCCESS,
+        HookEvent::SubagentStart | HookEvent::SubagentStop => ExitCode::SUCCESS,
         HookEvent::PostToolUse => {
             let stdin = io::stdin();
             let stdout = io::stdout();
@@ -988,6 +993,17 @@ fn run_codex_hook(event: HookEvent) -> ExitCode {
         HookEvent::PreToolUse => {
             lgtm::hooks::pre_tool_use::run_with_adapter(&mut input, &mut output, &adapter)
         }
+        HookEvent::PermissionRequest => {
+            lgtm::hooks::pre_tool_use::run_permission_request(&mut input, &mut output, &adapter)
+        }
+        HookEvent::SubagentStart => lgtm::hooks::session_start::run_subagent_start_with_adapter(
+            &mut input,
+            &mut output,
+            &adapter,
+        ),
+        HookEvent::SubagentStop => {
+            lgtm::hooks::stop::run_subagent_stop_with_adapter(&mut input, &mut output, &adapter)
+        }
         HookEvent::PostToolUse => {
             lgtm::hooks::post_tool_use::run_with_adapter(&mut input, &mut output, &adapter)
         }
@@ -1007,6 +1023,9 @@ fn adapter_event(event: HookEvent) -> lgtm::adapter::HookEvent {
         HookEvent::SessionStart => lgtm::adapter::HookEvent::SessionStart,
         HookEvent::UserPromptSubmit => lgtm::adapter::HookEvent::UserPromptSubmit,
         HookEvent::PreToolUse => lgtm::adapter::HookEvent::PreToolUse,
+        HookEvent::PermissionRequest => lgtm::adapter::HookEvent::PermissionRequest,
+        HookEvent::SubagentStart => lgtm::adapter::HookEvent::SubagentStart,
+        HookEvent::SubagentStop => lgtm::adapter::HookEvent::SubagentStop,
         HookEvent::PostToolUse => lgtm::adapter::HookEvent::PostToolUse,
         HookEvent::Stop => lgtm::adapter::HookEvent::Stop,
     }
@@ -1187,6 +1206,9 @@ mod tests {
             ("session-start", HookEvent::SessionStart),
             ("user-prompt-submit", HookEvent::UserPromptSubmit),
             ("pre-tool-use", HookEvent::PreToolUse),
+            ("permission-request", HookEvent::PermissionRequest),
+            ("subagent-start", HookEvent::SubagentStart),
+            ("subagent-stop", HookEvent::SubagentStop),
             ("post-tool-use", HookEvent::PostToolUse),
             ("stop", HookEvent::Stop),
         ];

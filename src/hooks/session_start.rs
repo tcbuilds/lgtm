@@ -46,13 +46,33 @@ pub fn run_with_adapter(
     output: &mut impl Write,
     adapter: &dyn HookAdapter,
 ) -> ExitCode {
+    run_for_event(input, output, adapter, HookEvent::SessionStart)
+}
+
+/// Run the same context injection for a Codex subagent start.
+pub fn run_subagent_start_with_adapter(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+) -> ExitCode {
+    run_for_event(input, output, adapter, HookEvent::SubagentStart)
+}
+
+fn run_for_event(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    event: HookEvent,
+) -> ExitCode {
     // Fail-safe totality: any panic in the handler is caught and turned into a
     // diagnostic plus a success exit, so an unexpected panic can never crash the
     // hook and corrupt or block the agent session. The unwind-safety assertion is
     // sound because a caught panic leaves nothing observable half-updated: the
     // only side effect is a possible partial write to `output`, and the harness
     // ignores a truncated contract line.
-    match catch_unwind(AssertUnwindSafe(|| run_inner(input, output, adapter))) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        run_inner(input, output, adapter, event)
+    })) {
         Ok(code) => code,
         Err(_) => {
             diagnostic(
@@ -71,6 +91,7 @@ fn run_inner(
     input: &mut impl Read,
     output: &mut impl Write,
     adapter: &dyn HookAdapter,
+    event: HookEvent,
 ) -> ExitCode {
     let mut raw = String::new();
     if let Err(error) = input.take(MAX_PAYLOAD_BYTES + 1).read_to_string(&mut raw) {
@@ -105,10 +126,7 @@ fn run_inner(
     let config_state = load_config(&root);
 
     let context = build_context(&detection, &config_state, hook_input.source.as_deref());
-    let encoded = match adapter.encode_response(
-        HookEvent::SessionStart,
-        HookResponse::InjectContext(context),
-    ) {
+    let encoded = match adapter.encode_response(event, HookResponse::InjectContext(context)) {
         Ok(encoded) => encoded,
         Err(error) => {
             diagnostic("encode", "contract", &error, false);

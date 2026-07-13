@@ -6,9 +6,9 @@ use super::fs::read_if_exists;
 use super::settings::commands_match;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::path::Path;
+use std::path::{Component, Path};
 
-const CODEX_HOOKS: [HookWiring; 5] = [
+const CODEX_HOOKS: [HookWiring; 8] = [
     HookWiring {
         event: "SessionStart",
         command: "lgtm hook session-start --adapter codex",
@@ -22,12 +22,27 @@ const CODEX_HOOKS: [HookWiring; 5] = [
     HookWiring {
         event: "PreToolUse",
         command: "lgtm hook pre-tool-use --adapter codex",
-        matcher: Some("apply_patch|Edit|Write|exec_command|unified_exec|Bash"),
+        matcher: Some("^(apply_patch|Edit|Write|exec_command|unified_exec|Bash)$"),
+    },
+    HookWiring {
+        event: "PermissionRequest",
+        command: "lgtm hook permission-request --adapter codex",
+        matcher: Some("^(apply_patch|Edit|Write|exec_command|unified_exec|Bash)$"),
+    },
+    HookWiring {
+        event: "SubagentStart",
+        command: "lgtm hook subagent-start --adapter codex",
+        matcher: None,
+    },
+    HookWiring {
+        event: "SubagentStop",
+        command: "lgtm hook subagent-stop --adapter codex",
+        matcher: None,
     },
     HookWiring {
         event: "PostToolUse",
         command: "lgtm hook post-tool-use --adapter codex",
-        matcher: Some("apply_patch|Edit|Write|exec_command|unified_exec|Bash"),
+        matcher: Some("^(apply_patch|Edit|Write|exec_command|unified_exec|Bash)$"),
     },
     HookWiring {
         event: "Stop",
@@ -44,7 +59,8 @@ struct HookWiring {
 
 pub(super) fn render_hooks(validated: ValidatedSettings) -> Option<Vec<u8>> {
     let existing = validated.unwrap_or_default();
-    let merged = merge_hooks(&existing);
+    let binary = hook_binary();
+    let merged = merge_hooks_with_binary(&existing, &binary);
     if merged == existing {
         return None;
     }
@@ -54,7 +70,12 @@ pub(super) fn render_hooks(validated: ValidatedSettings) -> Option<Vec<u8>> {
     Some(serialized.into_bytes())
 }
 
+#[cfg(test)]
 pub(super) fn merge_hooks(existing: &Map<String, Value>) -> Map<String, Value> {
+    merge_hooks_with_binary(existing, "lgtm")
+}
+
+fn merge_hooks_with_binary(existing: &Map<String, Value>, binary: &str) -> Map<String, Value> {
     let mut merged = existing.clone();
     let hooks_entry = merged
         .entry("hooks")
@@ -74,7 +95,7 @@ pub(super) fn merge_hooks(existing: &Map<String, Value>) -> Map<String, Value> {
             .find(|entry| entry_runs_command(entry, wiring.command))
         {
             Some(entry) => reconcile_matcher(entry, wiring.matcher),
-            None => entries.push(hook_entry(wiring)),
+            None => entries.push(hook_entry(wiring, binary)),
         }
     }
     merged
@@ -241,15 +262,34 @@ fn reconcile_matcher(entry: &mut Value, matcher: Option<&str>) {
     }
 }
 
-fn hook_entry(wiring: &HookWiring) -> Value {
+fn hook_entry(wiring: &HookWiring, binary: &str) -> Value {
     let inner = json!({
         "type": "command",
-        "command": wiring.command,
+        "command": format!("{binary} {}", wiring.command.trim_start_matches("lgtm ")),
     });
     match wiring.matcher {
         Some(matcher) => json!({ "matcher": matcher, "hooks": [inner] }),
         None => json!({ "hooks": [inner] }),
     }
+}
+
+fn hook_binary() -> String {
+    if let Some(binary) = std::env::var_os("LGTM_HOOK_BINARY") {
+        return binary.to_string_lossy().into_owned();
+    }
+    let Ok(path) = std::env::current_exe() else {
+        return "lgtm".to_string();
+    };
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| component == Component::Normal("target".as_ref()))
+    {
+        return "lgtm".to_string();
+    }
+    shlex::try_quote(&path.to_string_lossy())
+        .map(|quoted| quoted.into_owned())
+        .unwrap_or_else(|_| "lgtm".to_string())
 }
 
 #[cfg(test)]
@@ -260,10 +300,10 @@ mod tests {
     fn merge_adds_all_codex_events_and_matchers() {
         let merged = merge_hooks(&Map::new());
         let hooks = merged["hooks"].as_object().expect("hooks object");
-        assert_eq!(hooks.len(), 5);
+        assert_eq!(hooks.len(), 8);
         assert_eq!(
             hooks["PreToolUse"][0]["matcher"],
-            "apply_patch|Edit|Write|exec_command|unified_exec|Bash"
+            "^(apply_patch|Edit|Write|exec_command|unified_exec|Bash)$"
         );
         assert_eq!(
             hooks["PreToolUse"][0]["hooks"][0]["command"],
@@ -303,9 +343,18 @@ mod tests {
         let merged = merge_hooks(existing.as_object().expect("object"));
         assert_eq!(
             merged["hooks"]["PreToolUse"][0]["matcher"],
-            "apply_patch|Edit|Write|exec_command|unified_exec|Bash"
+            "^(apply_patch|Edit|Write|exec_command|unified_exec|Bash)$"
         );
         assert_eq!(merged["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn hook_entry_can_use_a_stable_absolute_binary() {
+        let merged = merge_hooks_with_binary(&Map::new(), "/usr/local/bin/lgtm");
+        assert_eq!(
+            merged["hooks"]["Stop"][0]["hooks"][0]["command"],
+            "/usr/local/bin/lgtm hook stop --adapter codex"
+        );
     }
 
     #[test]

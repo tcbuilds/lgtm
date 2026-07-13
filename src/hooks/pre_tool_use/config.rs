@@ -13,6 +13,12 @@ struct Config {
     prohibited_paths: Vec<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct ExecPolicy {
+    #[serde(default)]
+    prohibited_commands: Vec<Vec<String>>,
+}
+
 pub(super) fn prohibited_patterns(root: &Path) -> Result<Vec<String>, String> {
     let path = root.join(".lgtm/config.json");
     if std::fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
@@ -49,6 +55,32 @@ pub(super) fn is_prohibited(relative: &str, patterns: &[String]) -> bool {
         };
         relative == prefix || relative.starts_with(&format!("{prefix}/"))
     })
+}
+
+pub(super) fn is_prohibited_command(root: &Path, command: &str) -> Result<bool, String> {
+    let path = root.join(".lgtm/execpolicy.json");
+    if std::fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
+        return Err("execpolicy is not a regular file".to_string());
+    }
+    let Some(file) = open_regular_file(&path).map_err(|error| error.to_string())? else {
+        return Ok(false);
+    };
+    let mut raw = String::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut raw)
+        .map_err(|error| error.to_string())?;
+    if raw.len() as u64 > MAX_CONFIG_BYTES {
+        return Err("execpolicy exceeds maximum size".to_string());
+    }
+    let policy: ExecPolicy = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    if policy.prohibited_commands.len() > 256 {
+        return Err("prohibited_commands exceeds bounds".to_string());
+    }
+    let argv = shlex::split(command).ok_or_else(|| "command has invalid quoting".to_string())?;
+    Ok(policy
+        .prohibited_commands
+        .iter()
+        .any(|prefix| !prefix.is_empty() && argv.starts_with(prefix)))
 }
 
 fn normalize_pattern(pattern: String) -> Result<String, String> {

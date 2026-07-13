@@ -26,22 +26,64 @@ pub fn run_with_adapter(
     output: &mut impl Write,
     adapter: &dyn HookAdapter,
 ) -> ExitCode {
+    run_for_event(input, output, adapter, HookEvent::PreToolUse)
+}
+
+/// Run the same path-policy checks for a Codex permission request.
+pub fn run_permission_request(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+) -> ExitCode {
+    run_for_event(input, output, adapter, HookEvent::PermissionRequest)
+}
+
+fn run_for_event(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    event: HookEvent,
+) -> ExitCode {
     let Some(parsed) = read_input(input) else {
         eprintln!(
             "pre-tool-use failed: entity=stdin reason=malformed or oversized payload retryable=false"
         );
         return ExitCode::SUCCESS;
     };
+    let root = match crate::hooks::root::resolve(parsed.cwd.as_deref()) {
+        Ok(root) => root,
+        Err(reason) => return deny(output, adapter, event, &reason),
+    };
+    if event == HookEvent::PermissionRequest
+        && let Some(command) = input::requested_command(&parsed)
+    {
+        match config::is_prohibited_command(&root, command) {
+            Ok(true) => {
+                return deny(
+                    output,
+                    adapter,
+                    event,
+                    "command matches prohibited_commands policy",
+                );
+            }
+            Ok(false) => {}
+            Err(reason) => {
+                return deny(
+                    output,
+                    adapter,
+                    event,
+                    &format!("prohibited command policy unverified: {reason}"),
+                );
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
     let Some(file) = input::edited_file(&parsed) else {
         return ExitCode::SUCCESS;
     };
-    let root = match crate::hooks::root::resolve(parsed.cwd.as_deref()) {
-        Ok(root) => root,
-        Err(reason) => return deny(output, adapter, &reason),
-    };
     let target = match target::resolve(&root, file) {
         Ok(target) => target,
-        Err(reason) => return deny(output, adapter, &reason),
+        Err(reason) => return deny(output, adapter, event, &reason),
     };
     let relative = target.strip_prefix(&root).unwrap_or(&target);
     let patterns = match config::prohibited_patterns(&root) {
@@ -50,17 +92,24 @@ pub fn run_with_adapter(
             return deny(
                 output,
                 adapter,
+                event,
                 &format!("prohibited path policy unverified: {reason}"),
             );
         }
     };
     if config::is_prohibited(&relative.to_string_lossy(), &patterns) {
-        return deny(output, adapter, "target matches prohibited_paths policy");
+        return deny(
+            output,
+            adapter,
+            event,
+            "target matches prohibited_paths policy",
+        );
     }
     if let Err(reason) = capture(&root, &target, parsed.session_id.as_deref()) {
         return deny(
             output,
             adapter,
+            event,
             &format!("verification baseline failed: {reason}"),
         );
     }
@@ -97,9 +146,14 @@ fn capture(root: &Path, target: &Path, session: Option<&str>) -> Result<(), Stri
     baseline::capture(root, target, session, &compiled)
 }
 
-fn deny(output: &mut impl Write, adapter: &dyn HookAdapter, reason: &str) -> ExitCode {
+fn deny(
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    event: HookEvent,
+    reason: &str,
+) -> ExitCode {
     let encoded = match adapter.encode_response(
-        HookEvent::PreToolUse,
+        event,
         HookResponse::Deny {
             reason: reason.to_string(),
         },

@@ -1,8 +1,8 @@
 //! The Codex CLI adapter.
 //!
-//! Codex consumes explicit JSON hook decisions and ignores hook exit codes for
-//! enforcement. Every non-empty response therefore stays on stdout, exits 0,
-//! and uses only fields supported by the selected lifecycle event.
+//! Codex accepts explicit JSON hook decisions. LGTM deliberately emits every
+//! non-empty response on stdout with exit 0 for one stable, cross-event wire
+//! contract; current Codex also supports exit 2 with a reason on stderr.
 
 use serde_json::{Value, json};
 
@@ -40,6 +40,9 @@ impl HookAdapter for CodexAdapter {
             cwd: string_field(&value, "cwd"),
             transcript_path: string_field(&value, "transcript_path"),
             source: string_field(&value, "source"),
+            agent_id: string_field(&value, "agent_id"),
+            agent_type: string_field(&value, "agent_type"),
+            stop_hook_active: value.get("stop_hook_active").and_then(Value::as_bool),
         })
     }
 
@@ -55,21 +58,24 @@ impl HookAdapter for CodexAdapter {
                 exit_code: 0,
             }),
             HookResponse::InjectContext(text) => match event {
-                HookEvent::SessionStart | HookEvent::UserPromptSubmit | HookEvent::PostToolUse => {
-                    stdout_json(json!({
-                        "hookSpecificOutput": {
-                            "hookEventName": event_name(event),
-                            "additionalContext": text,
-                        }
-                    }))
-                }
+                HookEvent::SessionStart
+                | HookEvent::UserPromptSubmit
+                | HookEvent::PostToolUse
+                | HookEvent::SubagentStart => stdout_json(json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": event_name(event),
+                        "additionalContext": text,
+                    }
+                })),
                 // Codex versions with stable hooks do not accept
                 // `hookSpecificOutput.additionalContext` on PreToolUse. The
                 // top-level system message is the supported fallback.
-                HookEvent::PreToolUse => stdout_json(json!({
+                HookEvent::PreToolUse | HookEvent::SubagentStop => stdout_json(json!({
                     "systemMessage": text,
                 })),
-                HookEvent::Stop => Err(invalid_combination(event, "InjectContext")),
+                HookEvent::PermissionRequest | HookEvent::Stop => {
+                    Err(invalid_combination(event, "InjectContext"))
+                }
             },
             HookResponse::Deny { reason } => match event {
                 HookEvent::PreToolUse => stdout_json(json!({
@@ -79,13 +85,34 @@ impl HookAdapter for CodexAdapter {
                         "permissionDecisionReason": reason,
                     }
                 })),
+                HookEvent::PermissionRequest => stdout_json(json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": "PermissionRequest",
+                        "decision": {
+                            "behavior": "deny",
+                            "message": reason,
+                        }
+                    }
+                })),
                 _ => Err(invalid_combination(event, "Deny")),
             },
             HookResponse::BlockStop { reason } => match event {
-                HookEvent::PostToolUse | HookEvent::Stop => {
+                HookEvent::PostToolUse | HookEvent::Stop | HookEvent::SubagentStop => {
                     stdout_json(json!({ "decision": "block", "reason": reason }))
                 }
                 _ => Err(invalid_combination(event, "BlockStop")),
+            },
+            HookResponse::PostToolFeedback { reason } => match event {
+                HookEvent::PostToolUse => {
+                    stdout_json(json!({ "decision": "block", "reason": reason }))
+                }
+                _ => Err(invalid_combination(event, "PostToolFeedback")),
+            },
+            HookResponse::Summary(summary) => match event {
+                HookEvent::Stop | HookEvent::SubagentStop => stdout_json(json!({
+                    "systemMessage": summary,
+                })),
+                _ => Err(invalid_combination(event, "Summary")),
             },
         }
     }
@@ -96,6 +123,9 @@ fn event_name(event: HookEvent) -> &'static str {
         HookEvent::SessionStart => "SessionStart",
         HookEvent::UserPromptSubmit => "UserPromptSubmit",
         HookEvent::PreToolUse => "PreToolUse",
+        HookEvent::PermissionRequest => "PermissionRequest",
+        HookEvent::SubagentStart => "SubagentStart",
+        HookEvent::SubagentStop => "SubagentStop",
         HookEvent::PostToolUse => "PostToolUse",
         HookEvent::Stop => "Stop",
     }
@@ -153,6 +183,13 @@ mod tests {
             },
             r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"target escapes repository"}}"#,
         );
+        exact(
+            HookEvent::PermissionRequest,
+            HookResponse::Deny {
+                reason: "policy denied approval".to_string(),
+            },
+            r#"{"hookSpecificOutput":{"decision":{"behavior":"deny","message":"policy denied approval"},"hookEventName":"PermissionRequest"}}"#,
+        );
     }
 
     #[test]
@@ -166,6 +203,13 @@ mod tests {
                 r#"{"decision":"block","reason":"unresolved MUST violation"}"#,
             );
         }
+        exact(
+            HookEvent::PostToolUse,
+            HookResponse::PostToolFeedback {
+                reason: "PostToolUse feedback: the tool already ran; review".to_string(),
+            },
+            r#"{"decision":"block","reason":"PostToolUse feedback: the tool already ran; review"}"#,
+        );
     }
 
     #[test]
@@ -174,6 +218,7 @@ mod tests {
             (HookEvent::SessionStart, "SessionStart"),
             (HookEvent::UserPromptSubmit, "UserPromptSubmit"),
             (HookEvent::PostToolUse, "PostToolUse"),
+            (HookEvent::SubagentStart, "SubagentStart"),
         ] {
             let expected = format!(
                 "{{\"hookSpecificOutput\":{{\"additionalContext\":\"packet\",\"hookEventName\":\"{name}\"}}}}"
@@ -185,6 +230,12 @@ mod tests {
             assert_eq!(encoded.stream, OutputStream::Stdout);
             assert_eq!(encoded.exit_code, 0);
         }
+
+        exact(
+            HookEvent::SubagentStop,
+            HookResponse::InjectContext("packet".to_string()),
+            r#"{"systemMessage":"packet"}"#,
+        );
 
         exact(
             HookEvent::PreToolUse,
@@ -199,6 +250,9 @@ mod tests {
             HookEvent::SessionStart,
             HookEvent::UserPromptSubmit,
             HookEvent::PreToolUse,
+            HookEvent::PermissionRequest,
+            HookEvent::SubagentStart,
+            HookEvent::SubagentStop,
             HookEvent::PostToolUse,
             HookEvent::Stop,
         ] {
@@ -281,6 +335,26 @@ mod tests {
                 .expect("tool payload parses");
             assert_eq!(request.tool_name.as_deref(), Some(expected));
         }
+        let mcp = CodexAdapter
+            .parse_request(
+                HookEvent::PreToolUse,
+                r#"{"hookEventName":"PreToolUse","tool_name":"mcp__fs__read_file"}"#,
+            )
+            .expect("MCP payload parses");
+        assert_eq!(mcp.tool_name.as_deref(), Some("mcp__fs__read_file"));
+    }
+
+    #[test]
+    fn parses_subagent_metadata_and_stop_guard() {
+        let request = CodexAdapter
+            .parse_request(
+                HookEvent::SubagentStop,
+                r#"{"hookEventName":"SubagentStop","agent_id":"agent-1","agent_type":"reviewer","stop_hook_active":true}"#,
+            )
+            .expect("subagent payload parses");
+        assert_eq!(request.agent_id.as_deref(), Some("agent-1"));
+        assert_eq!(request.agent_type.as_deref(), Some("reviewer"));
+        assert_eq!(request.stop_hook_active, Some(true));
     }
 
     #[test]

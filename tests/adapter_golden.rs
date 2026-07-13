@@ -287,7 +287,7 @@ fn post_tool_use_blocks_native_module_cycle() {
     assert_eq!(
         stdout,
         concat!(
-            r#"{"decision":"block","reason":"Module dependency cycle detected (1 file(s)). "#,
+            r#"{"decision":"block","reason":"PostToolUse feedback: the tool already ran; Module dependency cycle detected (1 file(s)). "#,
             r#"Break the cycle or add an adapter boundary between modules."}"#,
             "\n"
         ),
@@ -332,7 +332,7 @@ fn post_tool_use_blocks_secret_on_stdout_exit_zero() {
     assert_eq!(
         stdout,
         format!(
-            "{{\"decision\":\"block\",\"reason\":\"no-committed-secrets: gitleaks found 2 potential secrets in the touched files ({canonical_leak}). Detected rule ids: aws-access-token, generic-api-key. The secret values are redacted; remove them and rotate any exposed credential. Remove the secret from the file, load it from an environment variable or secret manager, and rotate the exposed credential.\"}}\n"
+            "{{\"decision\":\"block\",\"reason\":\"PostToolUse feedback: the tool already ran; no-committed-secrets: gitleaks found 2 potential secrets in the touched files ({canonical_leak}). Detected rule ids: aws-access-token, generic-api-key. The secret values are redacted; remove them and rotate any exposed credential. Remove the secret from the file, load it from an environment variable or secret manager, and rotate the exposed credential.\"}}\n"
         ),
         "the gitleaks secret-block must be byte-for-byte stable, path included"
     );

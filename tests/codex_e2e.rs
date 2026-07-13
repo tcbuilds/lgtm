@@ -71,8 +71,34 @@ exit 0
 fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
     let repo = TempRepo::new();
     install_fake_gitleaks(&repo);
+    repo.write(
+        ".lgtm/execpolicy.json",
+        &format!(
+            r#"{{"prohibited_commands":[["git","{}","--hard"]]}}"#,
+            "reset"
+        ),
+    );
     repo.write("src/app.py", "PLANTED_SECRET_MARKER = True\n");
     let path = repo.path().join("src/app.py");
+
+    let subagent_start = run_hook(
+        &repo,
+        "subagent-start",
+        json!({
+            "hookEventName": "SubagentStart",
+            "session_id": "codex-e2e",
+            "cwd": repo.path(),
+            "agent_id": "agent-1",
+            "agent_type": "reviewer",
+        }),
+    );
+    assert!(subagent_start.status.success());
+    let subagent_context: Value =
+        serde_json::from_slice(&subagent_start.stdout).expect("subagent context JSON");
+    assert_eq!(
+        subagent_context["hookSpecificOutput"]["hookEventName"],
+        "SubagentStart"
+    );
 
     let denied = run_hook(
         &repo,
@@ -83,6 +109,25 @@ fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
     let denied_json: Value = serde_json::from_slice(&denied.stdout).expect("deny JSON");
     assert_eq!(
         denied_json["hookSpecificOutput"]["permissionDecision"],
+        "deny"
+    );
+
+    let command_denied = run_hook(
+        &repo,
+        "permission-request",
+        json!({
+            "hookEventName": "PermissionRequest",
+            "session_id": "codex-e2e",
+            "cwd": repo.path(),
+            "tool_name": "Bash",
+            "tool_input": {"command": format!("git {} --hard HEAD", "reset")},
+        }),
+    );
+    assert!(command_denied.status.success());
+    let command_json: Value =
+        serde_json::from_slice(&command_denied.stdout).expect("command deny JSON");
+    assert_eq!(
+        command_json["hookSpecificOutput"]["decision"]["behavior"],
         "deny"
     );
 
@@ -110,6 +155,40 @@ fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
     );
     let blocked_json: Value = serde_json::from_slice(&blocked.stdout).expect("Stop block JSON");
     assert_eq!(blocked_json["decision"], "block");
+
+    let subagent_blocked = run_hook(
+        &repo,
+        "subagent-stop",
+        json!({
+            "hookEventName": "SubagentStop",
+            "session_id": "codex-e2e",
+            "cwd": repo.path(),
+            "agent_id": "agent-1",
+            "agent_type": "reviewer",
+            "stop_hook_active": false,
+        }),
+    );
+    assert!(subagent_blocked.status.success());
+    let subagent_json: Value =
+        serde_json::from_slice(&subagent_blocked.stdout).expect("subagent block JSON");
+    assert_eq!(subagent_json["decision"], "block");
+
+    let subagent_repeated = run_hook(
+        &repo,
+        "subagent-stop",
+        json!({
+            "hookEventName": "SubagentStop",
+            "session_id": "codex-e2e",
+            "cwd": repo.path(),
+            "agent_id": "agent-1",
+            "agent_type": "reviewer",
+            "stop_hook_active": true,
+        }),
+    );
+    assert!(subagent_repeated.status.success());
+    let repeated_json: Value =
+        serde_json::from_slice(&subagent_repeated.stdout).expect("subagent summary JSON");
+    assert!(repeated_json["systemMessage"].as_str().is_some());
 
     repo.write("src/app.py", "value = 1\n");
     let clean = run_hook(
@@ -148,4 +227,16 @@ fn codex_hook_parse_failure_is_fail_safe() {
     assert!(result.status.success());
     assert!(result.stdout.is_empty());
     assert!(String::from_utf8_lossy(&result.stderr).contains("codex hook failed"));
+
+    let subagent = run_hook(&repo, "subagent-stop", json!({"hookEventName": "Stop"}));
+    assert!(subagent.status.success());
+    assert!(subagent.stdout.is_empty());
+
+    let permission = run_hook(
+        &repo,
+        "permission-request",
+        json!({"hookEventName": "Stop"}),
+    );
+    assert!(permission.status.success());
+    assert!(permission.stdout.is_empty());
 }

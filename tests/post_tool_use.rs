@@ -109,6 +109,10 @@ fn planted_secret_emits_block_naming_the_rule() {
         reason.to_lowercase().contains("rotate"),
         "block reason must carry remediation: {reason}"
     );
+    assert!(
+        reason.starts_with("PostToolUse feedback: the tool already ran;"),
+        "post-tool feedback must disclose that side effects already occurred: {reason}"
+    );
 
     let ledger = repo.read(LEDGER);
     let record: Value = serde_json::from_str(ledger.lines().next().expect("a record was written"))

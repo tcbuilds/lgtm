@@ -16,7 +16,7 @@ use std::io::Write;
 
 use serde_json::Value;
 
-/// The five Claude Code lifecycle events lgtm handles.
+/// Lifecycle events lgtm can normalize across harnesses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
     /// Session start (also fired on resume, clear, and compact).
@@ -25,6 +25,12 @@ pub enum HookEvent {
     UserPromptSubmit,
     /// A tool call is about to run.
     PreToolUse,
+    /// Codex is about to ask for permission for a tool call.
+    PermissionRequest,
+    /// A Codex subagent has started.
+    SubagentStart,
+    /// A Codex subagent is trying to stop.
+    SubagentStop,
     /// A tool call just completed.
     PostToolUse,
     /// The agent is trying to stop.
@@ -42,7 +48,7 @@ pub enum HookEvent {
 pub struct HookRequest {
     /// The lifecycle event this request belongs to.
     pub event: HookEvent,
-    /// The tool a Pre/PostToolUse event names, when present.
+    /// The tool a Pre/PostToolUse or PermissionRequest event names, when present.
     pub tool_name: Option<String>,
     /// The tool input payload, passed through verbatim.
     pub tool_input: Option<Value>,
@@ -56,6 +62,12 @@ pub struct HookRequest {
     pub transcript_path: Option<String>,
     /// The SessionStart source (startup, resume, clear, compact).
     pub source: Option<String>,
+    /// Codex subagent identifier, when present.
+    pub agent_id: Option<String>,
+    /// Codex subagent type/profile, when present.
+    pub agent_type: Option<String>,
+    /// Whether Codex already continued this hook, when present.
+    pub stop_hook_active: Option<bool>,
 }
 
 /// A normalized, closed set of hook outcomes.
@@ -79,6 +91,13 @@ pub enum HookResponse {
         /// The unresolved violations that block completion.
         reason: String,
     },
+    /// Report a finding after a tool already completed.
+    PostToolFeedback {
+        /// The feedback and remediation text for the agent.
+        reason: String,
+    },
+    /// Report a clean completion summary without changing the decision.
+    Summary(String),
 }
 
 /// Which stream an encoded response is written to.
@@ -117,9 +136,9 @@ pub trait HookAdapter {
     /// code for the given event.
     ///
     /// Only event-valid pairs encode. Each adapter owns its event capability
-    /// matrix; a Claude context injection is limited to SessionStart and
-    /// UserPromptSubmit, while Codex also supports its own PostToolUse and
-    /// PreToolUse context forms. Any unsupported pair returns `Err` rather than
+    /// matrix; Claude keeps its historical SessionStart/UserPromptSubmit
+    /// contract, while Codex adds event-specific context, permission, and
+    /// subagent forms. Any unsupported pair returns `Err` rather than
     /// emitting plausible but wrong bytes. Callers MUST treat an `Err` as
     /// fail-open per lgtm's fail-safe design: exit 0 with no output rather than
     /// blocking the agent.

@@ -216,14 +216,16 @@ fn emit_blocks(
         .map(|result| block_reason(result))
         .collect::<Vec<_>>()
         .join("\n");
-    let encoded =
-        match adapter.encode_response(HookEvent::PostToolUse, HookResponse::BlockStop { reason }) {
-            Ok(encoded) => encoded,
-            Err(error) => {
-                diagnostic("encode", "decision", &error, false);
-                return ExitCode::SUCCESS;
-            }
-        };
+    let encoded = match adapter.encode_response(
+        HookEvent::PostToolUse,
+        HookResponse::PostToolFeedback { reason },
+    ) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            diagnostic("encode", "decision", &error, false);
+            return ExitCode::SUCCESS;
+        }
+    };
     if let Err(error) = adapter::emit(output, &mut std::io::stderr(), &encoded) {
         diagnostic("write", "decision", &error.to_string(), true);
     }
@@ -231,7 +233,10 @@ fn emit_blocks(
 }
 
 fn block_reason(result: &EnforcementResult) -> String {
-    let mut reason = result.message.clone();
+    let mut reason = format!(
+        "PostToolUse feedback: the tool already ran; {}",
+        result.message
+    );
     if let Some(remediation) = &result.remediation {
         reason.push(' ');
         reason.push_str(remediation);

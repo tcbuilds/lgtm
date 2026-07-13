@@ -131,7 +131,15 @@ fn codex_init_creates_and_idempotently_merges_project_hooks() {
     );
     assert_eq!(
         hooks["hooks"]["PreToolUse"][0]["matcher"],
-        "apply_patch|Edit|Write|exec_command|unified_exec|Bash"
+        "^(apply_patch|Edit|Write|exec_command|unified_exec|Bash)$"
+    );
+    assert_eq!(
+        hooks["hooks"]["PermissionRequest"][0]["hooks"][0]["command"],
+        "lgtm hook permission-request --adapter codex"
+    );
+    assert_eq!(
+        hooks["hooks"]["SubagentStart"][0]["hooks"][0]["command"],
+        "lgtm hook subagent-start --adapter codex"
     );
     let first_bytes = repo.read(".codex/hooks.json");
 

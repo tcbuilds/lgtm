@@ -32,6 +32,9 @@ impl HookAdapter for ClaudeAdapter {
             cwd: string_field(&value, "cwd"),
             transcript_path: string_field(&value, "transcript_path"),
             source: string_field(&value, "source"),
+            agent_id: string_field(&value, "agent_id"),
+            agent_type: string_field(&value, "agent_type"),
+            stop_hook_active: value.get("stop_hook_active").and_then(Value::as_bool),
         })
     }
 
@@ -57,6 +60,18 @@ impl HookAdapter for ClaudeAdapter {
                 _ => Err(invalid_combination(event, "Deny")),
             },
             HookResponse::BlockStop { reason } => block(event, &reason),
+            HookResponse::PostToolFeedback { reason } => match event {
+                HookEvent::PostToolUse => block(event, &reason),
+                _ => Err(invalid_combination(event, "PostToolFeedback")),
+            },
+            HookResponse::Summary(summary) => match event {
+                HookEvent::Stop => Ok(EncodedResponse {
+                    body: summary,
+                    stream: OutputStream::Stdout,
+                    exit_code: 0,
+                }),
+                _ => Err(invalid_combination(event, "Summary")),
+            },
         }
     }
 }
@@ -67,6 +82,9 @@ fn event_name(event: HookEvent) -> &'static str {
         HookEvent::SessionStart => "SessionStart",
         HookEvent::UserPromptSubmit => "UserPromptSubmit",
         HookEvent::PreToolUse => "PreToolUse",
+        HookEvent::PermissionRequest => "PermissionRequest",
+        HookEvent::SubagentStart => "SubagentStart",
+        HookEvent::SubagentStop => "SubagentStop",
         HookEvent::PostToolUse => "PostToolUse",
         HookEvent::Stop => "Stop",
     }
