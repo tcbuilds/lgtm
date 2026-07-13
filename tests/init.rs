@@ -164,6 +164,47 @@ fn codex_init_generates_optional_execpolicy_rules_without_overclaiming_paths() {
 }
 
 #[test]
+fn codex_hook_command_runs_from_subdirectory_without_path_lookup() {
+    let repo = TempRepo::new();
+    repo.write("nested/.keep", "fixture\n");
+    let binary = env!("CARGO_BIN_EXE_lgtm");
+    let output = Command::new(binary)
+        .args(["init", "--agent", "codex", "--accept-guesses"])
+        .env("LGTM_HOOK_BINARY", binary)
+        .current_dir(repo.path())
+        .output()
+        .expect("Codex init should execute");
+    assert!(output.status.success(), "Codex init must succeed");
+
+    let hooks = repo.read_json(".codex/hooks.json");
+    let command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str()
+        .expect("session hook command");
+    let argv = shlex::split(command).expect("hook command quoting");
+    let mut hook = Command::new(&argv[0]);
+    hook.args(&argv[1..])
+        .current_dir(repo.path().join("nested"))
+        .env("PATH", "/nonexistent")
+        .env("HOME", repo.path());
+    let mut child = hook
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("absolute hook command should launch");
+    std::io::Write::write_all(
+        &mut child.stdin.take().expect("hook stdin"),
+        br#"{"hookEventName":"SessionStart","cwd":"."}"#,
+    )
+    .expect("hook payload writes");
+    let result = child.wait_with_output().expect("hook completes");
+    assert!(result.status.success());
+    assert!(
+        !result.stdout.is_empty(),
+        "session hook should emit context"
+    );
+}
+
+#[test]
 fn init_dry_run_reports_plan_without_writing_files() {
     let repo = TempRepo::new();
     repo.write("backend/pyproject.toml", "[tool.ruff]\n");
