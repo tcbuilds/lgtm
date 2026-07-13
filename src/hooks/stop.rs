@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::adapter::{ClaudeAdapter, HookAdapter};
 use crate::checks::tiers::{self, Hook, Tier};
 use crate::checks::{EnforcementResult, Location, ResultEvidence, Status};
 use crate::checks::{commands, gitleaks, ruff, semgrep};
@@ -84,7 +85,17 @@ struct EvidenceMeta<'a> {
 }
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
-    match run_inner(input, output) {
+    let adapter = ClaudeAdapter;
+    run_with_adapter(input, output, &adapter)
+}
+
+/// Run Stop with an explicitly selected harness adapter.
+pub fn run_with_adapter(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+) -> ExitCode {
+    match run_inner(input, output, adapter) {
         Ok(code) => code,
         Err(reason) => {
             let _ = writeln!(
@@ -96,7 +107,11 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     }
 }
 
-fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode, String> {
+fn run_inner(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+) -> Result<ExitCode, String> {
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Full);
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
@@ -186,7 +201,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<ExitCode,
         write_summary(output, &results)?;
         return Ok(ExitCode::SUCCESS);
     }
-    write_block_decision(&failures)
+    write_block_decision(adapter, &failures)
 }
 
 fn legacy_version_result() -> EnforcementResult {
@@ -642,8 +657,11 @@ fn write_summary(output: &mut impl Write, results: &[EnforcementResult]) -> Resu
     Ok(())
 }
 
-fn write_block_decision(failures: &[&EnforcementResult]) -> Result<ExitCode, String> {
-    use crate::adapter::{ClaudeAdapter, HookAdapter, HookEvent, HookResponse};
+fn write_block_decision(
+    adapter: &dyn HookAdapter,
+    failures: &[&EnforcementResult],
+) -> Result<ExitCode, String> {
+    use crate::adapter::{HookEvent, HookResponse};
     let mut reason = "lgtm Stop blocked: unresolved MUST violations:".to_string();
     for result in failures {
         reason.push_str(&format!("\n- {}: {}", result.rule_id, result.message));
@@ -651,8 +669,7 @@ fn write_block_decision(failures: &[&EnforcementResult]) -> Result<ExitCode, Str
             reason.push_str(&format!("\n  Repair: {remediation}"));
         }
     }
-    let encoded =
-        ClaudeAdapter.encode_response(HookEvent::Stop, HookResponse::BlockStop { reason })?;
+    let encoded = adapter.encode_response(HookEvent::Stop, HookResponse::BlockStop { reason })?;
     crate::adapter::emit(&mut std::io::stdout(), &mut std::io::stderr(), &encoded)
         .map_err(|error| format!("write block decision ({error})"))?;
     Ok(ExitCode::from(encoded.exit_code))

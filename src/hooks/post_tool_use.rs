@@ -22,7 +22,17 @@ use input::{MAX_PAYLOAD_BYTES, edited_file, parse_input};
 use target::{repo_root, resolve_target, unverified_target};
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
-    match catch_unwind(AssertUnwindSafe(|| run_inner(input, output))) {
+    let adapter = ClaudeAdapter;
+    run_with_adapter(input, output, &adapter)
+}
+
+/// Run PostToolUse with an explicitly selected harness adapter.
+pub fn run_with_adapter(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+) -> ExitCode {
+    match catch_unwind(AssertUnwindSafe(|| run_inner(input, output, adapter))) {
         Ok(code) => code,
         Err(_) => {
             diagnostic(
@@ -36,7 +46,11 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     }
 }
 
-fn run_inner(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
+fn run_inner(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+) -> ExitCode {
     let Some(hook_input) = read_input(input) else {
         return ExitCode::SUCCESS;
     };
@@ -69,7 +83,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     for result in &results {
         persist(&root, hook_input.session_id.as_deref(), result);
     }
-    handle_results(output, &results)
+    handle_results(output, adapter, &results)
 }
 
 fn read_input(input: &mut impl Read) -> Option<input::HookInput> {
@@ -159,7 +173,11 @@ fn scan_diff(root: &Path, resolved: &str) -> Vec<EnforcementResult> {
     )
 }
 
-fn handle_results(output: &mut impl Write, results: &[EnforcementResult]) -> ExitCode {
+fn handle_results(
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    results: &[EnforcementResult],
+) -> ExitCode {
     let failures: Vec<_> = results
         .iter()
         .filter(|result| result.status == Status::Failed)
@@ -184,25 +202,28 @@ fn handle_results(output: &mut impl Write, results: &[EnforcementResult]) -> Exi
     if failures.is_empty() {
         ExitCode::SUCCESS
     } else {
-        emit_blocks(output, &failures)
+        emit_blocks(output, adapter, &failures)
     }
 }
 
-fn emit_blocks(output: &mut impl Write, results: &[&EnforcementResult]) -> ExitCode {
+fn emit_blocks(
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    results: &[&EnforcementResult],
+) -> ExitCode {
     let reason = results
         .iter()
         .map(|result| block_reason(result))
         .collect::<Vec<_>>()
         .join("\n");
-    let encoded = match ClaudeAdapter
-        .encode_response(HookEvent::PostToolUse, HookResponse::BlockStop { reason })
-    {
-        Ok(encoded) => encoded,
-        Err(error) => {
-            diagnostic("encode", "decision", &error, false);
-            return ExitCode::SUCCESS;
-        }
-    };
+    let encoded =
+        match adapter.encode_response(HookEvent::PostToolUse, HookResponse::BlockStop { reason }) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                diagnostic("encode", "decision", &error, false);
+                return ExitCode::SUCCESS;
+            }
+        };
     if let Err(error) = adapter::emit(output, &mut std::io::stderr(), &encoded) {
         diagnostic("write", "decision", &error.to_string(), true);
     }

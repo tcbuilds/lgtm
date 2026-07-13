@@ -36,13 +36,23 @@ use input::{MAX_PAYLOAD_BYTES, parse_input};
 /// stderr and nothing is written to `output`. The exit code is always success so
 /// the hook can never block or corrupt the agent session.
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
+    let adapter = ClaudeAdapter;
+    run_with_adapter(input, output, &adapter)
+}
+
+/// Run SessionStart with an explicitly selected harness adapter.
+pub fn run_with_adapter(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+) -> ExitCode {
     // Fail-safe totality: any panic in the handler is caught and turned into a
     // diagnostic plus a success exit, so an unexpected panic can never crash the
     // hook and corrupt or block the agent session. The unwind-safety assertion is
     // sound because a caught panic leaves nothing observable half-updated: the
     // only side effect is a possible partial write to `output`, and the harness
     // ignores a truncated contract line.
-    match catch_unwind(AssertUnwindSafe(|| run_inner(input, output))) {
+    match catch_unwind(AssertUnwindSafe(|| run_inner(input, output, adapter))) {
         Ok(code) => code,
         Err(_) => {
             diagnostic(
@@ -57,7 +67,11 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
 }
 
 /// The handler body, wrapped by [`run`] in a panic guard.
-fn run_inner(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
+fn run_inner(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+) -> ExitCode {
     let mut raw = String::new();
     if let Err(error) = input.take(MAX_PAYLOAD_BYTES + 1).read_to_string(&mut raw) {
         diagnostic("read", "stdin", &error.to_string(), true);
@@ -91,7 +105,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     let config_state = load_config(&root);
 
     let context = build_context(&detection, &config_state, hook_input.source.as_deref());
-    let encoded = match ClaudeAdapter.encode_response(
+    let encoded = match adapter.encode_response(
         HookEvent::SessionStart,
         HookResponse::InjectContext(context),
     ) {

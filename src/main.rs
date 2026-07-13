@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -34,11 +34,17 @@ enum Command {
         /// Allow medium-confidence fallback commands during normal init.
         #[arg(long)]
         accept_guesses: bool,
+        /// Agent hook format to install.
+        #[arg(long, value_enum, default_value_t = AgentKind::Claude)]
+        agent: AgentKind,
     },
     /// Run the policy runtime for a single agent lifecycle event.
     Hook {
         /// Lifecycle event that triggered this invocation.
         event: HookEvent,
+        /// Agent hook protocol to use.
+        #[arg(long, value_enum, default_value_t = AgentKind::Claude)]
+        adapter: AgentKind,
     },
     /// Report missing wrapped tools and their install commands.
     Doctor,
@@ -108,6 +114,12 @@ enum CheckTier {
     Fast,
     Targeted,
     Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum AgentKind {
+    Claude,
+    Codex,
 }
 
 #[derive(Debug, Subcommand)]
@@ -240,8 +252,9 @@ fn run(command: Command) -> ExitCode {
             dry_run,
             migrate_config,
             accept_guesses,
-        } => run_init(dry_run, migrate_config, accept_guesses),
-        Command::Hook { event } => run_hook(event),
+            agent,
+        } => run_init(dry_run, migrate_config, accept_guesses, agent),
+        Command::Hook { event, adapter } => run_hook(event, adapter),
         Command::Doctor => run_doctor(),
         Command::Compile { validate } => run_compile(validate),
         Command::Report { evidence, task } => run_report(evidence, task),
@@ -808,13 +821,19 @@ fn compile_exit_code(
 /// current working directory, then prints a concise report to stdout. On
 /// failure the precise cause is written to stderr and the process exits
 /// non-zero without partially reporting success.
-fn run_init(dry_run: bool, migrate_config: bool, accept_guesses: bool) -> ExitCode {
+fn run_init(
+    dry_run: bool,
+    migrate_config: bool,
+    accept_guesses: bool,
+    agent: AgentKind,
+) -> ExitCode {
+    let agent = init_agent(agent);
     let result = if migrate_config {
         init::migrate_config(Path::new("."), dry_run)
     } else if dry_run {
-        init::preview(Path::new("."))
+        init::preview_with_agent(Path::new("."), agent)
     } else {
-        init::run_with_options(Path::new("."), accept_guesses)
+        init::run_with_agent(Path::new("."), accept_guesses, agent)
     };
     match result {
         Ok(summary) => {
@@ -873,7 +892,10 @@ fn report_init_summary(summary: &init::InitSummary) {
 /// Implemented hooks read their payload from stdin and write their agent-facing
 /// response to stdout. Stop is the deliberate exception to the usual fail-safe
 /// success exit: it returns 2 when a rerun confirms an unresolved MUST failure.
-fn run_hook(event: HookEvent) -> ExitCode {
+fn run_hook(event: HookEvent, adapter: AgentKind) -> ExitCode {
+    if adapter == AgentKind::Codex {
+        return run_codex_hook(event);
+    }
     match event {
         HookEvent::SessionStart => {
             let stdin = io::stdin();
@@ -900,6 +922,93 @@ fn run_hook(event: HookEvent) -> ExitCode {
             let stdout = io::stdout();
             stop::run(&mut stdin.lock(), &mut stdout.lock())
         }
+    }
+}
+
+fn run_codex_hook(event: HookEvent) -> ExitCode {
+    use lgtm::adapter::{CodexAdapter, HookAdapter};
+
+    let mut raw = String::new();
+    if io::stdin()
+        .lock()
+        .take(1_024 * 1_024 + 1)
+        .read_to_string(&mut raw)
+        .is_err()
+        || raw.len() > 1_024 * 1_024
+    {
+        eprintln!(
+            "codex hook failed: entity=stdin reason=malformed or oversized payload retryable=false"
+        );
+        return ExitCode::SUCCESS;
+    }
+    let adapter = CodexAdapter;
+    let adapter_event = adapter_event(event);
+    let request = match adapter.parse_request(adapter_event, &raw) {
+        Ok(request) => request,
+        Err(reason) => {
+            eprintln!("codex hook failed: entity=stdin reason={reason} retryable=false");
+            return ExitCode::SUCCESS;
+        }
+    };
+    let mut payload: serde_json::Value = if raw.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        match serde_json::from_str(&raw) {
+            Ok(payload) => payload,
+            Err(reason) => {
+                eprintln!("codex hook failed: entity=stdin reason={reason} retryable=false");
+                return ExitCode::SUCCESS;
+            }
+        }
+    };
+    let Some(object) = payload.as_object_mut() else {
+        eprintln!(
+            "codex hook failed: entity=stdin reason=payload is not a JSON object retryable=false"
+        );
+        return ExitCode::SUCCESS;
+    };
+    if let Some(tool_name) = request.tool_name {
+        object.insert("tool_name".to_string(), serde_json::json!(tool_name));
+    }
+    if object.get("user_prompt").is_none()
+        && let Some(prompt) = request.prompt
+    {
+        object.insert("user_prompt".to_string(), serde_json::json!(prompt));
+    }
+    let normalized = payload.to_string();
+    let mut input = std::io::Cursor::new(normalized);
+    let mut output = io::stdout();
+    match event {
+        HookEvent::SessionStart => {
+            lgtm::hooks::session_start::run_with_adapter(&mut input, &mut output, &adapter)
+        }
+        HookEvent::UserPromptSubmit => {
+            lgtm::hooks::user_prompt_submit::run_with_adapter(&mut input, &mut output, &adapter)
+        }
+        HookEvent::PreToolUse => {
+            lgtm::hooks::pre_tool_use::run_with_adapter(&mut input, &mut output, &adapter)
+        }
+        HookEvent::PostToolUse => {
+            lgtm::hooks::post_tool_use::run_with_adapter(&mut input, &mut output, &adapter)
+        }
+        HookEvent::Stop => lgtm::hooks::stop::run_with_adapter(&mut input, &mut output, &adapter),
+    }
+}
+
+fn init_agent(agent: AgentKind) -> init::InitAgent {
+    match agent {
+        AgentKind::Claude => init::InitAgent::Claude,
+        AgentKind::Codex => init::InitAgent::Codex,
+    }
+}
+
+fn adapter_event(event: HookEvent) -> lgtm::adapter::HookEvent {
+    match event {
+        HookEvent::SessionStart => lgtm::adapter::HookEvent::SessionStart,
+        HookEvent::UserPromptSubmit => lgtm::adapter::HookEvent::UserPromptSubmit,
+        HookEvent::PreToolUse => lgtm::adapter::HookEvent::PreToolUse,
+        HookEvent::PostToolUse => lgtm::adapter::HookEvent::PostToolUse,
+        HookEvent::Stop => lgtm::adapter::HookEvent::Stop,
     }
 }
 
@@ -981,7 +1090,8 @@ mod tests {
             Command::Init {
                 dry_run: false,
                 migrate_config: false,
-                accept_guesses: false
+                accept_guesses: false,
+                agent: AgentKind::Claude,
             }
         ));
     }
@@ -1083,10 +1193,36 @@ mod tests {
         for (arg, expected) in cases {
             let cli = Cli::try_parse_from(["lgtm", "hook", arg]).expect("hook event should parse");
             match cli.command {
-                Command::Hook { event } => assert_eq!(event, expected),
+                Command::Hook { event, .. } => assert_eq!(event, expected),
                 other => panic!("expected hook command, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn parses_explicit_codex_adapter_flag() {
+        let cli = Cli::try_parse_from(["lgtm", "hook", "stop", "--adapter", "codex"])
+            .expect("Codex adapter flag should parse");
+        assert!(matches!(
+            cli.command,
+            Command::Hook {
+                event: HookEvent::Stop,
+                adapter: AgentKind::Codex
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_codex_init_agent_flag() {
+        let cli = Cli::try_parse_from(["lgtm", "init", "--agent", "codex"])
+            .expect("Codex init agent should parse");
+        assert!(matches!(
+            cli.command,
+            Command::Init {
+                agent: AgentKind::Codex,
+                ..
+            }
+        ));
     }
 
     #[test]

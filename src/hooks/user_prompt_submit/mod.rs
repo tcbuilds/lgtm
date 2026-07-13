@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
+use crate::adapter::{ClaudeAdapter, HookAdapter};
 use crate::compile::compile_selected;
 use crate::context;
 use crate::policy::ChangeType;
@@ -18,7 +19,17 @@ use crate::select::select_rules;
 use input::{MAX_PAYLOAD_BYTES, bounded_prompt, parse};
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
-    match run_inner(input, output) {
+    let adapter = ClaudeAdapter;
+    run_with_adapter(input, output, &adapter)
+}
+
+/// Run UserPromptSubmit with an explicitly selected harness adapter.
+pub fn run_with_adapter(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+) -> ExitCode {
+    match run_inner(input, output, adapter) {
         Ok(()) => ExitCode::SUCCESS,
         Err(reason) => {
             let _ = writeln!(
@@ -30,7 +41,11 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     }
 }
 
-fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<(), String> {
+fn run_inner(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+) -> Result<(), String> {
     let mut raw = String::new();
     input
         .take(MAX_PAYLOAD_BYTES + 1)
@@ -57,7 +72,7 @@ fn run_inner(input: &mut impl Read, output: &mut impl Write) -> Result<(), Strin
     }
     let selected = select_rules(&context, &registry, ChangeType::Modify);
     let compiled = compile_selected(&selected, &context.files_touched);
-    write_response(output, intent.label(), &compiled.packet)
+    write_response(output, adapter, intent.label(), &compiled.packet)
 }
 
 fn persist_intent(root: &Path, session_id: Option<&str>, intent: &str) -> Result<(), String> {
@@ -97,10 +112,15 @@ fn write_intent_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("write intent evidence ({error})"))
 }
 
-fn write_response(output: &mut impl Write, intent: &str, packet: &str) -> Result<(), String> {
-    use crate::adapter::{ClaudeAdapter, HookAdapter, HookEvent, HookResponse};
+fn write_response(
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    intent: &str,
+    packet: &str,
+) -> Result<(), String> {
+    use crate::adapter::{HookEvent, HookResponse};
     let context = format!("Detected task intent: {intent}.\n\n{packet}");
-    let encoded = ClaudeAdapter.encode_response(
+    let encoded = adapter.encode_response(
         HookEvent::UserPromptSubmit,
         HookResponse::InjectContext(context),
     )?;

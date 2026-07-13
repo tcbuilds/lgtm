@@ -25,6 +25,7 @@ use crate::detect::{Detection, detect};
 use crate::discovery::{DiscoveryError, Workspace};
 use crate::fsutil::open_regular_file;
 
+mod codex;
 mod config;
 mod fs;
 mod gitignore;
@@ -36,8 +37,17 @@ use fs::{commit_write, create_dir_all, preflight_targets, read_if_exists, stage_
 #[cfg(test)]
 use gitignore::evidence_is_ignored;
 use gitignore::{render_gitignore, render_settings};
-pub use runner::{migrate_config, preview, run, run_with_options};
+pub use runner::{
+    migrate_config, preview, preview_with_agent, run, run_with_agent, run_with_options,
+};
 pub use settings::{build_config, merge_settings};
+
+/// Agent-specific hook configuration emitted by `lgtm init`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitAgent {
+    Claude,
+    Codex,
+}
 #[cfg(test)]
 use settings::{commands_match, entry_runs_command};
 

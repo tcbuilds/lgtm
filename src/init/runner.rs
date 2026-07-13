@@ -66,18 +66,23 @@ pub fn migrate_config(root: &Path, dry_run: bool) -> Result<InitSummary, InitErr
 
 /// Inspect the repository and report planned writes without mutating it.
 pub fn preview(root: &Path) -> Result<InitSummary, InitError> {
+    preview_with_agent(root, InitAgent::Claude)
+}
+
+/// Inspect the repository and report planned writes for one agent.
+pub fn preview_with_agent(root: &Path, agent: InitAgent) -> Result<InitSummary, InitError> {
     let detection = detect(root);
     let workspaces = crate::discovery::discover(root)?;
-    let settings_path = root.join(".claude").join("settings.json");
+    let settings_path = hooks_path(root, agent);
     let config_path = root.join(".lgtm").join("config.json");
     let _ = validate_settings(&settings_path)?;
     let _ = validate_config(&config_path)?;
     let mut notes = vec!["dry-run: no files changed".to_string()];
     note_unsupported_repo(&detection, &mut notes);
-    notes.push(
-        "track .lgtm/config.json and .claude/settings.json; **/.lgtm/evidence/ is transient"
-            .to_string(),
-    );
+    notes.push(track_note(agent));
+    if agent == InitAgent::Codex {
+        notes.push(codex_trust_note().to_string());
+    }
     for workspace in &workspaces {
         if workspace.commands.is_empty() {
             notes.push(format!(
@@ -92,7 +97,7 @@ pub fn preview(root: &Path) -> Result<InitSummary, InitError> {
         files_written: vec![
             ".lgtm/config.json".to_string(),
             ".gitignore".to_string(),
-            ".claude/settings.json".to_string(),
+            hooks_label(agent).to_string(),
         ],
         notes,
     })
@@ -106,6 +111,15 @@ pub fn run(root: &Path) -> Result<InitSummary, InitError> {
 /// Scaffold configuration, optionally requiring explicit acceptance of
 /// medium-confidence fallback commands.
 pub fn run_with_options(root: &Path, accept_guesses: bool) -> Result<InitSummary, InitError> {
+    run_with_agent(root, accept_guesses, InitAgent::Claude)
+}
+
+/// Scaffold configuration and merge hooks for the selected agent.
+pub fn run_with_agent(
+    root: &Path,
+    accept_guesses: bool,
+    agent: InitAgent,
+) -> Result<InitSummary, InitError> {
     let detection = detect(root);
     let workspaces = crate::discovery::discover(root)?;
     if !accept_guesses {
@@ -126,7 +140,7 @@ pub fn run_with_options(root: &Path, accept_guesses: bool) -> Result<InitSummary
         }
     }
 
-    let settings_path = root.join(".claude").join("settings.json");
+    let settings_path = hooks_path(root, agent);
     let validated_settings = validate_settings(&settings_path)?;
 
     let config_path = root.join(".lgtm").join("config.json");
@@ -148,10 +162,10 @@ pub fn run_with_options(root: &Path, accept_guesses: bool) -> Result<InitSummary
     let mut notes = Vec::new();
 
     note_unsupported_repo(&detection, &mut notes);
-    notes.push(
-        "track .lgtm/config.json and .claude/settings.json; **/.lgtm/evidence/ is transient"
-            .to_string(),
-    );
+    notes.push(track_note(agent));
+    if agent == InitAgent::Codex {
+        notes.push(codex_trust_note().to_string());
+    }
 
     let config_render = render_config(
         &workspaces,
@@ -161,14 +175,17 @@ pub fn run_with_options(root: &Path, accept_guesses: bool) -> Result<InitSummary
         &mut notes,
     )?;
     let gitignore_render = render_gitignore(&gitignore_path, &mut notes)?;
-    let settings_render = render_settings(validated_settings);
+    let settings_render = match agent {
+        InitAgent::Claude => render_settings(validated_settings),
+        InitAgent::Codex => codex::render_hooks(validated_settings),
+    };
 
     create_output_directories(&evidence_dir, &settings_path)?;
 
     let planned: [PlannedWrite<'_>; 3] = [
         (&config_path, ".lgtm/config.json", config_render),
         (&gitignore_path, ".gitignore", gitignore_render),
-        (&settings_path, ".claude/settings.json", settings_render),
+        (&settings_path, hooks_label(agent), settings_render),
     ];
 
     stage_and_commit(planned, &mut files_written)?;
@@ -179,6 +196,31 @@ pub fn run_with_options(root: &Path, accept_guesses: bool) -> Result<InitSummary
         files_written,
         notes,
     })
+}
+
+fn hooks_path(root: &Path, agent: InitAgent) -> PathBuf {
+    match agent {
+        InitAgent::Claude => root.join(".claude").join("settings.json"),
+        InitAgent::Codex => root.join(".codex").join("hooks.json"),
+    }
+}
+
+fn hooks_label(agent: InitAgent) -> &'static str {
+    match agent {
+        InitAgent::Claude => ".claude/settings.json",
+        InitAgent::Codex => ".codex/hooks.json",
+    }
+}
+
+fn track_note(agent: InitAgent) -> String {
+    format!(
+        "track .lgtm/config.json and {}; **/.lgtm/evidence/ is transient",
+        hooks_label(agent)
+    )
+}
+
+fn codex_trust_note() -> &'static str {
+    "Codex SHA-256-pins hook definitions; review the lgtm entries in `/hooks` before they run. Trust state is managed by Codex outside this repository and is not auto-approved by init."
 }
 
 type PlannedWrite<'a> = (&'a Path, &'static str, Option<Vec<u8>>);

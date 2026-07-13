@@ -29,6 +29,14 @@ fn run_init_dry_run(repo: &TempRepo) -> std::process::Output {
         .expect("lgtm init dry-run should execute")
 }
 
+fn run_init_codex(repo: &TempRepo) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["init", "--agent", "codex", "--accept-guesses"])
+        .current_dir(repo.path())
+        .output()
+        .expect("Codex init should execute")
+}
+
 fn run_migrate(repo: &TempRepo, dry_run: bool) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_lgtm"));
     command.arg("init").arg("--migrate-config");
@@ -96,6 +104,40 @@ fn fresh_python_repo_creates_all_files() {
             "settings must wire {event}"
         );
     }
+}
+
+#[test]
+fn codex_init_creates_and_idempotently_merges_project_hooks() {
+    let repo = TempRepo::new();
+    repo.write("pyproject.toml", "[project]\nname = \"fixture\"\n");
+    repo.write(
+        ".codex/hooks.json",
+        &serde_json::to_string_pretty(&json!({
+            "permissions": {"allow": ["Bash"]},
+            "hooks": {
+                "Stop": [{"hooks": [{"type": "command", "command": "other"}]}]
+            }
+        }))
+        .expect("fixture serializes"),
+    );
+
+    let first = run_init_codex(&repo);
+    assert!(first.status.success(), "Codex init must succeed");
+    let hooks = repo.read_json(".codex/hooks.json");
+    assert_eq!(hooks["permissions"], json!({"allow": ["Bash"]}));
+    assert_eq!(
+        hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "lgtm hook pre-tool-use --adapter codex"
+    );
+    assert_eq!(
+        hooks["hooks"]["PreToolUse"][0]["matcher"],
+        "apply_patch|Edit|Write|exec_command|unified_exec|Bash"
+    );
+    let first_bytes = repo.read(".codex/hooks.json");
+
+    let second = run_init_codex(&repo);
+    assert!(second.status.success(), "second Codex init must succeed");
+    assert_eq!(repo.read(".codex/hooks.json"), first_bytes);
 }
 
 #[test]
