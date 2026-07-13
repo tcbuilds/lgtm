@@ -141,6 +141,21 @@ fn codex_init_creates_and_idempotently_merges_project_hooks() {
 }
 
 #[test]
+fn codex_init_generates_optional_execpolicy_rules_without_overclaiming_paths() {
+    let repo = TempRepo::new();
+    repo.write(
+        ".lgtm/execpolicy.json",
+        r#"{"prohibited_commands":[["git","reset","--hard"]],"prohibited_paths":["secrets/**"]}"#,
+    );
+    let output = run_init_codex(&repo);
+    assert!(output.status.success(), "Codex init must succeed");
+    let rules = repo.read(".codex/rules/lgtm.rules");
+    assert!(rules.contains("prefix_rule(pattern=[\"git\",\"reset\",\"--hard\"]"));
+    assert!(rules.contains("hook-enforced"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("defense-in-depth"));
+}
+
+#[test]
 fn init_dry_run_reports_plan_without_writing_files() {
     let repo = TempRepo::new();
     repo.write("backend/pyproject.toml", "[tool.ruff]\n");

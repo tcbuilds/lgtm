@@ -195,6 +195,14 @@ pub enum InitError {
         /// The event key whose value is not an array.
         event: String,
     },
+    /// An optional `.lgtm/execpolicy.json` file is malformed.
+    #[error("execpolicy config is malformed: path={path} reason={reason} retryable=false")]
+    MalformedExecPolicy {
+        /// The malformed execpolicy file.
+        path: PathBuf,
+        /// The parse or validation reason.
+        reason: String,
+    },
     /// An existing `.lgtm/config.json` is not valid JSON; init refuses to
     /// overwrite it so user-edited policy is never lost.
     #[error("existing config is malformed: path={path} reason={reason} retryable=false")]

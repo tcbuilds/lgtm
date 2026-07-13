@@ -141,6 +141,7 @@ pub fn run_with_agent(
     }
 
     let settings_path = hooks_path(root, agent);
+    let rules_path = root.join(".codex/rules/lgtm.rules");
     let validated_settings = validate_settings(&settings_path)?;
 
     let config_path = root.join(".lgtm").join("config.json");
@@ -156,7 +157,16 @@ pub fn run_with_agent(
 
     let evidence_dir = root.join(".lgtm").join("evidence");
     let gitignore_path = root.join(".gitignore");
-    preflight_targets(&[&evidence_dir, &config_path, &gitignore_path, &settings_path])?;
+    let mut targets: Vec<&Path> = vec![
+        evidence_dir.as_path(),
+        config_path.as_path(),
+        gitignore_path.as_path(),
+        settings_path.as_path(),
+    ];
+    if agent == InitAgent::Codex {
+        targets.push(rules_path.as_path());
+    }
+    preflight_targets(&targets)?;
 
     let mut files_written = Vec::new();
     let mut notes = Vec::new();
@@ -179,13 +189,24 @@ pub fn run_with_agent(
         InitAgent::Claude => render_settings(validated_settings),
         InitAgent::Codex => codex::render_hooks(validated_settings),
     };
+    let (execpolicy_render, execpolicy_notes) = match agent {
+        InitAgent::Claude => (None, Vec::new()),
+        InitAgent::Codex => codex::render_execpolicy(root, &rules_path)?,
+    };
+    notes.extend(execpolicy_notes);
 
-    create_output_directories(&evidence_dir, &settings_path)?;
+    create_output_directories(
+        &evidence_dir,
+        &settings_path,
+        execpolicy_render.is_some(),
+        &rules_path,
+    )?;
 
-    let planned: [PlannedWrite<'_>; 3] = [
+    let planned: [PlannedWrite<'_>; 4] = [
         (&config_path, ".lgtm/config.json", config_render),
         (&gitignore_path, ".gitignore", gitignore_render),
         (&settings_path, hooks_label(agent), settings_render),
+        (&rules_path, ".codex/rules/lgtm.rules", execpolicy_render),
     ];
 
     stage_and_commit(planned, &mut files_written)?;
@@ -231,16 +252,24 @@ fn note_unsupported_repo(detection: &Detection, notes: &mut Vec<String>) {
     }
 }
 
-fn create_output_directories(evidence_dir: &Path, settings_path: &Path) -> Result<(), InitError> {
+fn create_output_directories(
+    evidence_dir: &Path,
+    settings_path: &Path,
+    create_rules: bool,
+    rules_path: &Path,
+) -> Result<(), InitError> {
     create_dir_all(evidence_dir)?;
     if let Some(parent) = settings_path.parent() {
+        create_dir_all(parent)?;
+    }
+    if create_rules && let Some(parent) = rules_path.parent() {
         create_dir_all(parent)?;
     }
     Ok(())
 }
 
-fn stage_and_commit(
-    planned: [PlannedWrite<'_>; 3],
+fn stage_and_commit<'a>(
+    planned: impl IntoIterator<Item = PlannedWrite<'a>>,
     files_written: &mut Vec<String>,
 ) -> Result<(), InitError> {
     let mut staged = Vec::new();
