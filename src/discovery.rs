@@ -166,6 +166,11 @@ fn ignored_dir(name: &str) -> bool {
             | "coverage"
             | "out"
             | "storybook-static"
+            // Fixture trees hold deliberately malformed sources used to exercise the
+            // checkers. Registering them as workspaces points required commands at
+            // code that is supposed to fail, which blocks every downstream gate.
+            | "fixtures"
+            | "testdata"
     )
 }
 
@@ -816,6 +821,23 @@ mod tests {
         std::fs::write(root.join("frontend/.next/package.json"), "{}").expect("artifact marker");
         std::fs::create_dir_all(root.join("generated")).expect("ignored output");
         std::fs::write(root.join("generated/package.json"), "{}").expect("ignored marker");
+        assert!(discover(&root).expect("discovery").is_empty());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn skips_fixture_and_testdata_trees() {
+        let root =
+            std::env::temp_dir().join(format!("lgtm-discovery-fixtures-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("tests/fixtures/broken-python")).expect("fixture tree");
+        std::fs::write(
+            root.join("tests/fixtures/broken-python/pyproject.toml"),
+            "[project]\nname = \"broken\"\n",
+        )
+        .expect("fixture marker");
+        std::fs::create_dir_all(root.join("testdata/sample-go")).expect("testdata tree");
+        std::fs::write(root.join("testdata/sample-go/go.mod"), "module sample\n")
+            .expect("testdata marker");
         assert!(discover(&root).expect("discovery").is_empty());
         std::fs::remove_dir_all(root).ok();
     }
