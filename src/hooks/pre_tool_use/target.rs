@@ -32,21 +32,33 @@ fn absolute_relative(root: &Path, supplied: &Path) -> Result<PathBuf, String> {
             .canonicalize()
             .map_err(|_| "target escapes repository".to_string())?
     } else {
-        let parent = supplied
-            .parent()
-            .ok_or_else(|| "target escapes repository".to_string())?
-            .canonicalize()
-            .map_err(|_| "target escapes repository".to_string())?;
-        parent.join(
-            supplied
-                .file_name()
-                .ok_or_else(|| "target escapes repository".to_string())?,
-        )
+        resolve_missing(supplied)?
     };
     canonical
         .strip_prefix(root)
         .map(Path::to_path_buf)
         .map_err(|_| "target escapes repository".to_string())
+}
+
+// Creating a file inside a directory that does not exist yet is ordinary work, so
+// only the existing portion of the path can be resolved on disk. Canonicalize the
+// nearest existing ancestor and re-append the missing tail; the caller still
+// confirms the result sits inside the repository root.
+fn resolve_missing(supplied: &Path) -> Result<PathBuf, String> {
+    let mut missing = Vec::new();
+    let mut cursor = supplied;
+    loop {
+        let (Some(parent), Some(name)) = (cursor.parent(), cursor.file_name()) else {
+            return Err("target escapes repository".to_string());
+        };
+        missing.push(name);
+        if let Ok(base) = parent.canonicalize() {
+            let mut resolved = base;
+            resolved.extend(missing.iter().rev());
+            return Ok(resolved);
+        }
+        cursor = parent;
+    }
 }
 
 fn verify_components(root: &Path, relative: &Path) -> Result<(), String> {
@@ -83,6 +95,34 @@ mod tests {
         std::fs::write(&outside, "outside\n").expect("outside");
         assert!(resolve(&root, &outside.to_string_lossy()).is_err());
         std::fs::remove_file(outside).ok();
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn accepts_new_file_inside_directories_that_do_not_exist_yet() {
+        let root = std::env::temp_dir().join(format!("lgtm-pre-new-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let target = root.join("templates/claude-rules/rules/rust.md");
+        let resolved = resolve(&root, &target.to_string_lossy())
+            .expect("a new nested path inside the root is ordinary work");
+        assert_eq!(
+            resolved,
+            root.canonicalize()
+                .expect("canonical root")
+                .join("templates/claude-rules/rules/rust.md")
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn still_rejects_missing_nested_paths_outside_the_root() {
+        let root = std::env::temp_dir().join(format!("lgtm-pre-esc-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let outside = std::env::temp_dir().join(format!(
+            "lgtm-pre-esc-other-{}/nested/file.md",
+            std::process::id()
+        ));
+        assert!(resolve(&root, &outside.to_string_lossy()).is_err());
         std::fs::remove_dir_all(root).ok();
     }
 }
