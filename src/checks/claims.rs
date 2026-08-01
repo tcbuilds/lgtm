@@ -14,7 +14,11 @@ enum Claim {
     TestsPassed,
 }
 
-pub fn evaluate(path: Option<&Path>, evidence: &[CommandEvidence]) -> EnforcementResult {
+pub fn evaluate(
+    path: Option<&Path>,
+    evidence: &[CommandEvidence],
+    configured: &[String],
+) -> EnforcementResult {
     let path = match path {
         Some(path) => path,
         None => {
@@ -25,7 +29,7 @@ pub fn evaluate(path: Option<&Path>, evidence: &[CommandEvidence]) -> Enforcemen
             );
         }
     };
-    let claims = match read_claims(path) {
+    let claims = match read_claims(path, configured) {
         Ok(claims) => claims,
         Err(reason) => return outcome(Status::Unverified, &reason, Vec::new()),
     };
@@ -52,7 +56,7 @@ pub fn evaluate(path: Option<&Path>, evidence: &[CommandEvidence]) -> Enforcemen
     }
 }
 
-fn read_claims(path: &Path) -> Result<Vec<Claim>, String> {
+fn read_claims(path: &Path, configured: &[String]) -> Result<Vec<Claim>, String> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -73,10 +77,10 @@ fn read_claims(path: &Path) -> Result<Vec<Claim>, String> {
     file.take(MAX_TRANSCRIPT_BYTES + 1)
         .read_to_string(&mut raw)
         .map_err(|error| format!("Transcript unreadable ({error})."))?;
-    parse_claims(&raw)
+    parse_claims(&raw, configured)
 }
 
-fn parse_claims(raw: &str) -> Result<Vec<Claim>, String> {
+fn parse_claims(raw: &str, configured: &[String]) -> Result<Vec<Claim>, String> {
     let mut last = None;
     for line in raw.lines().filter(|line| !line.trim().is_empty()) {
         let value: serde_json::Value =
@@ -96,7 +100,7 @@ fn parse_claims(raw: &str) -> Result<Vec<Claim>, String> {
         .filter(|block| block.get("type").and_then(|value| value.as_str()) == Some("text"))
         .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
     {
-        extract_text_claims(text, &mut claims);
+        extract_text_claims(text, &mut claims, configured);
         if claims.len() >= MAX_CLAIMS {
             break;
         }
@@ -105,12 +109,15 @@ fn parse_claims(raw: &str) -> Result<Vec<Claim>, String> {
     Ok(claims)
 }
 
-fn extract_text_claims(text: &str, claims: &mut Vec<Claim>) {
-    for line in text.lines().filter(|line| success_line(line)) {
+fn extract_text_claims(text: &str, claims: &mut Vec<Claim>, configured: &[String]) {
+    for line in text
+        .lines()
+        .filter(|line| success_line(line) && !is_non_assertive(line))
+    {
         let mut parts = line.split('`');
         while let (Some(_), Some(command)) = (parts.next(), parts.next()) {
             if let Some(command) = normalize(command)
-                && is_quality_gate_command(&command)
+                && is_quality_gate_command(&command, configured)
             {
                 claims.push(Claim::Command(command));
             }
@@ -126,6 +133,40 @@ fn extract_text_claims(text: &str, claims: &mut Vec<Claim>) {
     }
 }
 
+// Prose that describes a gate, denies having run one, or speculates about one is
+// not an assertion that the gate ran. Matching on keyword presence alone scored
+// such lines identically to a real claim, which made honest reporting about the
+// rules unprovable and blocked Stop in a loop.
+fn is_non_assertive(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "cannot",
+        "can't",
+        "could not",
+        "couldn't",
+        "did not",
+        "didn't",
+        "does not",
+        "doesn't",
+        "do not",
+        "don't",
+        "was not",
+        "were not",
+        "wasn't",
+        "weren't",
+        "never",
+        "without",
+        "unprovable",
+        "unverified",
+        "would ",
+        "should ",
+        "if ",
+        "whether",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
 fn success_line(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     lower.starts_with("ran ")
@@ -139,17 +180,28 @@ fn normalize(command: &str) -> Option<String> {
     (!argv.is_empty()).then(|| argv.join(" "))
 }
 
-fn is_quality_gate_command(command: &str) -> bool {
+// Only a command the repository actually configures can be proven or disproven by
+// Stop evidence. Accepting any backticked token made ordinary prose — a function
+// name, an identifier, a file name — into a claimed command that no evidence could
+// ever satisfy, which blocked Stop permanently.
+fn is_quality_gate_command(command: &str, configured: &[String]) -> bool {
     let Some(argv) = shlex::split(command) else {
         return false;
     };
-    let Some(executable) = argv
-        .first()
-        .and_then(|value| Path::new(value).file_name().and_then(|name| name.to_str()))
-    else {
+    let Some(executable) = basename(argv.first().map(String::as_str)) else {
         return false;
     };
-    executable != "lgtm" || argv.get(1).is_some_and(|subcommand| subcommand == "check")
+    if executable == "lgtm" {
+        return argv.get(1).is_some_and(|subcommand| subcommand == "check");
+    }
+    configured
+        .iter()
+        .filter_map(|value| basename(Some(value)))
+        .any(|name| name == executable)
+}
+
+fn basename(value: Option<&str>) -> Option<&str> {
+    value.and_then(|value| Path::new(value).file_name().and_then(|name| name.to_str()))
 }
 
 fn is_proven(claim: &Claim, evidence: &[CommandEvidence]) -> bool {
@@ -214,6 +266,74 @@ mod tests {
         )
     }
 
+    fn gates() -> Vec<String> {
+        vec![
+            "cargo".to_string(),
+            "pytest".to_string(),
+            "ruff".to_string(),
+        ]
+    }
+
+    fn parse_claims_t(text: &str) -> Result<Vec<Claim>, String> {
+        parse_claims(&transcript(text), &gates())
+    }
+
+    #[test]
+    fn a_backticked_identifier_is_not_a_claimed_command() {
+        let raw = transcript(
+            "| 3 | prose describing a gate scored as asserting it ran | `is_non_assertive` skips them |",
+        );
+        assert_eq!(
+            parse_claims(&raw, &gates()).expect("valid JSONL"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn an_unconfigured_executable_is_not_a_claimed_command() {
+        let raw = transcript("Ran `bundle exec rubocop` and it succeeded.");
+        assert_eq!(
+            parse_claims(&raw, &gates()).expect("valid JSONL"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn describing_a_gate_is_not_a_claim_that_it_ran() {
+        let raw =
+            transcript("The product rule is that you cannot claim tests passed without evidence.");
+        assert_eq!(
+            parse_claims(&raw, &gates()).expect("valid JSONL"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn denying_a_run_is_not_a_claim() {
+        let raw = transcript("I did not run `cargo test`, so nothing here passed.");
+        assert_eq!(
+            parse_claims(&raw, &gates()).expect("valid JSONL"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn speculating_about_a_gate_is_not_a_claim() {
+        let raw = transcript("`cargo test` should pass once the fixture is removed.");
+        assert_eq!(
+            parse_claims(&raw, &gates()).expect("valid JSONL"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn a_plain_assertion_is_still_captured() {
+        let raw = transcript("Ran `cargo test` and it passed.");
+        let claims = parse_claims(&raw, &gates()).expect("valid JSONL");
+        assert!(claims.contains(&Claim::Command("cargo test".to_string())));
+        assert!(claims.contains(&Claim::TestsPassed));
+    }
+
     #[test]
     fn parses_only_last_assistant_text_claims() {
         let raw = format!(
@@ -222,14 +342,14 @@ mod tests {
             transcript("`cargo build` succeeded")
         );
         assert_eq!(
-            parse_claims(&raw).expect("valid JSONL"),
+            parse_claims(&raw, &gates()).expect("valid JSONL"),
             vec![Claim::Command("cargo build".to_string())]
         );
     }
 
     #[test]
     fn matching_exit_zero_proves_claim() {
-        let claims = parse_claims(&transcript("`cargo test` passed")).expect("claims");
+        let claims = parse_claims_t("`cargo test` passed").expect("claims");
         let evidence = vec![CommandEvidence {
             command: "cargo   test".to_string(),
             exit_code: Some(0),
@@ -270,7 +390,7 @@ mod tests {
 
     #[test]
     fn generic_test_summary_requires_successful_test_command() {
-        let claims = parse_claims(&transcript("Tests: 42 passed")).expect("claims");
+        let claims = parse_claims_t("Tests: 42 passed").expect("claims");
         assert_eq!(claims, vec![Claim::TestsPassed]);
         let evidence = vec![CommandEvidence {
             command: "cargo test".to_string(),
@@ -291,16 +411,14 @@ mod tests {
 
     #[test]
     fn ignores_operational_lgtm_claims() {
-        let claims = parse_claims(&transcript(
-            "`lgtm doctor` passed; `lgtm hook pre-tool-use` succeeded.",
-        ))
-        .expect("claims");
+        let claims = parse_claims_t("`lgtm doctor` passed; `lgtm hook pre-tool-use` succeeded.")
+            .expect("claims");
         assert!(claims.is_empty());
     }
 
     #[test]
     fn keeps_lgtm_full_check_as_a_quality_claim() {
-        let claims = parse_claims(&transcript("`lgtm check --tier full` passed")).expect("claims");
+        let claims = parse_claims_t("`lgtm check --tier full` passed").expect("claims");
         assert_eq!(
             claims,
             vec![Claim::Command("lgtm check --tier full".to_string())]
@@ -328,6 +446,6 @@ mod tests {
 
     #[test]
     fn malformed_jsonl_is_unverified_input() {
-        assert!(parse_claims("{not json\n").is_err());
+        assert!(parse_claims("{not json\n", &gates()).is_err());
     }
 }

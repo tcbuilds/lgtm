@@ -191,9 +191,11 @@ fn run_inner(
     };
     results.extend(command_run.results);
     if !hook_input.check {
+        let configured = configured_executables(&root);
         results.push(crate::checks::claims::evaluate(
             hook_input.transcript_path.as_deref().map(Path::new),
             &command_run.evidence,
+            &configured,
         ));
     }
     if compatibility == crate::policy::config_version::Compatibility::LegacyMissing {
@@ -228,6 +230,23 @@ fn run_inner(
         return Ok(ExitCode::SUCCESS);
     }
     write_block_decision(adapter, event, &failures)
+}
+
+// Executable names the repository configures as required commands. Claim matching
+// is limited to these so backticked prose cannot invent an unprovable command.
+fn configured_executables(root: &Path) -> Vec<String> {
+    let Ok(settings) = commands::load(root) else {
+        return Vec::new();
+    };
+    let structured = settings
+        .structured
+        .iter()
+        .filter_map(|command| command.argv.first().cloned());
+    let flat = settings
+        .commands
+        .iter()
+        .filter_map(|line| shlex::split(line)?.first().cloned());
+    structured.chain(flat).collect()
 }
 
 fn legacy_version_result() -> EnforcementResult {
