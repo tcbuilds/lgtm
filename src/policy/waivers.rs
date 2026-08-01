@@ -58,7 +58,12 @@ pub fn load_active(root: &Path, rules: &[Rule]) -> Result<Vec<Waiver>, String> {
     let path = root.join(".lgtm/waivers.json");
     let store = load_store(&path)?;
     validate_store(&store, rules)?;
-    Ok(store.waivers)
+    let today = today_utc_days()?;
+    Ok(store
+        .waivers
+        .into_iter()
+        .filter(|waiver| parse_date(&waiver.expires).is_ok_and(|days| days > today))
+        .collect())
 }
 
 pub fn apply(waivers: &[Waiver], results: &mut [EnforcementResult]) {
@@ -88,7 +93,10 @@ fn validate_store(store: &Store, rules: &[Rule]) -> Result<(), String> {
         validate_stored_text("rule", &waiver.rule_id)?;
         validate_stored_text("reason", &waiver.reason)?;
         validate_stored_text("owner", &waiver.owner)?;
-        validate_future_date(&waiver.expires)?;
+        // Stored expiry is validated for calendar shape only. An elapsed date means
+        // the waiver is inactive, not that the store is corrupt; `load_active`
+        // filters those out so one stale entry cannot disable enforcement.
+        parse_date(&waiver.expires)?;
     }
     Ok(())
 }
@@ -226,14 +234,17 @@ fn sanitize(value: &str) -> String {
         .collect()
 }
 
-fn validate_future_date(value: &str) -> Result<String, String> {
-    let days = parse_date(value)?;
-    let today = std::time::SystemTime::now()
+fn today_utc_days() -> Result<i64, String> {
+    let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| "system clock predates Unix epoch".to_string())?
-        .as_secs()
-        / 86_400;
-    if days <= today as i64 {
+        .as_secs();
+    Ok((seconds / 86_400) as i64)
+}
+
+fn validate_future_date(value: &str) -> Result<String, String> {
+    let days = parse_date(value)?;
+    if days <= today_utc_days()? {
         return Err("waiver expiry must be a future UTC date".to_string());
     }
     Ok(value.to_string())
