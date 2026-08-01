@@ -106,6 +106,72 @@ fn fresh_python_repo_creates_all_files() {
     }
 }
 
+/// A fresh repository must ship destructive-command protection. Without a
+/// seeded `.lgtm/execpolicy.json` the prohibited-command gate has an empty list
+/// and enforces nothing.
+#[test]
+fn fresh_init_seeds_a_default_execpolicy() {
+    let repo = TempRepo::new();
+    repo.write("requirements.txt", "httpx\n");
+
+    let output = run_init(&repo);
+    assert!(output.status.success(), "init must succeed on a fresh repo");
+    assert!(
+        repo.exists(".lgtm/execpolicy.json"),
+        "a fresh repo must get destructive-command protection"
+    );
+
+    let policy = repo.read_json(".lgtm/execpolicy.json");
+    let commands = policy["prohibited_commands"]
+        .as_array()
+        .expect("prohibited_commands array");
+    assert!(commands.contains(&json!(["rm", "-rf"])));
+    assert!(commands.contains(&json!(["git", "push", "--force"])));
+    assert!(commands.contains(&json!(["git", "reset", "--hard"])));
+
+    let settings = repo.read_json(".claude/settings.json");
+    assert_eq!(
+        settings["hooks"]["PreToolUse"][0]["matcher"], "Bash|Edit|Write",
+        "Bash must reach the gate or the seeded policy is dead code"
+    );
+}
+
+/// Re-init must never clobber or reorder a hand-authored command policy, the
+/// same guarantee `.lgtm/config.json` already carries.
+#[test]
+fn existing_execpolicy_is_preserved_on_reinit() {
+    let repo = TempRepo::new();
+    repo.write("requirements.txt", "httpx\n");
+    let authored = "{\"prohibited_commands\":[[\"terraform\",\"destroy\"]]}\n";
+    repo.write(".lgtm/execpolicy.json", authored);
+
+    let output = run_init(&repo);
+    assert!(output.status.success(), "init must succeed");
+    assert_eq!(
+        repo.read(".lgtm/execpolicy.json"),
+        authored,
+        "a user-authored execpolicy must survive byte-for-byte"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("preserved existing .lgtm/execpolicy.json")
+    );
+}
+
+/// The seeded policy must compile into the Codex rules file during the same run
+/// that creates it, not only on a second init.
+#[test]
+fn codex_init_compiles_the_seeded_execpolicy_in_the_same_run() {
+    let repo = TempRepo::new();
+    repo.write("requirements.txt", "httpx\n");
+
+    let output = run_init_codex(&repo);
+    assert!(output.status.success(), "Codex init must succeed");
+    assert!(repo.exists(".lgtm/execpolicy.json"));
+    let rules = repo.read(".codex/rules/lgtm.rules");
+    assert!(rules.contains("prefix_rule(pattern=[\"rm\",\"-rf\"]"));
+}
+
 #[test]
 fn codex_init_creates_and_idempotently_merges_project_hooks() {
     let repo = TempRepo::new();
@@ -212,8 +278,11 @@ fn init_dry_run_reports_plan_without_writing_files() {
     assert!(output.status.success(), "dry-run must succeed");
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("dry-run: no files changed"));
-    assert!(text.contains("files: .lgtm/config.json, .gitignore, .claude/settings.json"));
+    assert!(text.contains(
+        "files: .lgtm/config.json, .lgtm/execpolicy.json, .gitignore, .claude/settings.json"
+    ));
     assert!(!repo.exists(".lgtm/config.json"));
+    assert!(!repo.exists(".lgtm/execpolicy.json"));
     assert!(!repo.exists(".claude/settings.json"));
 }
 
@@ -496,7 +565,7 @@ fn existing_lgtm_entry_with_wrong_matcher_is_corrected() {
         r#"{
   "hooks": {
     "PreToolUse": [
-      {"matcher": "Bash", "hooks": [{"type": "command", "command": "lgtm hook pre-tool-use"}]}
+      {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "lgtm hook pre-tool-use"}]}
     ]
   }
 }"#,
@@ -519,7 +588,7 @@ fn existing_lgtm_entry_with_wrong_matcher_is_corrected() {
     );
     assert_eq!(
         entries[0]["matcher"],
-        serde_json::json!("Edit|Write"),
+        serde_json::json!("Bash|Edit|Write"),
         "the wrong matcher must be corrected to the expected value"
     );
 }
@@ -1023,4 +1092,99 @@ fn repo_with_no_language_still_scaffolds() {
     let config = repo.read_json(".lgtm/config.json");
     assert_eq!(config["workspaces"], serde_json::json!([]));
     assert!(repo.exists(".claude/settings.json"), "hooks still wired");
+}
+
+/// Run `lgtm init --rules-only` for one agent inside the temp repo.
+fn run_init_rules_only(repo: &TempRepo, agent: &str) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["init", "--rules-only", "--agent", agent])
+        .current_dir(repo.path())
+        .output()
+        .expect("rules-only init should execute")
+}
+
+/// Codex does not read `.claude/rules/`, so writing only there was a silent
+/// no-op dressed up as success. It must get an `AGENTS.md` it actually loads.
+#[test]
+fn codex_rules_only_writes_agents_md_instead_of_claude_rules() {
+    let repo = TempRepo::new();
+
+    let output = run_init_rules_only(&repo, "codex");
+    assert!(output.status.success(), "rules-only init must succeed");
+    assert!(
+        repo.exists("AGENTS.md"),
+        "Codex guidance must land in the file Codex reads"
+    );
+    assert!(
+        !repo.exists(".claude/rules"),
+        "Codex must not be given a directory it never reads"
+    );
+
+    let agents = repo.read("AGENTS.md");
+    assert!(
+        !agents.starts_with("---"),
+        "Claude-specific paths frontmatter must be stripped"
+    );
+    assert!(
+        !agents.contains("\npaths:\n"),
+        "no template's paths frontmatter may survive concatenation"
+    );
+    for marker in ["# Rust", "# Python", "# TypeScript"] {
+        assert!(
+            agents.contains(marker),
+            "every standard must be inlined; missing {marker}"
+        );
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("no path-scoped rules mechanism"),
+        "the lost lazy loading must be stated, not hidden"
+    );
+    assert!(text.contains("every Codex session"));
+}
+
+/// An existing `AGENTS.md` is repository content; rules-only must keep it, the
+/// same way it keeps a locally edited rules file.
+#[test]
+fn codex_rules_only_keeps_an_existing_agents_md() {
+    let repo = TempRepo::new();
+    repo.write("AGENTS.md", "# House rules\n");
+
+    let output = run_init_rules_only(&repo, "codex");
+    assert!(output.status.success(), "rules-only init must succeed");
+    assert_eq!(
+        repo.read("AGENTS.md"),
+        "# House rules\n",
+        "a hand-authored AGENTS.md must never be clobbered"
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("kept (locally edited): AGENTS.md"));
+}
+
+/// The Claude path is unchanged: rules land under `.claude/rules/` and no
+/// `AGENTS.md` is created.
+#[test]
+fn claude_rules_only_still_writes_claude_rules_and_no_agents_md() {
+    let repo = TempRepo::new();
+
+    let output = run_init_rules_only(&repo, "claude");
+    assert!(output.status.success(), "rules-only init must succeed");
+    assert!(repo.exists(".claude/rules/standards.md"));
+    assert!(repo.exists(".claude/rules/patterns/core.md"));
+    assert!(
+        !repo.exists("AGENTS.md"),
+        "the Claude path must not create an AGENTS.md"
+    );
+}
+
+/// Rules-only mode registers no hooks for either agent.
+#[test]
+fn rules_only_registers_no_hooks_for_codex() {
+    let repo = TempRepo::new();
+
+    let output = run_init_rules_only(&repo, "codex");
+    assert!(output.status.success(), "rules-only init must succeed");
+    assert!(!repo.exists(".codex/hooks.json"));
+    assert!(!repo.exists(".lgtm/config.json"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("no hooks registered"));
 }

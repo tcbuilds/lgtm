@@ -37,7 +37,7 @@ enum Command {
         /// Agent hook format to install.
         #[arg(long, value_enum, default_value_t = AgentKind::Claude)]
         agent: AgentKind,
-        /// Write the standards into .claude/rules/ and register no hooks.
+        /// Write the standards (.claude/rules/ for claude, AGENTS.md for codex) and register no hooks.
         #[arg(long, conflicts_with_all = ["dry_run", "migrate_config", "accept_guesses"])]
         rules_only: bool,
     },
@@ -262,7 +262,7 @@ fn run(command: Command) -> ExitCode {
             rules_only,
         } => {
             if rules_only {
-                run_init_rules_only()
+                run_init_rules_only(agent)
             } else {
                 run_init(dry_run, migrate_config, accept_guesses, agent)
             }
@@ -828,25 +828,20 @@ fn compile_exit_code(
     }
 }
 
-/// Handle `lgtm init`.
+/// Handle `lgtm init --rules-only`.
 ///
-/// Scaffolds repo-local config and merges Claude Code hook entries into the
-/// current working directory, then prints a concise report to stdout. On
-/// failure the precise cause is written to stderr and the process exits
-/// non-zero without partially reporting success.
-fn run_init_rules_only() -> ExitCode {
-    match init::install_rules(Path::new(".")) {
+/// Installs the standards documents for the selected agent without registering
+/// any hooks, then prints a concise report to stdout. On failure the precise
+/// cause is written to stderr and the process exits non-zero without partially
+/// reporting success.
+fn run_init_rules_only(agent: AgentKind) -> ExitCode {
+    let result = match agent {
+        AgentKind::Claude => init::install_rules(Path::new(".")),
+        AgentKind::Codex => init::install_agents(Path::new(".")),
+    };
+    match result {
         Ok(summary) => {
-            println!("lgtm rules installed");
-            println!("  written: {}", summary.written.len());
-            if !summary.unchanged.is_empty() {
-                println!("  unchanged: {}", summary.unchanged.len());
-            }
-            for kept in &summary.kept {
-                println!("  kept (locally edited): .claude/rules/{kept}");
-            }
-            println!("  note: no hooks registered; these files guide but do not enforce");
-            println!("  note: run `lgtm init` to install enforcement hooks as well");
+            report_rules_only_summary(agent, &summary);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -854,6 +849,34 @@ fn run_init_rules_only() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Print the rules-only report, naming the destination each agent actually reads
+/// and stating the cost of inlining every standard for Codex.
+fn report_rules_only_summary(agent: AgentKind, summary: &init::Installed) {
+    println!("lgtm rules installed");
+    println!("  written: {}", summary.written.len());
+    if !summary.unchanged.is_empty() {
+        println!("  unchanged: {}", summary.unchanged.len());
+    }
+    let prefix = match agent {
+        AgentKind::Claude => ".claude/rules/",
+        AgentKind::Codex => "",
+    };
+    for kept in &summary.kept {
+        println!("  kept (locally edited): {prefix}{kept}");
+    }
+    if agent == AgentKind::Codex {
+        println!(
+            "  note: Codex has no path-scoped rules mechanism, so every standard is inlined into AGENTS.md"
+        );
+        println!(
+            "  note: that means no lazy loading; all {} lines enter every Codex session",
+            init::agents_document_lines()
+        );
+    }
+    println!("  note: no hooks registered; these files guide but do not enforce");
+    println!("  note: run `lgtm init` to install enforcement hooks as well");
 }
 
 fn run_init(

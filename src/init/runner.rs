@@ -96,6 +96,7 @@ pub fn preview_with_agent(root: &Path, agent: InitAgent) -> Result<InitSummary, 
         workspaces,
         files_written: vec![
             ".lgtm/config.json".to_string(),
+            ".lgtm/execpolicy.json".to_string(),
             ".gitignore".to_string(),
             hooks_label(agent).to_string(),
         ],
@@ -156,10 +157,12 @@ pub fn run_with_agent(
     let existing_config = existing_config.map(|config| config.object);
 
     let evidence_dir = root.join(".lgtm").join("evidence");
+    let execpolicy_path = root.join(".lgtm").join("execpolicy.json");
     let gitignore_path = root.join(".gitignore");
     let mut targets: Vec<&Path> = vec![
         evidence_dir.as_path(),
         config_path.as_path(),
+        execpolicy_path.as_path(),
         gitignore_path.as_path(),
         settings_path.as_path(),
     ];
@@ -184,29 +187,38 @@ pub fn run_with_agent(
         needs_repair,
         &mut notes,
     )?;
+    let (execpolicy_default_render, execpolicy_contents) =
+        execpolicy::render_defaults(&execpolicy_path, &mut notes)?;
     let gitignore_render = render_gitignore(&gitignore_path, &mut notes)?;
     let settings_render = match agent {
         InitAgent::Claude => render_settings(validated_settings),
         InitAgent::Codex => codex::render_hooks(validated_settings),
     };
-    let (execpolicy_render, execpolicy_notes) = match agent {
+    let (rules_render, rules_notes) = match agent {
         InitAgent::Claude => (None, Vec::new()),
-        InitAgent::Codex => codex::render_execpolicy(root, &rules_path)?,
+        InitAgent::Codex => {
+            codex::render_execpolicy(&execpolicy_path, &execpolicy_contents, &rules_path)?
+        }
     };
-    notes.extend(execpolicy_notes);
+    notes.extend(rules_notes);
 
     create_output_directories(
         &evidence_dir,
         &settings_path,
-        execpolicy_render.is_some(),
+        rules_render.is_some(),
         &rules_path,
     )?;
 
-    let planned: [PlannedWrite<'_>; 4] = [
+    let planned: [PlannedWrite<'_>; 5] = [
         (&config_path, ".lgtm/config.json", config_render),
+        (
+            &execpolicy_path,
+            ".lgtm/execpolicy.json",
+            execpolicy_default_render,
+        ),
         (&gitignore_path, ".gitignore", gitignore_render),
         (&settings_path, hooks_label(agent), settings_render),
-        (&rules_path, ".codex/rules/lgtm.rules", execpolicy_render),
+        (&rules_path, ".codex/rules/lgtm.rules", rules_render),
     ];
 
     stage_and_commit(planned, &mut files_written)?;
@@ -235,7 +247,7 @@ fn hooks_label(agent: InitAgent) -> &'static str {
 
 fn track_note(agent: InitAgent) -> String {
     format!(
-        "track .lgtm/config.json and {}; **/.lgtm/evidence/ is transient",
+        "track .lgtm/config.json, .lgtm/execpolicy.json, and {}; **/.lgtm/evidence/ is transient",
         hooks_label(agent)
     )
 }

@@ -72,7 +72,11 @@ fn merge_settings_is_idempotent() {
 fn pre_tool_use_entry_carries_matcher() {
     let merged = merge_settings(&Map::new());
     let pre = &merged["hooks"]["PreToolUse"][0];
-    assert_eq!(pre["matcher"], json!("Edit|Write"));
+    assert_eq!(
+        pre["matcher"],
+        json!("Bash|Edit|Write"),
+        "Bash must reach the gate or the prohibited-command policy is dead code"
+    );
     assert_eq!(pre["hooks"][0]["command"], json!("lgtm hook pre-tool-use"));
 }
 
@@ -91,7 +95,7 @@ fn merge_settings_corrects_wrong_matcher_on_existing_lgtm_entry() {
     let existing = json!({
         "hooks": {
             "PreToolUse": [
-                {"matcher": "Bash", "hooks": [{"type": "command", "command": "lgtm hook pre-tool-use"}]}
+                {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "lgtm hook pre-tool-use"}]}
             ]
         }
     });
@@ -104,7 +108,11 @@ fn merge_settings_corrects_wrong_matcher_on_existing_lgtm_entry() {
         1,
         "existing lgtm entry corrected, not duplicated"
     );
-    assert_eq!(entries[0]["matcher"], json!("Edit|Write"));
+    assert_eq!(
+        entries[0]["matcher"],
+        json!("Bash|Edit|Write"),
+        "re-init must upgrade a pre-Bash matcher rather than leave shell calls ungated"
+    );
 }
 
 #[test]

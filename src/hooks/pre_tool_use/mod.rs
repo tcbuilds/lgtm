@@ -1,4 +1,4 @@
-//! PreToolUse guard for Edit and Write operations.
+//! PreToolUse guard for Bash, Edit, and Write operations.
 
 mod baseline;
 mod config;
@@ -54,9 +54,11 @@ fn run_for_event(
         Ok(root) => root,
         Err(reason) => return deny(output, adapter, event, &reason),
     };
-    if event == HookEvent::PermissionRequest
-        && let Some(command) = input::requested_command(&parsed)
-    {
+    // A shell command carries no edit target, so the command policy is the only
+    // gate that applies to it. Both PreToolUse and PermissionRequest reach here:
+    // Claude Code routes shell calls through PreToolUse, Codex through
+    // PermissionRequest, and neither may run a prohibited command unchecked.
+    if let Some(command) = input::requested_command(&parsed) {
         match config::is_prohibited_command(&root, command) {
             Ok(true) => {
                 return deny(

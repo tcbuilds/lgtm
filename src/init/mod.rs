@@ -27,6 +27,7 @@ use crate::fsutil::open_regular_file;
 
 mod codex;
 mod config;
+mod execpolicy;
 mod fs;
 mod gitignore;
 mod rules;
@@ -38,7 +39,9 @@ use fs::{commit_write, create_dir_all, preflight_targets, read_if_exists, stage_
 #[cfg(test)]
 use gitignore::evidence_is_ignored;
 use gitignore::{render_gitignore, render_settings};
-pub use rules::{Installed, install as install_rules};
+pub use rules::{
+    Installed, agents_document_lines, install as install_rules, install_agents_md as install_agents,
+};
 pub use runner::{
     migrate_config, preview, preview_with_agent, run, run_with_agent, run_with_options,
 };
@@ -87,7 +90,7 @@ const HOOK_EVENTS: [HookWiring; 5] = [
     HookWiring {
         event: "PreToolUse",
         command: "lgtm hook pre-tool-use",
-        matcher: Some("Edit|Write"),
+        matcher: Some("Bash|Edit|Write"),
     },
     HookWiring {
         event: "PostToolUse",

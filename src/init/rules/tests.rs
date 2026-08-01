@@ -72,3 +72,75 @@ fn edited_files_are_kept_rather_than_overwritten() {
     );
     std::fs::remove_dir_all(root).ok();
 }
+
+#[test]
+fn agents_document_inlines_every_template_without_paths_frontmatter() {
+    let document = agents_document();
+    for (relative, contents) in TEMPLATES {
+        let body = strip_frontmatter(contents).trim_end();
+        assert!(
+            document.contains(body),
+            "{relative} must be inlined verbatim for agents without path scoping"
+        );
+    }
+    assert!(
+        !document.contains("\npaths:\n"),
+        "Claude-specific paths frontmatter must not survive concatenation"
+    );
+    assert!(
+        document.starts_with(AGENTS_PREAMBLE),
+        "the preamble must lead so the Claude-specific loading claim is corrected up front"
+    );
+    let entry = strip_frontmatter(TEMPLATES[0].1).trim_start();
+    let first_body = document
+        .split_once(&format!("\n{entry}"))
+        .map(|(before, _)| before)
+        .expect("the entry document must be inlined");
+    assert!(
+        !first_body.contains("\n# "),
+        "the entry document must lead the standards, ahead of every path-scoped template"
+    );
+}
+
+#[test]
+fn strip_frontmatter_leaves_documents_without_a_block_untouched() {
+    assert_eq!(strip_frontmatter("# Title\n"), "# Title\n");
+    assert_eq!(
+        strip_frontmatter("---\npaths:\n  - \"**/*.rs\"\n---\n\n# Rust\n"),
+        "# Rust\n"
+    );
+    assert_eq!(
+        strip_frontmatter("---\nunterminated\n"),
+        "---\nunterminated\n",
+        "an unterminated block must be kept verbatim rather than silently truncated"
+    );
+}
+
+#[test]
+fn agents_md_is_written_once_then_reported_unchanged() {
+    let root = temp_root("agents");
+    let first = install_agents_md(&root).expect("first");
+    assert_eq!(first.written, vec!["AGENTS.md".to_string()]);
+    let second = install_agents_md(&root).expect("second");
+    assert!(second.written.is_empty());
+    assert_eq!(second.unchanged, vec!["AGENTS.md".to_string()]);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn an_edited_agents_md_is_kept_rather_than_overwritten() {
+    let root = temp_root("agents-edited");
+    std::fs::write(root.join("AGENTS.md"), "# House rules\n").expect("existing");
+    let outcome = install_agents_md(&root).expect("install");
+    assert_eq!(outcome.kept, vec!["AGENTS.md".to_string()]);
+    assert_eq!(
+        std::fs::read_to_string(root.join("AGENTS.md")).expect("read"),
+        "# House rules\n"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn agents_document_lines_matches_the_rendered_document() {
+    assert_eq!(agents_document_lines(), agents_document().lines().count());
+}

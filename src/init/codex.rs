@@ -2,7 +2,6 @@
 
 use super::InitError;
 use super::config::ValidatedSettings;
-use super::fs::read_if_exists;
 use super::settings::commands_match;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -111,25 +110,30 @@ struct ExecPolicyConfig {
 
 /// Compile explicit repository command prefixes into a Codex rules file.
 ///
+/// `contents` is the `.lgtm/execpolicy.json` document that will be on disk once
+/// init completes — either the preserved existing file or the defaults seeded by
+/// this same run — so a freshly seeded policy compiles immediately rather than
+/// only on a second init. `source_path` names that file for error reporting.
+///
 /// Path rules remain in LGTM's PreToolUse gate because Codex `prefix_rule`
 /// matches command argv, not filesystem targets. They are retained as comments
 /// in the generated file so the limitation is visible without pretending the
 /// second net enforces something it cannot.
 pub(super) fn render_execpolicy(
-    root: &Path,
+    source_path: &Path,
+    contents: &str,
     rules_path: &Path,
 ) -> Result<(Option<Vec<u8>>, Vec<String>), InitError> {
-    let source_path = root.join(".lgtm/execpolicy.json");
-    let Some(contents) = read_if_exists(&source_path)? else {
+    if contents.trim().is_empty() {
         return Ok((None, Vec::new()));
-    };
+    }
     let config: ExecPolicyConfig =
-        serde_json::from_str(&contents).map_err(|error| InitError::MalformedExecPolicy {
-            path: source_path.clone(),
+        serde_json::from_str(contents).map_err(|error| InitError::MalformedExecPolicy {
+            path: source_path.to_path_buf(),
             reason: error.to_string(),
         })?;
     validate_execpolicy(&config).map_err(|reason| InitError::MalformedExecPolicy {
-        path: source_path,
+        path: source_path.to_path_buf(),
         reason,
     })?;
     let mut notes =
@@ -155,7 +159,7 @@ pub(super) fn render_execpolicy(
     for command in config.prohibited_commands {
         let pattern =
             serde_json::to_string(&command).map_err(|error| InitError::MalformedExecPolicy {
-                path: root.join(".lgtm/execpolicy.json"),
+                path: source_path.to_path_buf(),
                 reason: format!("serialize command prefix ({error})"),
             })?;
         output.push_str(&format!(
@@ -361,14 +365,11 @@ mod tests {
     fn execpolicy_renders_denies_and_documents_path_limits() {
         let root = std::env::temp_dir().join(format!("lgtm-execpolicy-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("temp root");
-        std::fs::create_dir_all(root.join(".lgtm")).expect("lgtm config dir");
-        std::fs::write(
-            root.join(".lgtm/execpolicy.json"),
-            r#"{"prohibited_commands":[["git","reset","--hard"]],"prohibited_paths":["secrets/**"]}"#,
-        )
-        .expect("execpolicy fixture");
+        let source = root.join(".lgtm/execpolicy.json");
+        let contents = r#"{"prohibited_commands":[["git","reset","--hard"]],"prohibited_paths":["secrets/**"]}"#;
         let rules = root.join(".codex/rules/lgtm.rules");
-        let (rendered, notes) = render_execpolicy(&root, &rules).expect("execpolicy renders");
+        let (rendered, notes) =
+            render_execpolicy(&source, contents, &rules).expect("execpolicy renders");
         let rendered = String::from_utf8(rendered.expect("rules output")).expect("UTF-8 rules");
         assert!(rendered.contains("prefix_rule(pattern=[\"git\",\"reset\",\"--hard\"]"));
         assert!(rendered.contains("hook-enforced"));
