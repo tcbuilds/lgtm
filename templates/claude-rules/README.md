@@ -5,10 +5,30 @@ and Claude Code loads them with no install step.
 
 ## Install
 
+With the CLI, registering no hooks:
+
 ```sh
-cp templates/claude-rules/CLAUDE.md /path/to/repo/CLAUDE.md
-cp -r templates/claude-rules/rules /path/to/repo/.claude/rules
+lgtm init --rules-only
 ```
+
+Everything lands under `.claude/rules/`, so an existing `CLAUDE.md` is never
+touched. The entry document is written as `.claude/rules/standards.md` with no
+`paths:` frontmatter, which Claude Code loads every session. Re-running is safe:
+files matching the shipped template are reported unchanged, and files you have
+edited are kept as they are.
+
+This installs guidance only. No hooks are registered, no `.lgtm/` directory is
+created, and nothing is enforced.
+
+Without the CLI at all:
+
+```sh
+curl -fsSL https://github.com/tcbuilds/lgtm/archive/refs/tags/v0.4.0.tar.gz \
+  | tar -xz --strip-components=3 -C .claude 'lgtm-0.4.0/templates/claude-rules'
+```
+
+Create `.claude/` first. This copies `CLAUDE.md` and `rules/` verbatim; rename
+`CLAUDE.md` to `rules/standards.md` if you already have one at the repository root.
 
 `CLAUDE.md` loads at the start of every session. Each file under `.claude/rules/`
 declares a `paths:` glob in YAML frontmatter and loads only when Claude reads a

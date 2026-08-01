@@ -37,6 +37,9 @@ enum Command {
         /// Agent hook format to install.
         #[arg(long, value_enum, default_value_t = AgentKind::Claude)]
         agent: AgentKind,
+        /// Write the standards into .claude/rules/ and register no hooks.
+        #[arg(long, conflicts_with_all = ["dry_run", "migrate_config", "accept_guesses"])]
+        rules_only: bool,
     },
     /// Run the policy runtime for a single agent lifecycle event.
     Hook {
@@ -256,7 +259,14 @@ fn run(command: Command) -> ExitCode {
             migrate_config,
             accept_guesses,
             agent,
-        } => run_init(dry_run, migrate_config, accept_guesses, agent),
+            rules_only,
+        } => {
+            if rules_only {
+                run_init_rules_only()
+            } else {
+                run_init(dry_run, migrate_config, accept_guesses, agent)
+            }
+        }
         Command::Hook { event, adapter } => run_hook(event, adapter),
         Command::Doctor => run_doctor(),
         Command::Compile { validate } => run_compile(validate),
@@ -824,6 +834,28 @@ fn compile_exit_code(
 /// current working directory, then prints a concise report to stdout. On
 /// failure the precise cause is written to stderr and the process exits
 /// non-zero without partially reporting success.
+fn run_init_rules_only() -> ExitCode {
+    match init::install_rules(Path::new(".")) {
+        Ok(summary) => {
+            println!("lgtm rules installed");
+            println!("  written: {}", summary.written.len());
+            if !summary.unchanged.is_empty() {
+                println!("  unchanged: {}", summary.unchanged.len());
+            }
+            for kept in &summary.kept {
+                println!("  kept (locally edited): .claude/rules/{kept}");
+            }
+            println!("  note: no hooks registered; these files guide but do not enforce");
+            println!("  note: run `lgtm init` to install enforcement hooks as well");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("init failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn run_init(
     dry_run: bool,
     migrate_config: bool,
@@ -1111,6 +1143,7 @@ mod tests {
                 migrate_config: false,
                 accept_guesses: false,
                 agent: AgentKind::Claude,
+                rules_only: false,
             }
         ));
     }
