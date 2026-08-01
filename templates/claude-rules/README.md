@@ -23,8 +23,8 @@ created, and nothing is enforced.
 Without the CLI at all:
 
 ```sh
-curl -fsSL https://github.com/tcbuilds/lgtm/archive/refs/tags/v0.4.0.tar.gz \
-  | tar -xz --strip-components=3 -C .claude 'lgtm-0.4.0/templates/claude-rules'
+curl -fsSL https://github.com/tcbuilds/lgtm/archive/refs/tags/v0.5.0.tar.gz \
+  | tar -xz --strip-components=3 -C .claude 'lgtm-0.5.0/templates/claude-rules'
 ```
 
 Create `.claude/` first. This copies `CLAUDE.md` and `rules/` verbatim; rename
