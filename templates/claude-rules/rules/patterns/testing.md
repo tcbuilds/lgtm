@@ -1,0 +1,148 @@
+---
+paths:
+  - "**/test_*.py"
+  - "**/*_test.{py,go,rs}"
+  - "**/*.{test,spec}.{ts,tsx,js,jsx}"
+  - "**/tests/**"
+  - "**/__tests__/**"
+---
+
+# Testing Patterns
+
+## Name the behaviour, not the function
+
+The name should read as a claim about the system, so a failure line tells you what
+broke without opening the file.
+
+```
+bad:   test_parse_date_2
+good:  test_elapsed_expiry_does_not_invalidate_the_store
+bad:   it('works')
+good:  it('drops expired waivers and keeps current ones')
+```
+
+## Arrange, act, assert — with the act on one line
+
+```python
+def test_expired_waiver_is_inactive() -> None:
+    store = Store(waivers=[waiver(expires=date(2000, 1, 1))])   # arrange
+
+    active = load_active(store, today=date(2026, 8, 1))          # act
+
+    assert active == []                                          # assert
+```
+
+If the act step needs several lines, the API is probably too hard to use.
+
+## One behaviour per test
+
+Multiple assertions are fine when they describe one behaviour. Multiple *acts* are
+not — the second one is a different test wearing the same name, and it never runs
+after the first assertion fails.
+
+## Table-driven for anything with cases
+
+```rust
+#[test]
+fn calendar_validation_rejects_impossible_dates() {
+    let cases = [
+        ("1970-01-01", true),
+        ("2027-02-29", false),
+        ("2028-02-29", true),
+    ];
+    for (input, valid) in cases {
+        assert_eq!(parse_date(input).is_ok(), valid, "input: {input}");
+    }
+}
+```
+
+Always include the input in the failure message; otherwise a table failure tells
+you nothing about which row broke.
+
+## Test both directions of every guard
+
+A test proving a check fires is half a test. The other half proves it does not fire
+when it shouldn't — that is where false positives hide.
+
+```
+elapsed_expiry_does_not_invalidate_the_store   # the guard relaxes
+creating_a_waiver_still_requires_future_expiry # the guard still bites
+```
+
+Every bug fixed by loosening a rule needs both.
+
+## Fakes over mocks
+
+A mock asserts on calls and couples the test to the implementation. A fake behaves
+like the real thing and lets you assert on outcomes.
+
+```python
+# bad — breaks when the implementation changes how it saves
+store.save.assert_called_once_with(user)
+
+# good
+assert fake_store.get(user.id) == user
+```
+
+Reserve mocks for things you cannot run: payment providers, email, paid APIs.
+
+## Inject time, randomness, and IO
+
+```python
+def test_session_expires() -> None:
+    clock = FixedClock(datetime(2026, 8, 1, tzinfo=UTC))
+    assert is_expired(session, clock=clock)
+```
+
+Anything calling `now()` or `random()` internally is untestable without global
+patching. Pass them in.
+
+## Property tests for round trips and invariants
+
+```python
+@given(st.text())
+def test_encode_decode_round_trips(raw: str) -> None:
+    assert decode(encode(raw)) == raw
+```
+
+Best value on parsers, serialisers, normalisers, and anything with a mathematical
+invariant. One property replaces dozens of examples.
+
+## Golden tests for stable output
+
+Pin exact bytes for CLI output, generated files, and wire formats. When a golden
+test fails, review the diff and update deliberately — never regenerate blindly to
+make it green, which defeats the purpose.
+
+## Regression test names the bug
+
+```rust
+#[test]
+fn accepts_new_file_inside_directories_that_do_not_exist_yet() { ... }
+```
+
+Write it before the fix and watch it fail. A regression test that has never failed
+proves nothing.
+
+## Tests are deterministic and order-independent
+
+No shared mutable fixtures, no reliance on execution order, no real network, no
+sleeps. Use unique temp directories per test and clean up. A flaky test is worse
+than no test: it trains people to ignore red.
+
+## Assert on values, not on logs
+
+```python
+# bad
+assert "saved" in caplog.text
+
+# good
+assert store.get(key) == value
+```
+
+Log text is presentation. Asserting on it breaks when you improve a message.
+
+## Fixture data is not production code
+
+Fixture trees hold deliberately-invalid input; that is their purpose. Never point
+linters, formatters, or coverage gates at them.
