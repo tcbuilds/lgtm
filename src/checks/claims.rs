@@ -125,12 +125,40 @@ fn extract_text_claims(text: &str, claims: &mut Vec<Claim>, configured: &[String
                 return;
             }
         }
-        let lower = line.to_ascii_lowercase();
-        if lower.contains("test") && lower.contains("pass") && !claims.contains(&Claim::TestsPassed)
-        {
+        if asserts_tests_passed(line) && !claims.contains(&Claim::TestsPassed) {
             claims.push(Claim::TestsPassed);
         }
     }
+}
+
+// An assertion that tests passed reads test-then-pass, and reads them close
+// together: "42 tests passed". Scoring bare co-occurrence anywhere on a line
+// scored a gate summary that lists a `test` command beside an unrelated PASS
+// column, and scored a report of an earlier session's results as a claim about
+// this one — neither of which the current Stop window can ever prove. Substring
+// matching compounded it, since "latest" contains "test" and "bypass" contains
+// "pass".
+const TESTS_PASSED_WINDOW: usize = 8;
+
+fn asserts_tests_passed(line: &str) -> bool {
+    let tokens: Vec<String> = line
+        .split_whitespace()
+        .map(|token| {
+            token
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .collect::<String>()
+                .to_ascii_lowercase()
+        })
+        .collect();
+    tokens.iter().enumerate().any(|(index, token)| {
+        matches!(token.as_str(), "test" | "tests")
+            && tokens
+                .iter()
+                .skip(index + 1)
+                .take(TESTS_PASSED_WINDOW)
+                .any(|later| matches!(later.as_str(), "pass" | "passed" | "passes" | "passing"))
+    })
 }
 
 // Prose that describes a gate, denies having run one, or speculates about one is
@@ -442,6 +470,53 @@ mod tests {
             finished_at_ms: None,
         }];
         assert!(!is_proven(&Claim::TestsPassed, &evidence));
+    }
+
+    #[test]
+    fn reporting_a_prior_run_is_not_a_claim_that_it_ran_now() {
+        let raw = transcript(
+            "**Gates at handoff (all PASS @ `6aea7a1`):** fmt, clippy, test (269 lib + 24 suites), `compile --validate` (71 rules).",
+        );
+        assert_eq!(
+            parse_claims(&raw, &gates()).expect("valid JSONL"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn a_pass_word_before_the_test_word_is_not_a_claim() {
+        let raw = transcript("All gates PASS: fmt, clippy, test, build.");
+        assert_eq!(
+            parse_claims(&raw, &gates()).expect("valid JSONL"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn substrings_of_test_and_pass_are_not_a_claim() {
+        let raw = transcript("The latest bypass is documented and passes review.");
+        assert_eq!(
+            parse_claims(&raw, &gates()).expect("valid JSONL"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn a_pass_word_at_the_window_edge_is_still_a_claim() {
+        let raw = transcript("The 413 tests one two three four five six seven passed.");
+        assert_eq!(
+            parse_claims(&raw, &gates()).expect("valid JSONL"),
+            vec![Claim::TestsPassed]
+        );
+    }
+
+    #[test]
+    fn a_pass_word_past_the_window_edge_is_not_a_claim() {
+        let raw = transcript("The 413 tests one two three four five six seven eight passed.");
+        assert_eq!(
+            parse_claims(&raw, &gates()).expect("valid JSONL"),
+            Vec::new()
+        );
     }
 
     #[test]
