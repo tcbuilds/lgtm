@@ -123,6 +123,17 @@ config load failed: key=OPENROUTER_API_KEY reason=missing retryable=false
 - Use contract tests for service boundaries and cross-language schemas.
 - Use fuzz tests for parsers, decoders, auth/token handlers, and anything that consumes untrusted input.
 - Prefer real lightweight dependencies over excessive mocking. Mock only slow, flaky, paid, or external systems.
+- Test the boundary, not only the two sides of it. A test using a value far past a threshold and another far short of it proves nothing about the threshold itself.
+
+**Test strength**
+
+Coverage measures which lines executed. It does not measure whether a test would notice the code being wrong. Use mutation testing to measure that.
+
+- Run mutation testing on logic whose failure is silent: comparisons, boundaries, predicates, permission and policy decisions, and anything guarding a destructive or irreversible action.
+- A surviving mutant means that code has no test that detects it being wrong. Read survivors individually; do not chase a score.
+- Equivalent mutants — changes that cannot alter observable behavior — survive permanently and are noise. Judge the trend and the specific survivors, not a percentage.
+- Scope runs to changed files. A full-repository run re-executes the suite once per mutant and is too slow for a normal change.
+- Coverage can be raised by touching a line. Mutation score can only be raised by writing a test that fails when the code is wrong, which is why it is the better signal for machine-generated tests.
 
 **Test naming**
 

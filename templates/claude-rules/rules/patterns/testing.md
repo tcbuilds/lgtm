@@ -97,6 +97,48 @@ def test_session_expires() -> None:
 Anything calling `now()` or `random()` internally is untestable without global
 patching. Pass them in.
 
+## Test the boundary, not just either side of it
+
+Two tests that sit far away from a threshold prove nothing about the threshold.
+
+```rust
+// bad — both cases survive flipping `>` to `>=`
+expires: "2000-01-01"   // long past
+expires: "2999-12-31"   // long future
+
+// good — pins the comparison itself
+expires: today          // does an expiry landing exactly now count?
+expires: today + 1
+```
+
+Every `>` you write is a decision between `>` and `>=`. If no test fails when
+you swap them, you have not tested the decision — only the easy cases either
+side of it.
+
+## Mutation testing measures whether tests would notice
+
+Coverage says a line ran. It does not say a test would fail if that line were
+wrong. Mutation testing changes the code on purpose — `>` to `>=`, `&&` to `||`,
+deleting a statement — and reruns the suite. A mutant the suite still passes is
+code with no real test on it.
+
+```sh
+cargo mutants --file src/policy/waivers.rs   # Rust
+mutmut run --paths-to-mutate src/pricing.py  # Python
+npx stryker run                              # TypeScript
+```
+
+Worth the time on comparisons, boundaries, predicates, permission and policy
+decisions, and anything guarding a destructive action. Not worth it on glue.
+
+Read survivors one at a time; do not chase a score. Equivalent mutants — edits
+that cannot change observable behavior — survive forever and are noise. Scope to
+changed files, because the suite reruns once per mutant.
+
+This is the check that catches a test written to pass rather than to detect.
+Coverage rises by touching a line; mutation score rises only by writing a test
+that fails when the code is broken.
+
 ## Property tests for round trips and invariants
 
 ```python
