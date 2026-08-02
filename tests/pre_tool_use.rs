@@ -233,6 +233,75 @@ fn allows_benign_bash_commands_and_safer_variants() {
     std::fs::remove_dir_all(root).ok();
 }
 
+/// A policy entry names an executable plus the flags that make it destructive,
+/// so a privilege wrapper, a split flag cluster, or a long flag spelling must
+/// not walk past it. The deny reason has to name the wrapper it looked through,
+/// otherwise the block reads as a false positive to whoever hit it.
+#[test]
+fn denies_wrapped_and_reordered_commands_and_names_the_wrapper() {
+    let root = temp_repo("bash-normalized");
+    std::fs::write(
+        root.join(".lgtm/execpolicy.json"),
+        r#"{"prohibited_commands":[["rm","-rf"],["chmod","-R","777"],["git","push","--force"]]}"#,
+    )
+    .expect("execpolicy");
+    for command in [
+        "rm -r -f /tmp/x",
+        "rm --recursive --force /tmp/x",
+        "rm -fr /tmp/x",
+        "chmod 777 -R /tmp/x",
+        "env rm -rf /tmp/x",
+        "git push origin main --force",
+    ] {
+        assert_eq!(
+            run_bash(&root, command)["hookSpecificOutput"]["permissionDecision"],
+            "deny",
+            "{command} must be denied"
+        );
+    }
+    let denied = run_bash(&root, "sudo -u root rm -rf /tmp/x");
+    assert_eq!(
+        denied["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a privilege wrapper must not bypass the policy"
+    );
+    assert_eq!(
+        denied["hookSpecificOutput"]["permissionDecisionReason"],
+        "command matches prohibited_commands policy after the wrapper prefix `sudo -u root`"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+/// Normalizing flag spelling must not start blocking the safe alternatives the
+/// default policy deliberately excludes, and must not treat a filename written
+/// after `--` as a flag.
+#[test]
+fn allows_documented_exclusions_and_operands_after_end_of_options() {
+    let root = temp_repo("bash-exclusions");
+    std::fs::write(
+        root.join(".lgtm/execpolicy.json"),
+        r#"{"prohibited_commands":[["rm","-rf"],["git","push","--force"],["git","clean","-fdx"]]}"#,
+    )
+    .expect("execpolicy");
+    for command in [
+        "git push --force-with-lease origin main",
+        "sudo git push --force-with-lease origin main",
+        "git clean -fd",
+        "git clean -ffd",
+        "rm -- -rf",
+        "sudo",
+        "sudo -u root",
+        "env FOO=1 cargo test",
+        "sudo systemctl restart nginx",
+    ] {
+        assert_eq!(
+            run_bash(&root, command),
+            json!(null),
+            "{command} must be allowed"
+        );
+    }
+    std::fs::remove_dir_all(root).ok();
+}
+
 /// A repository with no `.lgtm/execpolicy.json` must still allow shell commands
 /// rather than fail closed on every Bash call.
 #[test]

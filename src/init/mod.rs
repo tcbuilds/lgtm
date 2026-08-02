@@ -27,7 +27,7 @@ use crate::fsutil::open_regular_file;
 
 mod codex;
 mod config;
-mod execpolicy;
+pub(crate) mod execpolicy;
 mod fs;
 mod gitignore;
 mod rules;

@@ -91,7 +91,10 @@ proof.
 
 ## Optional execpolicy backstop
 
-Create `.lgtm/execpolicy.json` when a project wants a second command-level net:
+Create `.lgtm/execpolicy.json` when a project wants a second command-level
+guardrail against accidental destruction. It is not a security boundary; see
+the [bounded evasion surface](../../README.md#initialize-a-project) before
+treating it as shell protection:
 
 ```json
 {

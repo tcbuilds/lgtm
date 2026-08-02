@@ -3,6 +3,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use super::command::ProhibitedMatch;
 use crate::fsutil::open_regular_file;
 
 const MAX_CONFIG_BYTES: u64 = 256 * 1_024;
@@ -57,13 +58,21 @@ pub(super) fn is_prohibited(relative: &str, patterns: &[String]) -> bool {
     })
 }
 
-pub(super) fn is_prohibited_command(root: &Path, command: &str) -> Result<bool, String> {
+/// Load `.lgtm/execpolicy.json` and match one shell command against it.
+///
+/// Returns `Ok(None)` when the command is allowed, including when the
+/// repository has no policy at all. Matching itself lives in
+/// [`super::command`]; this function owns only the bounded read and parse.
+pub(super) fn match_prohibited_command(
+    root: &Path,
+    command: &str,
+) -> Result<Option<ProhibitedMatch>, String> {
     let path = root.join(".lgtm/execpolicy.json");
     if std::fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
         return Err("execpolicy is not a regular file".to_string());
     }
     let Some(file) = open_regular_file(&path).map_err(|error| error.to_string())? else {
-        return Ok(false);
+        return Ok(None);
     };
     let mut raw = String::new();
     file.take(MAX_CONFIG_BYTES + 1)
@@ -77,10 +86,10 @@ pub(super) fn is_prohibited_command(root: &Path, command: &str) -> Result<bool, 
         return Err("prohibited_commands exceeds bounds".to_string());
     }
     let argv = shlex::split(command).ok_or_else(|| "command has invalid quoting".to_string())?;
-    Ok(policy
-        .prohibited_commands
-        .iter()
-        .any(|prefix| !prefix.is_empty() && argv.starts_with(prefix)))
+    Ok(super::command::find_match(
+        &argv,
+        &policy.prohibited_commands,
+    ))
 }
 
 fn normalize_pattern(pattern: String) -> Result<String, String> {

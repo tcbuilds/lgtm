@@ -1,6 +1,7 @@
 //! PreToolUse guard for Bash, Edit, and Write operations.
 
 mod baseline;
+mod command;
 mod config;
 mod input;
 mod target;
@@ -59,16 +60,11 @@ fn run_for_event(
     // Claude Code routes shell calls through PreToolUse, Codex through
     // PermissionRequest, and neither may run a prohibited command unchecked.
     if let Some(command) = input::requested_command(&parsed) {
-        match config::is_prohibited_command(&root, command) {
-            Ok(true) => {
-                return deny(
-                    output,
-                    adapter,
-                    event,
-                    "command matches prohibited_commands policy",
-                );
+        match config::match_prohibited_command(&root, command) {
+            Ok(Some(matched)) => {
+                return deny(output, adapter, event, &matched.reason());
             }
-            Ok(false) => {}
+            Ok(None) => {}
             Err(reason) => {
                 return deny(
                     output,

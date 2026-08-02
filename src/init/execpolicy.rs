@@ -8,14 +8,23 @@
 
 use super::*;
 
-/// Destructive argv prefixes seeded into a fresh `.lgtm/execpolicy.json`.
+/// Destructive argv prefixes seeded into a fresh `.lgtm/execpolicy.json` as a
+/// guardrail against accidental destruction, never as a security boundary.
 ///
-/// [`crate::hooks::pre_tool_use`] matches these as argv *prefixes*
-/// (`argv.starts_with(prefix)`), so each entry blocks the exact leading tokens
-/// and nothing else. The list is deliberately narrow: every entry names an
-/// operation that destroys data or history irrecoverably, because a false block
-/// on a legitimate command costs more than the marginal coverage a broader
-/// pattern would buy.
+/// [`crate::hooks::pre_tool_use::command`] matches these as an executable plus
+/// a required flag set and required leading operands, so flag order and
+/// spelling do not matter and a leading `sudo` does not evade the entry. The
+/// list is deliberately narrow: every entry names an operation that destroys
+/// data or history irrecoverably, because a false block on a legitimate command
+/// costs more than the marginal coverage a broader pattern would buy.
+///
+/// The bounded evasion surface is shell indirection, `env` split-string,
+/// option-arity displacement, executables matched as written, and short-flag
+/// clustering limited to `CLUSTERABLE_SHORT_FLAGS`. The checker reads a
+/// command string while the shell reads it differently; that parser differential
+/// cannot be closed by enumerating spellings. A future AST parser or allowlist
+/// could narrow the gap, but neither is today's behavior. Prior art such as
+/// AnswerDotAI/safecmd uses a shell AST plus an allowlist for this reason.
 ///
 /// Two exclusions are deliberate. `git push --force-with-lease` is absent
 /// because it refuses to overwrite commits the pusher has not seen, which makes
@@ -23,7 +32,7 @@ use super::*;
 /// Bare `git clean -fd` is absent because it leaves gitignored files (including
 /// local `.env` files) alone; only the `-x` forms that also delete ignored files
 /// are blocked.
-const DEFAULT_PROHIBITED_COMMANDS: &[&[&str]] = &[
+pub(crate) const DEFAULT_PROHIBITED_COMMANDS: &[&[&str]] = &[
     &["rm", "-rf"],
     &["rm", "-fr"],
     &["rm", "-Rf"],
