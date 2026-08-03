@@ -28,3 +28,44 @@ pub(super) fn requested_command(input: &HookInput) -> Option<&str> {
         .then(|| input.tool_input.command.as_deref())
         .flatten()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_edit_and_write_tools_expose_file_targets() {
+        let input = HookInput {
+            cwd: None,
+            session_id: None,
+            tool_name: Some("Edit".to_string()),
+            tool_input: ToolInput {
+                file_path: Some("src/lib.rs".to_string()),
+                command: None,
+            },
+        };
+        assert_eq!(edited_file(&input), Some("src/lib.rs"));
+
+        let mut read = input;
+        read.tool_name = Some("Read".to_string());
+        assert_eq!(edited_file(&read), None);
+    }
+
+    #[test]
+    fn only_bash_tools_expose_commands() {
+        let input = HookInput {
+            cwd: None,
+            session_id: None,
+            tool_name: Some("Bash".to_string()),
+            tool_input: ToolInput {
+                file_path: None,
+                command: Some("cargo test".to_string()),
+            },
+        };
+        assert_eq!(requested_command(&input), Some("cargo test"));
+
+        let mut write = input;
+        write.tool_name = Some("Write".to_string());
+        assert_eq!(requested_command(&write), None);
+    }
+}

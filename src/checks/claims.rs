@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn nonzero_or_missing_evidence_disproves_claim() {
+    fn fabricated_command_claim_without_matching_evidence_is_rejected() {
         let claim = Claim::Command("cargo test".to_string());
         let evidence = vec![CommandEvidence {
             command: "cargo test".to_string(),

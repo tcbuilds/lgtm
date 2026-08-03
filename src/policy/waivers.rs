@@ -55,10 +55,14 @@ pub fn create(
 }
 
 pub fn load_active(root: &Path, rules: &[Rule]) -> Result<Vec<Waiver>, String> {
+    let today = today_utc_days()?;
+    load_active_at(root, rules, today)
+}
+
+fn load_active_at(root: &Path, rules: &[Rule], today: i64) -> Result<Vec<Waiver>, String> {
     let path = root.join(".lgtm/waivers.json");
     let store = load_store(&path)?;
     validate_store(&store, rules)?;
-    let today = today_utc_days()?;
     Ok(store
         .waivers
         .into_iter()

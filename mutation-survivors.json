@@ -1,0 +1,416 @@
+{
+  "schema_version": 1,
+  "budget_seconds": 900,
+  "survivors": [
+    {
+      "file": "src/hooks/pre_tool_use/mod.rs",
+      "line": 137,
+      "name": "src/hooks/pre_tool_use/mod.rs:137:22: replace == with != in capture",
+      "mutation": "replace == with != in capture",
+      "reason": "The mutation changes the legacy compatibility warning emitted on stderr; the warning branch lacks a focused output assertion.",
+      "owner": "hooks-runtime",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/checks/claims.rs",
+      "line": 8,
+      "name": "src/checks/claims.rs:8:45: replace * with +",
+      "mutation": "replace * with +",
+      "reason": "The transcript byte cap arithmetic is not covered at its exact boundary; a smaller cap could reject valid transcripts.",
+      "owner": "claims-check",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/checks/claims.rs",
+      "line": 8,
+      "name": "src/checks/claims.rs:8:37: replace * with +",
+      "mutation": "replace * with +",
+      "reason": "The transcript byte cap arithmetic is not covered at its exact boundary; a smaller cap could reject valid transcripts.",
+      "owner": "claims-check",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/checks/claims.rs",
+      "line": 73,
+      "name": "src/checks/claims.rs:73:28: replace || with && in read_claims",
+      "mutation": "replace || with && in read_claims",
+      "reason": "The invalid-file-type guard lacks a regression test that distinguishes a non-regular path from a bounded regular file.",
+      "owner": "claims-check",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/checks/claims.rs",
+      "line": 73,
+      "name": "src/checks/claims.rs:73:46: replace > with == in read_claims",
+      "mutation": "replace > with == in read_claims",
+      "reason": "An oversized transcript boundary is not tested, so changing rejection from greater-than to equality could allow oversized input.",
+      "owner": "claims-check",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/checks/claims.rs",
+      "line": 77,
+      "name": "src/checks/claims.rs:77:36: replace + with - in read_claims",
+      "mutation": "replace + with - in read_claims",
+      "reason": "The read-ahead byte boundary is not asserted with a payload that is exactly at the configured limit.",
+      "owner": "claims-check",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/checks/claims.rs",
+      "line": 77,
+      "name": "src/checks/claims.rs:77:36: replace + with * in read_claims",
+      "mutation": "replace + with * in read_claims",
+      "reason": "The read-ahead byte boundary is not asserted with a payload that is exactly at the configured limit.",
+      "owner": "claims-check",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/checks/claims.rs",
+      "line": 104,
+      "name": "src/checks/claims.rs:104:25: replace >= with < in parse_claims",
+      "mutation": "replace >= with < in parse_claims",
+      "reason": "The maximum claim count boundary is not tested with exactly MAX_CLAIMS claims.",
+      "owner": "claims-check",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/checks/claims.rs",
+      "line": 255,
+      "name": "src/checks/claims.rs:255:9: replace || with && in is_test_argument",
+      "mutation": "replace || with && in is_test_argument",
+      "reason": "Test executable suffix recognition lacks a focused table test for the alternate -test and _test forms.",
+      "owner": "claims-check",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/checks/claims.rs",
+      "line": 259,
+      "name": "src/checks/claims.rs:259:5: replace descriptor -> String with String::new()",
+      "mutation": "replace descriptor -> String with String::new()",
+      "reason": "Command-claim evidence descriptors are not asserted in a passed result.",
+      "owner": "claims-check",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/checks/claims.rs",
+      "line": 259,
+      "name": "src/checks/claims.rs:259:5: replace descriptor -> String with \"xyzzy\".into()",
+      "mutation": "replace descriptor -> String with \"xyzzy\".into()",
+      "reason": "Command-claim evidence descriptors are not asserted in a passed result.",
+      "owner": "claims-check",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 11,
+      "name": "src/policy/waivers.rs:11:28: replace * with +",
+      "mutation": "replace * with +",
+      "reason": "The waiver file byte cap constant lacks an exact-size regression test.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 88,
+      "name": "src/policy/waivers.rs:88:28: replace > with == in validate_store",
+      "mutation": "replace > with == in validate_store",
+      "reason": "The maximum waiver-entry boundary is not tested with exactly MAX_WAIVERS entries.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 88,
+      "name": "src/policy/waivers.rs:88:28: replace > with >= in validate_store",
+      "mutation": "replace > with >= in validate_store",
+      "reason": "The maximum waiver-entry boundary is not tested with exactly MAX_WAIVERS entries.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 109,
+      "name": "src/policy/waivers.rs:109:5: replace validate_stored_text -> Result<(), String> with Ok(())",
+      "mutation": "replace validate_stored_text -> Result<(), String> with Ok(())",
+      "reason": "Stored waiver text normalization is not covered with a persisted value containing unsafe control characters or surrounding whitespace.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 151,
+      "name": "src/policy/waivers.rs:151:25: replace + with - in load_store",
+      "mutation": "replace + with - in load_store",
+      "reason": "The waiver reader's one-byte read-ahead boundary is not tested with an exact-size valid document.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 151,
+      "name": "src/policy/waivers.rs:151:25: replace + with * in load_store",
+      "mutation": "replace + with * in load_store",
+      "reason": "The waiver reader's one-byte read-ahead boundary is not tested with an exact-size valid document.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 154,
+      "name": "src/policy/waivers.rs:154:25: replace > with == in load_store",
+      "mutation": "replace > with == in load_store",
+      "reason": "The waiver reader's oversized-file rejection is not tested at the byte boundary.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 154,
+      "name": "src/policy/waivers.rs:154:25: replace > with >= in load_store",
+      "mutation": "replace > with >= in load_store",
+      "reason": "The waiver reader's oversized-file rejection is not tested at the byte boundary.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 180,
+      "name": "src/policy/waivers.rs:180:43: replace && with || in ensure_safe_parent",
+      "mutation": "replace && with || in ensure_safe_parent",
+      "reason": "Parent-directory type and symlink combinations are not exhaustively tested before atomic waiver persistence.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 197,
+      "name": "src/policy/waivers.rs:197:27: replace match guard error.kind() == std::io::ErrorKind::AlreadyExists with true in create_temp",
+      "mutation": "replace match guard error.kind() == std::io::ErrorKind::AlreadyExists with true in create_temp",
+      "reason": "Atomic temporary-file collision and retry behavior has no deterministic injected collision test.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 197,
+      "name": "src/policy/waivers.rs:197:27: replace match guard error.kind() == std::io::ErrorKind::AlreadyExists with false in create_temp",
+      "mutation": "replace match guard error.kind() == std::io::ErrorKind::AlreadyExists with false in create_temp",
+      "reason": "Atomic temporary-file collision and retry behavior has no deterministic injected collision test.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 197,
+      "name": "src/policy/waivers.rs:197:40: replace == with != in create_temp",
+      "mutation": "replace == with != in create_temp",
+      "reason": "Atomic temporary-file collision and retry behavior has no deterministic injected collision test.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 220,
+      "name": "src/policy/waivers.rs:220:9: replace <impl Drop for TempCleanup>::drop with ()",
+      "mutation": "replace <impl Drop for TempCleanup>::drop with ()",
+      "reason": "Failed atomic-write cleanup is not asserted to remove a temporary waiver file.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 220,
+      "name": "src/policy/waivers.rs:220:12: delete ! in <impl Drop for TempCleanup>::drop",
+      "mutation": "delete ! in <impl Drop for TempCleanup>::drop",
+      "reason": "Failed atomic-write cleanup is not asserted to remove a temporary waiver file.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 228,
+      "name": "src/policy/waivers.rs:228:25: replace || with && in validate_text",
+      "mutation": "replace || with && in validate_text",
+      "reason": "Validation of empty and overlong waiver text is not covered at both sides of its size guard.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 228,
+      "name": "src/policy/waivers.rs:228:40: replace > with == in validate_text",
+      "mutation": "replace > with == in validate_text",
+      "reason": "Validation of overlong waiver text is not covered at the MAX_TEXT boundary.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 228,
+      "name": "src/policy/waivers.rs:228:40: replace > with >= in validate_text",
+      "mutation": "replace > with >= in validate_text",
+      "reason": "Validation of maximum-length waiver text is not covered at the MAX_TEXT boundary.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 246,
+      "name": "src/policy/waivers.rs:246:17: replace / with % in today_utc_days",
+      "mutation": "replace / with % in today_utc_days",
+      "reason": "System-time conversion to UTC calendar days lacks a clock fixture and invariant test.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 259,
+      "name": "src/policy/waivers.rs:259:71: replace || with && in parse_date",
+      "mutation": "replace || with && in parse_date",
+      "reason": "Date-shape rejection lacks a table covering all three independent YYYY-MM-DD component lengths.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 259,
+      "name": "src/policy/waivers.rs:259:48: replace || with && in parse_date",
+      "mutation": "replace || with && in parse_date",
+      "reason": "Date-shape rejection lacks a table covering all three independent YYYY-MM-DD component lengths.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 259,
+      "name": "src/policy/waivers.rs:259:25: replace || with && in parse_date",
+      "mutation": "replace || with && in parse_date",
+      "reason": "Date-shape rejection lacks a table covering all three independent YYYY-MM-DD component lengths.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 265,
+      "name": "src/policy/waivers.rs:265:39: replace % with / in parse_date",
+      "mutation": "replace % with / in parse_date",
+      "reason": "Leap-year calendar arithmetic is not covered across century and four-hundred-year boundaries.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 265,
+      "name": "src/policy/waivers.rs:265:39: replace % with + in parse_date",
+      "mutation": "replace % with + in parse_date",
+      "reason": "Leap-year calendar arithmetic is not covered across century and four-hundred-year boundaries.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 265,
+      "name": "src/policy/waivers.rs:265:64: replace == with != in parse_date",
+      "mutation": "replace == with != in parse_date",
+      "reason": "Leap-year calendar arithmetic is not covered across century and four-hundred-year boundaries.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 265,
+      "name": "src/policy/waivers.rs:265:58: replace % with / in parse_date",
+      "mutation": "replace % with / in parse_date",
+      "reason": "Leap-year calendar arithmetic is not covered across century and four-hundred-year boundaries.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 265,
+      "name": "src/policy/waivers.rs:265:58: replace % with + in parse_date",
+      "mutation": "replace % with + in parse_date",
+      "reason": "Leap-year calendar arithmetic is not covered across century and four-hundred-year boundaries.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 280,
+      "name": "src/policy/waivers.rs:280:35: replace || with && in parse_date",
+      "mutation": "replace || with && in parse_date",
+      "reason": "Invalid month and day combinations are not exhaustively tested as independent calendar errors.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 286,
+      "name": "src/policy/waivers.rs:286:42: replace > with == in parse_date",
+      "mutation": "replace > with == in parse_date",
+      "reason": "The calendar conversion's month threshold after February is not tested, so replacing month > 2 can mis-map the day of year.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 286,
+      "name": "src/policy/waivers.rs:286:42: replace > with >= in parse_date",
+      "mutation": "replace > with >= in parse_date",
+      "reason": "The calendar conversion's month threshold after February is not tested, so replacing month > 2 can mis-map the day of year.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    },
+    {
+      "file": "src/policy/waivers.rs",
+      "line": 286,
+      "name": "src/policy/waivers.rs:286:48: delete - in parse_date",
+      "mutation": "delete - in parse_date",
+      "reason": "The calendar conversion's post-February month subtraction is not tested, so deleting the subtraction can mis-map the day of year.",
+      "owner": "policy-waivers",
+      "date": "2026-08-02",
+      "classification": "gap"
+    }
+  ]
+}

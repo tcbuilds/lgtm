@@ -162,3 +162,40 @@ fn deny(
     let _ = adapter::emit(output, &mut std::io::stderr(), &encoded);
     ExitCode::from(encoded.exit_code)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_input_parses_supported_hook_fields() {
+        let mut raw = "{\"cwd\":\"repo\",\"session_id\":\"session\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"src/lib.rs\"}}".as_bytes();
+        let parsed = read_input(&mut raw).expect("valid hook input");
+        assert_eq!(parsed.cwd.as_deref(), Some("repo"));
+        assert_eq!(parsed.session_id.as_deref(), Some("session"));
+        assert_eq!(parsed.tool_name.as_deref(), Some("Write"));
+        assert_eq!(parsed.tool_input.file_path.as_deref(), Some("src/lib.rs"));
+    }
+
+    #[test]
+    fn read_input_rejects_malformed_and_oversized_payloads() {
+        assert!(read_input(&mut "not json".as_bytes()).is_none());
+        let mut oversized = vec![b'a'; (input::MAX_PAYLOAD_BYTES + 1) as usize];
+        assert!(read_input(&mut std::io::Cursor::new(&mut oversized)).is_none());
+    }
+
+    #[test]
+    fn read_input_accepts_the_exact_payload_limit() {
+        let limit = 256 * 1_024;
+        let prefix = "{\"tool_name\":\"";
+        let suffix = "\"}";
+        let padding = "a".repeat(limit - prefix.len() - suffix.len());
+        let raw = format!("{prefix}{padding}{suffix}");
+        assert_eq!(raw.len(), limit);
+        let parsed = read_input(&mut std::io::Cursor::new(raw)).expect("limit is accepted");
+        assert_eq!(parsed.tool_name.as_deref(), Some(padding.as_str()));
+
+        let oversized = format!("{prefix}{padding}{suffix} ");
+        assert!(read_input(&mut std::io::Cursor::new(oversized)).is_none());
+    }
+}
