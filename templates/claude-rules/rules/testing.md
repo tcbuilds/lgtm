@@ -1,6 +1,6 @@
 ---
 paths:
-  - "**/*.py"
+  - "**/*.{py,rs,ts,tsx,js,jsx,mjs,cjs,go,java,kt,kts,cs,c,cc,cpp,cxx,h,hh,hpp,hxx}"
   - "**/test_*.py"
   - "**/*_test.{py,go,rs}"
   - "**/*.{test,spec}.{ts,tsx,js,jsx}"
@@ -18,11 +18,40 @@ rules:
       "category": "testing",
       "applies_to": {
         "languages": [
-          "python"
+          "python",
+          "rust",
+          "typescript",
+          "javascript",
+          "go",
+          "java",
+          "kotlin",
+          "csharp",
+          "c",
+          "cpp"
         ],
         "domains": [],
         "file_patterns": [
-          "**/*.py"
+          "**/*.py",
+          "**/*.rs",
+          "**/*.ts",
+          "**/*.tsx",
+          "**/*.js",
+          "**/*.jsx",
+          "**/*.mjs",
+          "**/*.cjs",
+          "**/*.go",
+          "**/*.java",
+          "**/*.kt",
+          "**/*.kts",
+          "**/*.cs",
+          "**/*.c",
+          "**/*.cc",
+          "**/*.cpp",
+          "**/*.cxx",
+          "**/*.h",
+          "**/*.hh",
+          "**/*.hpp",
+          "**/*.hxx"
         ]
       },
       "activation": {
@@ -81,11 +110,40 @@ rules:
       "category": "testing",
       "applies_to": {
         "languages": [
-          "python"
+          "python",
+          "rust",
+          "typescript",
+          "javascript",
+          "go",
+          "java",
+          "kotlin",
+          "csharp",
+          "c",
+          "cpp"
         ],
         "domains": [],
         "file_patterns": [
-          "**/*.py"
+          "**/*.py",
+          "**/*.rs",
+          "**/*.ts",
+          "**/*.tsx",
+          "**/*.js",
+          "**/*.jsx",
+          "**/*.mjs",
+          "**/*.cjs",
+          "**/*.go",
+          "**/*.java",
+          "**/*.kt",
+          "**/*.kts",
+          "**/*.cs",
+          "**/*.c",
+          "**/*.cc",
+          "**/*.cpp",
+          "**/*.cxx",
+          "**/*.h",
+          "**/*.hh",
+          "**/*.hpp",
+          "**/*.hxx"
         ]
       },
       "activation": {
@@ -158,14 +216,10 @@ rules:
         "languages": [],
         "domains": [],
         "file_patterns": [
-          "**/test_*.py"
-        ,
-          "**/*_test.{py,go,rs}"
-        ,
-          "**/*.{test,spec}.{ts,tsx,js,jsx}"
-        ,
-          "**/tests/**"
-        ,
+          "**/test_*.py",
+          "**/*_test.{py,go,rs}",
+          "**/*.{test,spec}.{ts,tsx,js,jsx}",
+          "**/tests/**",
           "**/__tests__/**"
         ]
       },
@@ -218,14 +272,10 @@ rules:
         "languages": [],
         "domains": [],
         "file_patterns": [
-          "**/test_*.py"
-        ,
-          "**/*_test.{py,go,rs}"
-        ,
-          "**/*.{test,spec}.{ts,tsx,js,jsx}"
-        ,
-          "**/tests/**"
-        ,
+          "**/test_*.py",
+          "**/*_test.{py,go,rs}",
+          "**/*.{test,spec}.{ts,tsx,js,jsx}",
+          "**/tests/**",
           "**/__tests__/**"
         ]
       },
@@ -280,14 +330,10 @@ rules:
         "languages": [],
         "domains": [],
         "file_patterns": [
-          "**/test_*.py"
-        ,
-          "**/*_test.{py,go,rs}"
-        ,
-          "**/*.{test,spec}.{ts,tsx,js,jsx}"
-        ,
-          "**/tests/**"
-        ,
+          "**/test_*.py",
+          "**/*_test.{py,go,rs}",
+          "**/*.{test,spec}.{ts,tsx,js,jsx}",
+          "**/tests/**",
           "**/__tests__/**"
         ]
       },
@@ -339,14 +385,10 @@ rules:
         "languages": [],
         "domains": [],
         "file_patterns": [
-          "**/test_*.py"
-        ,
-          "**/*_test.{py,go,rs}"
-        ,
-          "**/*.{test,spec}.{ts,tsx,js,jsx}"
-        ,
-          "**/tests/**"
-        ,
+          "**/test_*.py",
+          "**/*_test.{py,go,rs}",
+          "**/*.{test,spec}.{ts,tsx,js,jsx}",
+          "**/tests/**",
           "**/__tests__/**"
         ]
       },

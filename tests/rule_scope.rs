@@ -41,6 +41,7 @@ fn representative_paths(pattern: &str) -> Vec<String> {
         "file.cpp",
         "file.cxx",
         "file.h",
+        "file.hh",
         "file.hpp",
         "file.hxx",
         "file.sql",

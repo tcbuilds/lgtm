@@ -1,0 +1,56 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "lgtm hook post-tool-use",
+            "type": "command"
+          }
+        ],
+        "matcher": "Edit|Write"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "lgtm hook pre-tool-use",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|Edit|Write"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "lgtm hook session-start",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "lgtm hook stop",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "lgtm hook user-prompt-submit",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

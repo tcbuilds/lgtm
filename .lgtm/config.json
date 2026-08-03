@@ -1,0 +1,134 @@
+{
+  "disabled_rules": [],
+  "profile": "default",
+  "severity_overrides": {},
+  "version": "2",
+  "workspaces": [
+    {
+      "commands": [
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--check"
+          ],
+          "confidence": "high",
+          "cwd": ".",
+          "purpose": "format",
+          "source": "discovery",
+          "tier": "fast",
+          "timeout_seconds": 300
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "confidence": "high",
+          "cwd": ".",
+          "purpose": "lint",
+          "source": "discovery",
+          "tier": "fast",
+          "timeout_seconds": 300
+        },
+        {
+          "argv": [
+            "cargo",
+            "test"
+          ],
+          "confidence": "high",
+          "cwd": ".",
+          "purpose": "test",
+          "source": "discovery",
+          "tier": "full",
+          "timeout_seconds": 300
+        },
+        {
+          "argv": [
+            "cargo",
+            "build"
+          ],
+          "confidence": "high",
+          "cwd": ".",
+          "purpose": "build",
+          "source": "discovery",
+          "tier": "full",
+          "timeout_seconds": 300
+        }
+      ],
+      "coverage": [],
+      "id": "rust",
+      "language": "rust",
+      "root": "."
+    },
+    {
+      "commands": [
+        {
+          "argv": [
+            "ruff",
+            "check"
+          ],
+          "confidence": "high",
+          "cwd": "examples/python-service",
+          "purpose": "lint",
+          "source": "discovery",
+          "tier": "fast",
+          "timeout_seconds": 300
+        },
+        {
+          "argv": [
+            "ruff",
+            "format",
+            "--check"
+          ],
+          "confidence": "high",
+          "cwd": "examples/python-service",
+          "purpose": "format",
+          "source": "discovery",
+          "tier": "fast",
+          "timeout_seconds": 300
+        },
+        {
+          "argv": [
+            "pytest"
+          ],
+          "confidence": "high",
+          "cwd": "examples/python-service",
+          "purpose": "test",
+          "source": "discovery",
+          "tier": "full",
+          "timeout_seconds": 300
+        }
+      ],
+      "coverage": [],
+      "id": "examples-python-service",
+      "language": "python",
+      "root": "examples/python-service"
+    },
+    {
+      "commands": [
+        {
+          "argv": [
+            "shellcheck",
+            "install.sh",
+            "test-install.sh"
+          ],
+          "confidence": "high",
+          "cwd": "scripts",
+          "purpose": "lint",
+          "source": "discovery",
+          "tier": "fast",
+          "timeout_seconds": 300
+        }
+      ],
+      "coverage": [],
+      "id": "scripts",
+      "language": "shell",
+      "root": "scripts"
+    }
+  ]
+}

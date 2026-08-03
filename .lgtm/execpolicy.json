@@ -1,0 +1,17 @@
+{
+  "prohibited_commands": [
+    ["rm","-rf"],
+    ["rm","-fr"],
+    ["rm","-Rf"],
+    ["rm","-fR"],
+    ["git","push","--force"],
+    ["git","push","-f"],
+    ["git","reset","--hard"],
+    ["git","clean","-fdx"],
+    ["git","clean","-xdf"],
+    ["dd"],
+    ["mkfs"],
+    ["chmod","-R","777"],
+    ["shred"]
+  ]
+}
