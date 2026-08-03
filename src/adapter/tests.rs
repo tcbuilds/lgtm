@@ -184,6 +184,12 @@ fn parse_request_prefers_user_prompt_then_prompt() {
 }
 
 #[test]
+fn claude_delegates_rule_loading_to_the_harness() {
+    assert!(ClaudeAdapter.loads_rules_natively());
+    assert!(!super::CodexAdapter.loads_rules_natively());
+}
+
+#[test]
 fn parse_request_accepts_blank_stdin_as_empty() {
     let request = ClaudeAdapter
         .parse_request(HookEvent::SessionStart, "   ")

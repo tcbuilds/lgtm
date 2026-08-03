@@ -1,8 +1,114 @@
 ---
 paths:
   - "**/*.{rs,py,ts,tsx,js,jsx,go,java,kt,cs,rb,swift,scala}"
+headings: ["Core Principles", "Refactoring Standards", "Master Techniques For Maintainable Systems"]
+rules:
+  [
+    {
+      "id": "refactor-discipline-review",
+      "title": "Review refactor discipline",
+      "description": "Refactors should separate mechanical and behavioral changes, retain tests, remove obsolete duplicates, and preserve public behavior unless evidence proves the change.",
+      "mechanism": "instruction",
+      "confidence": "low",
+      "examples": [
+        {
+          "language": "all",
+          "text": "good: split mechanical and behavioral commits; bad: replace code and leave duplicate paths",
+          "schematic": true
+        }
+      ],
+      "limitations": [
+        "Architectural duplication and public-behavior preservation require review and tests."
+      ],
+      "enforcement_stage": "prompt",
+      "severity": "warning",
+      "level": "review",
+      "category": "refactoring",
+      "applies_to": {
+        "languages": [],
+        "domains": [],
+        "file_patterns": [
+          "**/*.{rs,py,ts,tsx,js,jsx,go,java,kt,cs,rb,swift,scala}"
+        ]
+      },
+      "activation": {
+        "change_types": [
+          "modify",
+          "delete"
+        ],
+        "signals": [
+          "refactor",
+          "rename",
+          "replace",
+          "deprecate"
+        ]
+      },
+      "instruction": "Keep mechanical and behavioral changes separable; add behavior tests, remove obsolete duplicates, and preserve public behavior with evidence.",
+      "enforcement": {
+        "mode": "instruction",
+        "checks": []
+      },
+      "overridable": true,
+      "evidence": {
+        "required": [
+          "review_result"
+        ]
+      }
+    },
+    {
+      "id": "contextual-design-guidance",
+      "title": "Apply contextual maintainability design guidance",
+      "description": "When a task touches domain models, boundaries, or architecture, prefer illegal-state prevention, validated-domain conversion, pure cores with side-effect edges, explicit data flow, dependency injection for external effects, and simple designs before distributed abstractions.",
+      "mechanism": "instruction",
+      "confidence": "low",
+      "examples": [
+        {
+          "language": "all",
+          "text": "good: parse raw input into a validated domain type before a pure core; bad: pass unvalidated maps through side effects",
+          "schematic": true
+        }
+      ],
+      "limitations": [
+        "This is contextual review guidance; semantic architecture and illegal-state proofs are not automated."
+      ],
+      "enforcement_stage": "prompt",
+      "severity": "warning",
+      "level": "review",
+      "category": "architecture",
+      "applies_to": {
+        "languages": [],
+        "domains": [],
+        "file_patterns": [
+          "**/*.{rs,py,ts,tsx,js,jsx,go,java,kt,cs,rb,swift,scala}"
+        ]
+      },
+      "activation": {
+        "change_types": [
+          "create",
+          "modify"
+        ],
+        "signals": [
+          "domain",
+          "boundary",
+          "architecture",
+          "dependency-injection",
+          "refactor"
+        ]
+      },
+      "instruction": "Model illegal states out of existence; convert raw input to validated domain values; keep pure core logic separate from side effects; make data flow explicit; inject time, randomness, network, and filesystem dependencies; avoid premature distributed or abstract architecture.",
+      "enforcement": {
+        "mode": "instruction",
+        "checks": []
+      },
+      "overridable": true,
+      "evidence": {
+        "required": [
+          "review_result"
+        ]
+      }
+    }
+  ]
 ---
-
 # Core Patterns
 
 Language-agnostic shapes. Apply them in the idiom of the file you are editing.
@@ -197,3 +303,23 @@ Tables are easier to extend, test, and read than branches.
 
 Take an iterable, return a concrete list. Take an interface, return a struct.
 Callers gain flexibility going in and information coming out.
+
+## Core Principles
+
+- Correctness beats cleverness; simplicity beats abstraction until repetition proves it; explicit data flow beats hidden global state.
+- Failures stay observable, reproducible, and easy to isolate; performance claims are measured; security is a design constraint.
+
+## Refactoring Standards
+
+- Refactor under tests and separate mechanical moves from behavior changes; preserve public behavior unless the change explicitly requires otherwise.
+- Delete obsolete code after replacement, extract repeated logic only when repetition is real, and leave the code easier to change.
+
+## Master Techniques For Maintainable Systems
+
+- Make illegal states unrepresentable, validate at boundaries, and keep pure domain logic separate from side effects behind explicit seams.
+- Prefer boring architecture and progressive hardening; inject time, randomness, filesystem, and network effects so behavior stays testable.
+
+<!-- lgtm-rule: refactor-discipline-review -->
+#### Review refactor discipline
+<!-- lgtm-rule: contextual-design-guidance -->
+#### Apply contextual maintainability design guidance

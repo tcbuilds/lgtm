@@ -371,7 +371,6 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
             println!("limitations: {}", rule.limitations.join(" | "));
             println!("evidence: {}", rule.evidence.required.join(", "));
             println!("overridable: {}", rule.overridable);
-            println!("references: {}", rule.references.join(", "));
             ExitCode::SUCCESS
         }
         PolicyCommand::Explain { file, intent, json } => {
@@ -420,8 +419,8 @@ fn run_policy(command: PolicyCommand) -> ExitCode {
             } else {
                 for example in &rule.examples {
                     println!(
-                        "  - [{}] {} (provenance: {}; schematic: {})",
-                        example.language, example.text, example.provenance, example.schematic
+                        "  - [{}] {} (schematic: {})",
+                        example.language, example.text, example.schematic
                     );
                 }
             }
@@ -561,6 +560,20 @@ fn run_policy_explain(
         return ExitCode::FAILURE;
     }
     let mut context = lgtm::context::build(&root, std::slice::from_ref(&relative), "");
+    // A dotenv path is a credential-bearing configuration boundary even when
+    // the file-only explain command cannot derive a language or domain.
+    let is_dotenv = Path::new(&relative)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == ".env" || name.starts_with(".env."));
+    if is_dotenv {
+        context.domains.push("backend".to_string());
+        context.risk_signals.push("env-file".to_string());
+        context.domains.sort();
+        context.domains.dedup();
+        context.risk_signals.sort();
+        context.risk_signals.dedup();
+    }
     if let Some(intent) = intent.filter(|intent| !intent.trim().is_empty()) {
         context.risk_signals.push(intent.to_string());
         context.risk_signals.sort();
@@ -856,6 +869,9 @@ fn run_init_rules_only(agent: AgentKind) -> ExitCode {
 fn report_rules_only_summary(agent: AgentKind, summary: &init::Installed) {
     println!("lgtm rules installed");
     println!("  written: {}", summary.written.len());
+    if !summary.updated.is_empty() {
+        println!("  updated: {}", summary.updated.len());
+    }
     if !summary.unchanged.is_empty() {
         println!("  unchanged: {}", summary.unchanged.len());
     }
@@ -865,6 +881,9 @@ fn report_rules_only_summary(agent: AgentKind, summary: &init::Installed) {
     };
     for kept in &summary.kept {
         println!("  kept (locally edited): {prefix}{kept}");
+    }
+    for updated in &summary.updated {
+        println!("  updated (previous LGTM template): {prefix}{updated}");
     }
     if agent == AgentKind::Codex {
         println!(
@@ -895,7 +914,7 @@ fn run_init(
     };
     match result {
         Ok(summary) => {
-            report_init_summary(&summary);
+            report_init_summary(&summary, agent, summary.rules.as_ref(), dry_run);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -906,7 +925,12 @@ fn run_init(
 }
 
 /// Print the human-readable init report to stdout.
-fn report_init_summary(summary: &init::InitSummary) {
+fn report_init_summary(
+    summary: &init::InitSummary,
+    agent: init::InitAgent,
+    rules: Option<&init::Installed>,
+    dry_run: bool,
+) {
     let languages = if summary.detection.languages.is_empty() {
         "none".to_string()
     } else {
@@ -942,6 +966,32 @@ fn report_init_summary(summary: &init::InitSummary) {
     }
     for note in &summary.notes {
         println!("  note: {note}");
+    }
+    if let Some(rules) = rules {
+        report_rule_files(agent, rules, dry_run);
+    }
+}
+
+/// Report rule-file changes alongside the normal init summary.
+fn report_rule_files(agent: init::InitAgent, summary: &init::Installed, dry_run: bool) {
+    let label = if dry_run { "planned" } else { "written" };
+    let planned = summary.written.len() + summary.updated.len();
+    println!("  rule files: {label} {planned}");
+    if !summary.updated.is_empty() {
+        println!("  rule files updated: {}", summary.updated.len());
+    }
+    if !summary.unchanged.is_empty() {
+        println!("  rule files unchanged: {}", summary.unchanged.len());
+    }
+    let prefix = match agent {
+        init::InitAgent::Claude => ".claude/rules/",
+        init::InitAgent::Codex => "",
+    };
+    for kept in &summary.kept {
+        println!("  rule kept (locally edited): {prefix}{kept}");
+    }
+    for updated in &summary.updated {
+        println!("  rule updated (previous LGTM template): {prefix}{updated}");
     }
 }
 

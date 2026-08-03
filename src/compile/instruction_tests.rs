@@ -29,7 +29,7 @@ fn compiles_compact_deduplicated_packet_in_stable_order() {
     assert!(compiled.packet.contains("Verification required:"));
     assert!(compiled.packet.contains("Examples (guidance only):"));
     assert!(compiled.packet.contains("Do not claim a check passed"));
-    assert!(!compiled.packet.contains("codingStandards.md"));
+    assert!(!compiled.packet.contains("source_anchor"));
     assert!(compiled.packet.len() < 4_096, "packet must remain compact");
     assert_eq!(
         compiled.plan.rule_ids,

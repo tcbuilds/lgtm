@@ -74,10 +74,10 @@ Fix the timeout bug in src/api/orders.py. Add a regression test, keep the
 request bounded, and run the relevant checks before you finish.
 ```
 
-LGTM does not paste all of `codingStandards.md` into the conversation. It
-classifies the words `fix` and `timeout` as a bug-fix task, notices the Python
-file, and selects the small set of rules about regression tests, external-call
-timeouts, error handling, and verification evidence. The agent receives a
+LGTM does not paste every rule file into the conversation. It classifies the
+words `fix` and `timeout` as a bug-fix task, notices the Python file, and
+selects the small set of rules about regression tests, external-call timeouts,
+error handling, and verification evidence. The agent receives a
 compact packet like this (simplified):
 
 ```text

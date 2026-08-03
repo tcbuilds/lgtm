@@ -114,6 +114,20 @@ fn malformed_rule_fails_with_useful_message() {
     }
 }
 
+/// Retired export fields remain invalid for current registry content.
+#[test]
+fn current_schema_rejects_legacy_export_fields() {
+    let legacy = include_str!("fixtures/legacy-export.json");
+    let error = policy::load_and_validate(legacy)
+        .expect_err("current validation must reject retired export fields");
+    let RegistryError::SchemaViolations(messages) = error else {
+        panic!("expected schema violations for retired fields");
+    };
+    let joined = messages.join("\n");
+    assert!(joined.contains("references"));
+    assert!(joined.contains("provenance"));
+}
+
 /// A registry with two rules sharing an `id` is rejected by the registry-wide
 /// uniqueness check, with an error that names the duplicated id and both rule
 /// indices.
@@ -200,11 +214,6 @@ fn full_example_rule_round_trips() {
         rule.evidence.required,
         vec!["check_result".to_string(), "changed_locations".to_string()]
     );
-    assert_eq!(
-        rule.references,
-        vec!["codingStandards.md#non-negotiable-rules".to_string()]
-    );
-
     let serialized = serde_json::to_string(rule).expect("rule must serialize");
     let reparsed: Rule = serde_json::from_str(&serialized).expect("rule must round-trip");
     assert_eq!(*rule, reparsed);

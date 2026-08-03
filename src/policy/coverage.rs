@@ -1,17 +1,18 @@
-//! Honest coverage mapping between codingStandards.md and executable policy.
+//! Honest coverage mapping between rule-file prose and executable policy.
 
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::frontmatter;
+
 pub const COVERAGE_SCHEMA_JSON: &str = include_str!("../../policy/standards-coverage.schema.json");
 pub const COVERAGE_JSON: &str = include_str!("../../policy/standards-coverage.json");
-pub const STANDARDS_TEXT: &str = include_str!("../../codingStandards.md");
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CoverageLedger {
-    pub standards_file: String,
+    pub rule_files: String,
     pub version: String,
     pub normative_headings: Vec<String>,
     pub sections: Vec<CoverageSection>,
@@ -21,7 +22,6 @@ pub struct CoverageLedger {
 pub struct CoverageSection {
     pub id: String,
     pub heading: String,
-    pub source_anchor: String,
     pub scope: String,
     pub status: CoverageStatus,
     pub mechanism: CoverageMechanism,
@@ -112,7 +112,6 @@ pub fn load() -> Result<CoverageLedger, CoverageError> {
 pub struct CoverageItem {
     pub id: String,
     pub heading: String,
-    pub source_anchor: String,
     pub text: String,
     pub section_id: String,
 }
@@ -131,16 +130,22 @@ pub fn report() -> Result<CoverageReport, CoverageError> {
 }
 
 /// Count direct numbered/bulleted normative items under each top-level section.
-pub fn item_counts() -> Vec<(String, usize)> {
-    let parsed = parsed_items();
+pub fn item_counts() -> Result<Vec<(String, usize)>, CoverageError> {
+    item_counts_from_sources(frontmatter::RULE_DOCUMENT_SOURCES)
+}
+
+fn item_counts_from_sources(
+    sources: &[(&str, &str)],
+) -> Result<Vec<(String, usize)>, CoverageError> {
+    let parsed = parsed_items(sources)?;
     let headings: BTreeSet<_> = parsed.iter().map(|item| item.heading.clone()).collect();
-    headings
+    Ok(headings
         .into_iter()
         .map(|heading| {
             let count = parsed.iter().filter(|item| item.heading == heading).count();
             (heading, count)
         })
-        .collect()
+        .collect())
 }
 
 /// Expand each normative Markdown list item into a deterministic coverage row.
@@ -152,7 +157,7 @@ pub fn items(ledger: &CoverageLedger) -> Result<Vec<CoverageItem>, CoverageError
         .collect();
     let mut seen = BTreeSet::new();
     let mut expanded = Vec::new();
-    for item in parsed_items() {
+    for item in parsed_items(frontmatter::RULE_DOCUMENT_SOURCES)? {
         let section_id = section_ids
             .get(item.heading.as_str())
             .ok_or_else(|| CoverageError::Incomplete(format!("unmapped item `{}`", item.id)))?;
@@ -165,7 +170,6 @@ pub fn items(ledger: &CoverageLedger) -> Result<Vec<CoverageItem>, CoverageError
         expanded.push(CoverageItem {
             id: item.id,
             heading: item.heading,
-            source_anchor: item.source_anchor,
             text: item.text,
             section_id: section_id.to_string(),
         });
@@ -177,51 +181,68 @@ pub fn items(ledger: &CoverageLedger) -> Result<Vec<CoverageItem>, CoverageError
 struct ParsedItem {
     id: String,
     heading: String,
-    source_anchor: String,
     text: String,
 }
 
-fn parsed_items() -> Vec<ParsedItem> {
+fn parsed_items(sources: &[(&str, &str)]) -> Result<Vec<ParsedItem>, CoverageError> {
+    let headings = frontmatter::normative_headings()
+        .map_err(|error| CoverageError::Incomplete(error.to_string()))?;
     let mut items = Vec::new();
-    let mut current: Option<String> = None;
-    let mut item_number = 0_usize;
-    for (line_index, line) in STANDARDS_TEXT.lines().enumerate() {
-        if let Some(heading) = line
-            .strip_prefix("## ")
-            .or_else(|| line.strip_prefix("### "))
-        {
-            current = Some(heading.trim().to_string());
-            item_number = 0;
-            continue;
-        }
-        let Some(heading) = current.as_ref() else {
-            continue;
-        };
-        let trimmed = line.trim_start();
-        let numbered = trimmed.split_once('.').is_some_and(|(prefix, rest)| {
-            !prefix.is_empty()
-                && prefix.chars().all(|character| character.is_ascii_digit())
-                && !rest.trim().is_empty()
-        });
-        if numbered || trimmed.starts_with("- ") {
-            item_number += 1;
-            let text = if numbered {
-                trimmed
-                    .split_once('.')
-                    .map(|(_, rest)| rest.trim())
-                    .unwrap_or(trimmed)
-            } else {
-                trimmed.trim_start_matches("- ").trim()
+    for (_path, contents) in sources {
+        let body = frontmatter::body(contents)
+            .map_err(|error| CoverageError::Incomplete(error.to_string()))?;
+        let mut current: Option<(String, usize)> = None;
+        let mut item_number = 0_usize;
+        for line in body.lines() {
+            if let Some((level, heading)) = markdown_heading(line) {
+                if headings.contains(&heading) {
+                    current = Some((heading, level));
+                    item_number = 0;
+                } else if current
+                    .as_ref()
+                    .is_some_and(|(_, current_level)| level <= *current_level)
+                {
+                    current = None;
+                }
+                continue;
+            }
+            let Some((heading, _)) = current.as_ref() else {
+                continue;
             };
-            items.push(ParsedItem {
-                id: format!("{}-{:03}", slugify(heading), item_number),
-                heading: heading.clone(),
-                source_anchor: format!("codingStandards.md#L{}", line_index + 1),
-                text: text.to_string(),
+            let trimmed = line.trim_start();
+            let numbered = trimmed.split_once('.').is_some_and(|(prefix, rest)| {
+                !prefix.is_empty()
+                    && prefix.chars().all(|character| character.is_ascii_digit())
+                    && !rest.trim().is_empty()
             });
+            if numbered || trimmed.starts_with("- ") {
+                item_number += 1;
+                let text = if numbered {
+                    trimmed
+                        .split_once('.')
+                        .map(|(_, rest)| rest.trim())
+                        .unwrap_or(trimmed)
+                } else {
+                    trimmed.trim_start_matches("- ").trim()
+                };
+                items.push(ParsedItem {
+                    id: format!("{}-{:03}", slugify(heading), item_number),
+                    heading: heading.clone(),
+                    text: text.to_string(),
+                });
+            }
         }
     }
-    items
+    Ok(items)
+}
+
+fn markdown_heading(line: &str) -> Option<(usize, String)> {
+    let level = line
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
+    (level > 0 && line.as_bytes().get(level) == Some(&b' '))
+        .then(|| (level, line[level..].trim().to_string()))
 }
 
 fn slugify(value: &str) -> String {
@@ -237,8 +258,8 @@ fn slugify(value: &str) -> String {
 }
 
 fn validate_sections(ledger: &CoverageLedger) -> Result<(), CoverageError> {
-    let counts = item_counts();
-    let expected: BTreeSet<_> = counts.iter().map(|(heading, _)| heading.clone()).collect();
+    let expected = frontmatter::normative_headings()
+        .map_err(|error| CoverageError::Incomplete(error.to_string()))?;
     let allowlist: BTreeSet<_> = ledger.normative_headings.iter().cloned().collect();
     let actual: BTreeSet<_> = ledger
         .sections
@@ -252,11 +273,18 @@ fn validate_sections(ledger: &CoverageLedger) -> Result<(), CoverageError> {
         )));
     }
     let mut ids = BTreeSet::new();
+    let mut section_headings = BTreeSet::new();
     for section in &ledger.sections {
         if !ids.insert(&section.id) {
             return Err(CoverageError::Incomplete(format!(
                 "duplicate section id `{}`",
                 section.id
+            )));
+        }
+        if !section_headings.insert(&section.heading) {
+            return Err(CoverageError::Incomplete(format!(
+                "duplicate section heading `{}`",
+                section.heading
             )));
         }
     }
@@ -270,9 +298,38 @@ mod tests {
     #[test]
     fn embedded_ledger_covers_every_standards_section() {
         let ledger = load().expect("coverage ledger validates");
-        assert_eq!(ledger.sections.len(), item_counts().len());
+        let counts = item_counts().expect("embedded item counts parse");
+        assert_eq!(ledger.sections.len(), counts.len());
         let expanded = items(&ledger).expect("normative items map");
         assert!(expanded.len() > ledger.sections.len());
-        assert!(expanded.iter().all(|item| !item.source_anchor.is_empty()));
+    }
+
+    #[test]
+    fn item_counts_surfaces_unterminated_frontmatter() {
+        let sources = [(
+            "tests/fixtures/unterminated_rule.md",
+            include_str!("../../tests/fixtures/unterminated_rule.md"),
+        )];
+        let error = item_counts_from_sources(&sources)
+            .expect_err("unterminated frontmatter must not become empty coverage");
+        assert!(error.to_string().contains("no closing `---`"));
+    }
+
+    #[test]
+    fn unmapped_rule_bullet_is_rejected() {
+        let mut ledger = load().expect("coverage ledger validates");
+        ledger.sections.retain(|section| section.heading != "Rust");
+        let error = items(&ledger).expect_err("Rust bullets must have a section");
+        assert!(error.to_string().contains("unmapped item"));
+    }
+
+    #[test]
+    fn duplicate_section_mapping_is_rejected() {
+        let mut ledger = load().expect("coverage ledger validates");
+        let mut duplicate = ledger.sections[0].clone();
+        duplicate.id = "duplicate-core-principles".to_string();
+        ledger.sections.push(duplicate);
+        let error = validate_sections(&ledger).expect_err("duplicate mapping must fail");
+        assert!(error.to_string().contains("duplicate section heading"));
     }
 }

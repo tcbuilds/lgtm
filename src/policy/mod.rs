@@ -16,6 +16,9 @@ pub mod coverage;
 pub mod docs;
 pub mod drift;
 pub mod export;
+pub mod frontmatter;
+mod frontmatter_schema;
+mod frontmatter_sources;
 pub mod org_bundle;
 pub mod overlay;
 pub mod overrides;
@@ -25,19 +28,39 @@ pub mod waivers;
 /// The rule schema, embedded at build time.
 pub const RULE_SCHEMA_JSON: &str = include_str!("../../policy/rule.schema.json");
 
-/// The canonical rule registry, embedded at build time.
-pub const RULES_JSON: &str = include_str!("../../policy/rules.json");
 pub const POLICY_BUNDLE_VERSION: &str = "V2";
+
+/// Return every file source hashed into the policy bundle digest.
+pub(crate) fn bundle_digest_sources() -> impl Iterator<Item = (&'static str, &'static str, bool)> {
+    frontmatter::RULE_FILE_SOURCES
+        .iter()
+        .map(|(path, contents)| (*path, *contents, true))
+        .chain([
+            ("rule.schema.json", RULE_SCHEMA_JSON, false),
+            ("standards-coverage.json", coverage::COVERAGE_JSON, false),
+            (
+                "standards-coverage.schema.json",
+                coverage::COVERAGE_SCHEMA_JSON,
+                false,
+            ),
+            ("org-bundle.schema.json", org_bundle::SCHEMA_JSON, false),
+            (
+                "repository-overlay.schema.json",
+                overlay::SCHEMA_JSON,
+                false,
+            ),
+        ])
+}
 
 pub fn bundle_digest() -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(RULES_JSON.as_bytes());
-    hasher.update(RULE_SCHEMA_JSON.as_bytes());
-    hasher.update(coverage::COVERAGE_JSON.as_bytes());
-    hasher.update(coverage::COVERAGE_SCHEMA_JSON.as_bytes());
-    hasher.update(org_bundle::SCHEMA_JSON.as_bytes());
-    hasher.update(overlay::SCHEMA_JSON.as_bytes());
+    for (path, contents, hash_path) in bundle_digest_sources() {
+        if hash_path {
+            hasher.update(path.as_bytes());
+        }
+        hasher.update(contents.as_bytes());
+    }
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
     format!("{:x}", hasher.finalize())
 }
@@ -316,7 +339,6 @@ pub struct Evidence {
 pub struct Example {
     pub language: String,
     pub text: String,
-    pub provenance: String,
     pub schematic: bool,
 }
 
@@ -343,7 +365,6 @@ pub struct Rule {
     pub enforcement: Enforcement,
     pub overridable: bool,
     pub evidence: Evidence,
-    pub references: Vec<String>,
 }
 
 /// Failure modes when loading and validating the registry.
@@ -537,7 +558,8 @@ fn check_unique_ids(rules_array: &[serde_json::Value]) -> Result<(), RegistryErr
 
 /// Validate and deserialize the embedded registry.
 pub fn load_embedded_registry() -> Result<Vec<Rule>, RegistryError> {
-    let rules = load_and_validate(RULES_JSON)?;
+    let rules = frontmatter::load_registry()
+        .map_err(|error| RegistryError::SchemaViolations(vec![error.to_string()]))?;
     profile::validate_embedded(&rules)
         .map_err(|message| RegistryError::SchemaViolations(vec![message]))?;
     Ok(rules)
@@ -577,13 +599,12 @@ mod tests {
     }
 
     #[test]
-    fn examples_are_bounded_attributed_and_secret_free() {
+    fn examples_are_bounded_and_secret_free() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
         for rule in rules {
             for example in rule.examples {
                 assert!(!example.language.trim().is_empty());
                 assert!(!example.text.trim().is_empty());
-                assert!(!example.provenance.trim().is_empty());
                 assert!(example.text.len() <= 512);
                 assert!(!example.text.contains("sk-") && !example.text.contains("AKIA"));
                 assert!(example.schematic);

@@ -9,7 +9,7 @@ use crate::policy::{self, Rule};
 mod packet;
 mod plan;
 
-pub use packet::{CompiledInstructions, compile_selected};
+pub use packet::{CompiledInstructions, MAX_PACKET_BYTES, compile_selected};
 pub use plan::{ENFORCEMENT_PLAN_SCHEMA_JSON, EnforcementPlan};
 
 #[cfg(test)]

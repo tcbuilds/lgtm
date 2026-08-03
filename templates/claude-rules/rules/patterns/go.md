@@ -47,57 +47,6 @@ func New(addr string, opts ...Option) *Server {
 
 Beats a config struct with a dozen zero-valued fields, and stays additive.
 
-## Wrap errors with `%w`, define sentinels for branchable failures
-
-```go
-var ErrNotFound = errors.New("not found")
-
-func Load(id string) (*Rule, error) {
-    row, err := db.Query(id)
-    if err != nil {
-        return nil, fmt.Errorf("loading rule %s: %w", id, err)
-    }
-    ...
-}
-
-// callers branch without string matching
-if errors.Is(err, ErrNotFound) { ... }
-```
-
-Never `fmt.Errorf("...: %v", err)` — that severs the chain.
-
-## Context first, and actually honour it
-
-```go
-func Fetch(ctx context.Context, url string) ([]byte, error) {
-    req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-    if err != nil {
-        return nil, fmt.Errorf("building request: %w", err)
-    }
-    ...
-}
-```
-
-Never store a `context.Context` in a struct. Pass it as the first argument.
-
-## Every goroutine has an owner and an exit
-
-```go
-// bad — fire and forget, no way to know it died
-go process(items)
-
-// good
-g, ctx := errgroup.WithContext(ctx)
-for _, item := range items {
-    g.Go(func() error { return process(ctx, item) })
-}
-if err := g.Wait(); err != nil {
-    return fmt.Errorf("processing: %w", err)
-}
-```
-
-Ask of every `go` statement: who waits for it, and what happens when it fails?
-
 ## Table-driven tests
 
 ```go

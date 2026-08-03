@@ -115,21 +115,6 @@ def connect(host: str, *, timeout: float, retries: int = 3) -> Connection: ...
 Positional booleans and bare numbers at call sites are unreadable. The `*` forces
 callers to name them.
 
-## Narrow exception handling with context
-
-```python
-# bad
-except Exception:
-    return None
-
-# good
-except json.JSONDecodeError as exc:
-    raise ConfigInvalid(f"parsing {path}") from exc
-```
-
-`from exc` preserves the chain. Returning `None` on failure discards the reason
-and pushes the bug downstream.
-
 ## Never mutate default arguments
 
 ```python

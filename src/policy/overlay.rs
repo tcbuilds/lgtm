@@ -116,7 +116,6 @@ mod tests {
             evidence: super::super::Evidence {
                 required: Vec::new(),
             },
-            references: Vec::new(),
         }];
         assert!(apply(&root, &mut rules).is_err());
         std::fs::remove_dir_all(root).ok();

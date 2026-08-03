@@ -116,6 +116,31 @@ fn glob_matching_respects_directory_boundaries() {
 }
 
 #[test]
+fn glob_matching_supports_brace_alternation() {
+    assert!(glob_matches("**/*.{rs,py}", "src/main.rs"));
+    assert!(glob_matches("**/*.{rs,py}", "src/main.py"));
+    assert!(glob_matches("**/*.{rs,{py,js}}", "src/main.js"));
+    assert!(glob_matches("file,name.md", "file,name.md"));
+    assert!(!glob_matches("**/*.{rs,py}", "src/main.md"));
+    assert!(!glob_matches("**/*.{rs,py", "src/main.rs"));
+}
+
+#[test]
+fn glob_matching_many_brace_groups_does_not_materialize_combinations() {
+    let pattern = "{a,b}".repeat(32);
+
+    assert!(!glob_matches(&pattern, &"c".repeat(32)));
+    assert!(glob_matches(&pattern, &"b".repeat(32)));
+}
+
+#[test]
+fn unsupported_glob_constructs_never_match() {
+    assert!(!file_pattern_matches("**/*.[rs]", "src/main.rs"));
+    assert!(!file_pattern_is_supported("**/*.[rs]"));
+    assert!(file_pattern_is_supported("**/*.{rs,py}"));
+}
+
+#[test]
 fn empty_filters_match_all_and_results_are_id_sorted() {
     let registry = load_embedded_registry().expect("embedded registry valid");
     let mut later = registry.first().expect("seed rule").clone();

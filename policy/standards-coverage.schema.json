@@ -4,9 +4,9 @@
   "title": "lgtm coding standards coverage ledger",
   "type": "object",
   "additionalProperties": false,
-  "required": ["standards_file", "version", "normative_headings", "sections"],
+  "required": ["rule_files", "version", "normative_headings", "sections"],
   "properties": {
-    "standards_file": { "const": "codingStandards.md" },
+    "rule_files": { "type": "string", "minLength": 1 },
     "version": { "type": "string", "minLength": 1 },
     "normative_headings": {
       "type": "array",
@@ -20,11 +20,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "heading", "source_anchor", "scope", "status", "mechanism", "supported_languages", "enforcement_stages", "limitations", "notes"],
+        "required": ["id", "heading", "scope", "status", "mechanism", "supported_languages", "enforcement_stages", "limitations", "notes"],
         "properties": {
           "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
           "heading": { "type": "string", "minLength": 1 },
-          "source_anchor": { "type": "string", "pattern": "^codingStandards\\.md#L[1-9][0-9]*$" },
           "scope": { "const": "all_normative_items" },
           "status": { "enum": ["covered", "partial", "unsupported"] },
           "mechanism": { "enum": ["native", "wrapped", "command", "instruction", "review", "evidence", "unsupported"] },

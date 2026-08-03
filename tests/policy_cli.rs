@@ -37,7 +37,32 @@ fn policy_show_reports_unknown_rule_without_panicking() {
 }
 
 #[test]
-fn policy_show_text_exposes_examples_limitations_and_source() {
+fn policy_drift_accepts_a_previous_release_export() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args([
+            "policy",
+            "drift",
+            "--candidate",
+            "tests/fixtures/legacy-export.json",
+            "--json",
+        ])
+        .output()
+        .expect("policy drift starts");
+    assert!(
+        output.status.success(),
+        "legacy candidate must produce a drift report: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("drift report is JSON");
+    assert!(
+        report["added"]
+            .as_array()
+            .is_some_and(|ids| { ids.iter().any(|id| id == "legacy-drift-fixture") })
+    );
+}
+
+#[test]
+fn policy_show_text_exposes_examples_and_limitations() {
     let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["policy", "show", "external-call-timeout"])
         .output()
@@ -48,7 +73,7 @@ fn policy_show_text_exposes_examples_limitations_and_source() {
     assert!(
         text.contains("examples: good: satisfy External calls require timeouts; bad: bypass it")
     );
-    assert!(text.contains("references: codingStandards.md#non-negotiable-rules"));
+    assert!(!text.contains("provenance:"));
 }
 
 #[test]
@@ -79,12 +104,63 @@ fn policy_explain_is_read_only_and_reports_selection_reasons() {
 }
 
 #[test]
+fn policy_explain_selects_secrets_for_dotenv_files() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["policy", "explain", "--file", ".env"])
+        .output()
+        .expect("policy explain starts");
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("  + no-committed-secrets (all scope and activation conditions matched)")
+    );
+    assert!(!text.contains("  - no-committed-secrets ("));
+}
+
+#[test]
+fn policy_explain_selects_secrets_for_nested_dotenv_variants() {
+    for file in [
+        ".env.local",
+        "config/.env.local",
+        "services/api/.env.production",
+        "deploy/staging/.env",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+            .args(["policy", "explain", "--file", file])
+            .output()
+            .expect("policy explain starts");
+        assert!(output.status.success(), "explain failed for {file}");
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            text.contains("  + no-committed-secrets (all scope and activation conditions matched)"),
+            "nested dotenv file {file} did not select no-committed-secrets:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn policy_explain_rejects_names_that_only_contain_dotenv_text() {
+    for file in ["environment.rs", "dotenv_parser.py"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+            .args(["policy", "explain", "--file", file])
+            .output()
+            .expect("policy explain starts");
+        assert!(output.status.success(), "explain failed for {file}");
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !text.contains("  + no-committed-secrets ("),
+            "non-dotenv file {file} selected no-committed-secrets:\n{text}"
+        );
+    }
+}
+
+#[test]
 fn policy_explain_covers_backend_frontend_rust_docs_and_unknown_files() {
     for file in [
         "tests/fixtures/context-fastapi/routes.py",
         "tests/fixtures/context-react/App.tsx",
         "tests/fixtures/context-rust/lib.rs",
-        "codingStandards.md",
+        "templates/claude-rules/README.md",
         "tests/fixtures/unknown-file.txt",
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))

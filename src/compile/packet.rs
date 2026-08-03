@@ -6,7 +6,7 @@ use super::plan::{EnforcementPlan, build_plan};
 
 pub(super) const MAX_RULES: usize = 256;
 const MAX_LINE_BYTES: usize = 512;
-const MAX_PACKET_BYTES: usize = 6 * 1024;
+pub const MAX_PACKET_BYTES: usize = 6 * 1024;
 
 /// Human instruction packet paired with its machine-readable plan.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -19,7 +19,6 @@
     "overridable": false,
     "evidence": {
       "required": ["check_result"]
-    },
-    "references": ["codingStandards.md#non-negotiable-rules"]
+    }
   }
 ]

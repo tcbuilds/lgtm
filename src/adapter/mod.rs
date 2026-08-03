@@ -123,6 +123,14 @@ pub struct EncodedResponse {
 /// A harness adapter: parse a lifecycle payload into a neutral request, and
 /// encode a normalized response into that harness's exact bytes and exit code.
 pub trait HookAdapter {
+    /// Whether the harness loads path-scoped rule files without hook guidance.
+    ///
+    /// Native loading means UserPromptSubmit must not guess file paths from the
+    /// prompt or inject a second copy of the rule content.
+    fn loads_rules_natively(&self) -> bool {
+        false
+    }
+
     /// Parse a harness stdin payload into a neutral [`HookRequest`].
     ///
     /// Blank input is accepted as an empty request; malformed input is an error.

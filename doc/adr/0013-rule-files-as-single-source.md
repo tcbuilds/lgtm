@@ -14,14 +14,14 @@ ADR-0002 (Embedded policy registry with repo-local overrides).
 
 ## Context
 
-ADR-0002 established a derivation chain: `codingStandards.md` is the human
-source, `policy/rules.json` is the machine registry derived from it, and the
+ADR-0002 established a derivation chain: a human standards document was the
+source, a separate JSON registry was derived from it, and the
 registry is compiled into the binary. Two facts have since invalidated the
 shape of that chain, though not its intent.
 
 First, the derivation is maintained by hand. 72 rule `references` entries and
-33 `source_anchor` values bind the registry to `codingStandards.md`, several by
-line number. Nothing detects divergence; a prose edit and a registry edit can
+33 `source_anchor` values bind the registry to that document, several by line
+number. Nothing detects divergence; a prose edit and a registry edit can
 disagree indefinitely.
 
 Second, Claude Code now loads `.claude/rules/*.md` natively, selecting files by
@@ -53,8 +53,8 @@ observed.
 
 - A rule file carries YAML frontmatter for machine fields (`paths:` plus a
   `rules:` array of `id`, `level`, `severity`, `overridable`, `checks`) and
-  prose in the body. `policy/rules.json` is retired as a separate artifact and
-  `codingStandards.md` is retired entirely.
+  prose in the body. The separate JSON registry and prior standalone standards
+  document are retired entirely.
 - The rule files remain compiled into the binary at build time and versioned
   with it. Every guarantee ADR-0002 made about distribution survives: no
   network call at hook time, no central policy service, consuming repos hold

@@ -25,7 +25,7 @@ The tool does not rely on injecting a large Markdown standards document into eve
 4. Generates agent-specific configuration for Claude Code first, Codex and future agents later.
 5. Produces evidence showing which rules were checked, passed, failed, skipped, or could not be verified.
 
-The Markdown document (`codingStandards.md`) remains the source material for humans. The operational source of truth is a versioned policy registry (JSON) embedded in the binary, compiled into small agent instructions and executable checks.
+The rule files under `.claude/rules/` are the source material for humans and machines. The operational source of truth is a versioned policy registry (JSON) embedded in the binary, compiled into small agent instructions and executable checks.
 
 ---
 
@@ -90,10 +90,10 @@ The system separates:
 ## High-Level Architecture
 
 ```text
-Human Standards (codingStandards.md)
+Rule Files (`.claude/rules/`)
       |
       v
-Policy Registry (embedded rules.json)
+Policy Registry (embedded rule files)
       |
       v
 Policy Compiler (in binary)
@@ -123,7 +123,7 @@ The policy registry is agent-neutral. Claude Code (and later Codex) receive gene
 lgtm/
 ├── README.md
 ├── idea.md
-├── codingStandards.md          # human source material
+├── templates/claude-rules/     # human and machine rule source
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs                 # CLI: init, hook, doctor, compile, report
@@ -139,7 +139,7 @@ lgtm/
 │       ├── claude_code/        # settings.json hook generation, event handlers
 │       └── shared/
 ├── policy/
-│   ├── rules.json              # canonical registry, embedded at build time
+│   ├── templates/claude-rules/ # canonical rule source, embedded at build time
 │   ├── rule.schema.json
 │   └── profiles/               # default, strict, prototype, infrastructure
 ├── schemas/
@@ -195,10 +195,7 @@ Each rule is a structured object rather than a paragraph in a prompt.
   "overridable": false,
   "evidence": {
     "required": ["check_result", "changed_locations"]
-  },
-  "references": [
-    "codingStandards.md#non-negotiable-rules"
-  ]
+  }
 }
 ```
 
@@ -609,7 +606,7 @@ Adds plan review, rollback requirements, least-privilege checks, secret and stat
 ## Policy Compiler
 
 ```text
-rules.json (embedded)
+rule files (embedded)
    |
    +-- selected-rules.json
    +-- agent-context packet (text)
@@ -642,7 +639,7 @@ This keeps the agent feedback loop fast without weakening final enforcement.
 
 ## Initial Rule Categories
 
-Derived from `codingStandards.md`, grouped into: correctness, security, reliability, error handling, validation, architecture, dependencies, testing, observability, performance, documentation, refactoring, change management, AI-agent behavior, language-specific (Python first), infrastructure.
+The rule files are grouped into: correctness, security, reliability, error handling, validation, architecture, dependencies, testing, observability, performance, documentation, refactoring, change management, AI-agent behavior, language-specific (Python first), and infrastructure.
 
 Each original standard maps to one or more stable rule IDs.
 

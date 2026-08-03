@@ -16,6 +16,21 @@ pub fn load_file(path: &Path) -> Result<Vec<super::Rule>, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Load a prior-release export for drift comparison.
+///
+/// Release V1 exports carried `references` on rules and `provenance` on
+/// examples. Those fields were intentionally retired from the current schema,
+/// so they are removed only on this compatibility path before strict validation.
+pub fn load_file_for_drift(path: &Path) -> Result<Vec<super::Rule>, String> {
+    let registry = normalize_registry(read_json(path)?)?;
+    let registry = registry
+        .into_iter()
+        .map(strip_legacy_drift_fields)
+        .collect::<Vec<_>>();
+    super::load_and_validate(&serde_json::to_string(&registry).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())
+}
+
 pub fn add_rule(registry_path: &Path, rule_path: &Path) -> Result<usize, String> {
     let registry = normalize_registry(read_json(registry_path)?)?;
     let rule = read_json(rule_path)?;
@@ -106,6 +121,24 @@ fn normalize_registry(value: serde_json::Value) -> Result<Vec<serde_json::Value>
     }
 }
 
+/// Remove only fields emitted by the previous export format.
+fn strip_legacy_drift_fields(mut rule: serde_json::Value) -> serde_json::Value {
+    if let Some(rule) = rule.as_object_mut() {
+        rule.remove("references");
+        if let Some(examples) = rule
+            .get_mut("examples")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for example in examples {
+                if let Some(example) = example.as_object_mut() {
+                    example.remove("provenance");
+                }
+            }
+        }
+    }
+    rule
+}
+
 fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
     let parent = path
         .parent()
@@ -127,7 +160,12 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("lgtm-policy-fixtures-{}", std::process::id()));
         fs::create_dir_all(&root).expect("fixture dir");
-        fs::write(root.join("valid.json"), super::super::RULES_JSON).expect("valid fixture");
+        let rules = super::super::frontmatter::load_registry().expect("embedded rules");
+        fs::write(
+            root.join("valid.json"),
+            serde_json::to_string(&rules).expect("serialize fixture"),
+        )
+        .expect("valid fixture");
         fs::write(root.join("bad.invalid.json"), "{\"nope\":true}").expect("invalid fixture");
         assert_eq!(test_fixtures(&root).expect("fixtures pass"), (2, 2));
         fs::remove_dir_all(root).ok();

@@ -14,6 +14,10 @@ use super::{EncodedResponse, HookAdapter, HookEvent, HookRequest, HookResponse, 
 pub struct ClaudeAdapter;
 
 impl HookAdapter for ClaudeAdapter {
+    fn loads_rules_natively(&self) -> bool {
+        true
+    }
+
     fn parse_request(&self, event: HookEvent, stdin_json: &str) -> Result<HookRequest, String> {
         let value = if stdin_json.trim().is_empty() {
             Value::Object(serde_json::Map::new())

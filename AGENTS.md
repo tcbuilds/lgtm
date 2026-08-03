@@ -17,7 +17,7 @@ Run formatting, Clippy, tests, and a build before opening a pull request.
 
 ## Coding Style & Naming Conventions
 
-Follow `codingStandards.md` and standard `rustfmt` output (four-space indentation). Prefer small modules, guard clauses, explicit error context, and typed errors. Functions use verb-first `snake_case` names, such as `validate_config`; types use domain-focused `PascalCase`; constants use `SCREAMING_SNAKE_CASE` and include units where relevant. Do not swallow errors, add unbounded work, or invoke external processes without a timeout. Add dependencies only when they replace substantial, risky code.
+Follow the tracked rule templates under `templates/claude-rules/rules/` and standard `rustfmt` output (four-space indentation). Prefer small modules, guard clauses, explicit error context, and typed errors. Functions use verb-first `snake_case` names, such as `validate_config`; types use domain-focused `PascalCase`; constants use `SCREAMING_SNAKE_CASE` and include units where relevant. Do not swallow errors, add unbounded work, or invoke external processes without a timeout. Add dependencies only when they replace substantial, risky code.
 
 ## Testing Guidelines
 

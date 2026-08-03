@@ -39,31 +39,6 @@ function handleSubmit() {
 }
 ```
 
-## Every subscription cleans up
-
-```tsx
-useEffect(() => {
-  const controller = new AbortController()
-  loadUser(id, { signal: controller.signal }).then(setUser).catch(ignoreAbort)
-  return () => controller.abort()
-}, [id])
-```
-
-Timers, sockets, observers, and in-flight requests all need the cleanup return.
-Without it you get state updates on unmounted components and leaked connections.
-
-## Keys from domain identity, never array index
-
-```tsx
-// bad — reorder or delete and React reuses the wrong DOM node
-{items.map((item, i) => <Row key={i} item={item} />)}
-
-// good
-{items.map((item) => <Row key={item.id} item={item} />)}
-```
-
-Index keys are acceptable only for lists that never reorder, filter, or delete.
-
 ## Lift state only as far as it is shared
 
 State belongs at the lowest node that needs it. Hoisting everything to a top-level
@@ -109,11 +84,6 @@ const options = useMemo(() => ({ smooth: true }), [])
 Only matters when the child is memoised or the prop feeds a dependency array.
 Otherwise it is noise.
 
-## Explicit loading and error states
-
-Never render `undefined` as if it were empty. Distinguish "no data yet" from "no
-data exists" — they read identically to the user and mean opposite things.
-
 ## Controlled inputs own their value
 
 ```tsx
@@ -122,16 +92,3 @@ data exists" — they read identically to the user and mean opposite things.
 
 Mixing controlled and uncontrolled inputs produces warnings and cursor jumps. Pick
 one per field and stay with it.
-
-## Accessibility is not optional polish
-
-Label every input, keep focus visible, make custom controls keyboard-operable, and
-give interactive elements real roles. A `<div onClick>` is not a button.
-
-```tsx
-// bad
-<div onClick={submit}>Save</div>
-
-// good
-<button type="button" onClick={submit}>Save</button>
-```

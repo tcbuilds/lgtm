@@ -2,6 +2,78 @@
 paths:
   - "**/*.sql"
   - "**/migrations/**"
+  - "**/*.py"
+rules:
+  [
+    {
+      "id": "sql-parameterization",
+      "title": "Parameterize SQL",
+      "description": "SQL statements must not interpolate untrusted values.",
+      "severity": "error",
+      "level": "must",
+      "category": "security",
+      "applies_to": {
+        "languages": [
+          "python"
+        ],
+        "domains": [
+          "backend",
+          "api",
+          "worker"
+        ],
+        "file_patterns": [
+          "**/*.py"
+        ]
+      },
+      "activation": {
+        "change_types": [
+          "create",
+          "modify"
+        ],
+        "signals": [
+          "database-write",
+          "database-client"
+        ]
+      },
+      "instruction": "Use driver parameters for every dynamic SQL value.",
+      "enforcement": {
+        "mode": "static",
+        "checks": [
+          "semgrep.sql-parameterization"
+        ]
+      },
+      "overridable": false,
+      "evidence": {
+        "required": [
+          "check_result"
+        ]
+      },
+      "mechanism": "native",
+      "confidence": "high",
+      "examples": [
+        {
+          "language": "python",
+          "text": "good: satisfy Parameterize SQL; bad: bypass it",
+          "schematic": true
+        }
+      ],
+      "limitations": [
+        "Automated checks cover only registered patterns; review other implementations."
+      ],
+      "enforcement_stage": "post_tool",
+      "language_implementations": {
+        "python": {
+          "mechanism": "native",
+          "checks": [
+            "semgrep.sql-parameterization"
+          ],
+          "limitations": [
+            "Language-specific behavior may differ outside registered checks."
+          ]
+        }
+      }
+    }
+  ]
 ---
 
 # SQL Patterns
@@ -137,3 +209,6 @@ vulnerability class in existence.
 
 `NULL = NULL` is unknown, not true. Use `IS NULL`, and remember `NOT IN` against a
 set containing `NULL` returns no rows at all.
+
+<!-- lgtm-rule: sql-parameterization -->
+#### Parameterize SQL
