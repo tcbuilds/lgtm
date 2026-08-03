@@ -581,11 +581,40 @@
     "category": "testing",
     "applies_to": {
       "languages": [
-        "python"
+        "python",
+        "rust",
+        "typescript",
+        "javascript",
+        "go",
+        "java",
+        "kotlin",
+        "csharp",
+        "c",
+        "cpp"
       ],
       "domains": [],
       "file_patterns": [
-        "**/*.py"
+        "**/*.py",
+        "**/*.rs",
+        "**/*.ts",
+        "**/*.tsx",
+        "**/*.js",
+        "**/*.jsx",
+        "**/*.mjs",
+        "**/*.cjs",
+        "**/*.go",
+        "**/*.java",
+        "**/*.kt",
+        "**/*.kts",
+        "**/*.cs",
+        "**/*.c",
+        "**/*.cc",
+        "**/*.cpp",
+        "**/*.cxx",
+        "**/*.h",
+        "**/*.hh",
+        "**/*.hpp",
+        "**/*.hxx"
       ]
     },
     "activation": {
@@ -648,11 +677,40 @@
     "category": "testing",
     "applies_to": {
       "languages": [
-        "python"
+        "python",
+        "rust",
+        "typescript",
+        "javascript",
+        "go",
+        "java",
+        "kotlin",
+        "csharp",
+        "c",
+        "cpp"
       ],
       "domains": [],
       "file_patterns": [
-        "**/*.py"
+        "**/*.py",
+        "**/*.rs",
+        "**/*.ts",
+        "**/*.tsx",
+        "**/*.js",
+        "**/*.jsx",
+        "**/*.mjs",
+        "**/*.cjs",
+        "**/*.go",
+        "**/*.java",
+        "**/*.kt",
+        "**/*.kts",
+        "**/*.cs",
+        "**/*.c",
+        "**/*.cc",
+        "**/*.cpp",
+        "**/*.cxx",
+        "**/*.h",
+        "**/*.hh",
+        "**/*.hpp",
+        "**/*.hxx"
       ]
     },
     "activation": {
