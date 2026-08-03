@@ -1,5 +1,13 @@
 use super::*;
 
+use std::collections::BTreeSet;
+
+use sha2::{Digest, Sha256};
+
+use super::super::template_digests::{
+    CURRENT_GENERATED_DOCUMENT_DIGESTS, CURRENT_TEMPLATE_DIGESTS, current_template_digest,
+};
+
 fn temp_root(name: &str) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!("lgtm-rules-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -12,7 +20,7 @@ fn every_template_declares_paths_except_the_entry_document() {
     for (relative, contents) in TEMPLATES {
         if *relative == "standards.md" {
             assert!(
-                !contents.starts_with("---"),
+                !contents.starts_with("---\npaths:\n"),
                 "the entry document must load every session, so it carries no paths frontmatter"
             );
             continue;
@@ -21,6 +29,78 @@ fn every_template_declares_paths_except_the_entry_document() {
             contents.starts_with("---\npaths:\n"),
             "{relative} must declare a paths glob so it loads only for matching files"
         );
+    }
+}
+
+#[test]
+fn shipped_entry_template_contains_the_native_loading_marker() {
+    let entry = TEMPLATES
+        .iter()
+        .find(|(relative, _)| *relative == "standards.md")
+        .map(|(_, contents)| *contents)
+        .expect("entry template");
+    assert!(
+        entry
+            .lines()
+            .any(|line| line.trim() == ENTRY_DOCUMENT_MARKER)
+    );
+}
+
+/// Keep the checked-in current digest ledger synchronized with every embedded file.
+#[test]
+fn every_current_template_has_a_matching_digest_record() {
+    assert_eq!(CURRENT_TEMPLATE_DIGESTS.len(), TEMPLATES.len());
+    for (relative, contents) in TEMPLATES {
+        let expected = format!("{:x}", Sha256::digest(contents.as_bytes()));
+        assert_eq!(
+            current_template_digest(relative),
+            Some(expected.as_str()),
+            "{relative} needs a new current-template digest record"
+        );
+    }
+}
+
+/// Keep the current concatenated Codex document digest synchronized with its templates.
+#[test]
+fn current_generated_document_has_a_matching_digest_record() {
+    assert_eq!(CURRENT_GENERATED_DOCUMENT_DIGESTS.len(), 1);
+    let expected = format!("{:x}", Sha256::digest(agents_document().as_bytes()));
+    assert_eq!(CURRENT_GENERATED_DOCUMENT_DIGESTS[0].path, "AGENTS.md");
+    assert_eq!(CURRENT_GENERATED_DOCUMENT_DIGESTS[0].sha256, expected);
+}
+
+#[test]
+fn every_legacy_release_digest_covers_its_shipped_template_paths() {
+    for release in ["v0.5.0", "v0.6.0"] {
+        let records: Vec<_> = LEGACY_TEMPLATE_DIGESTS
+            .iter()
+            .filter(|record| record.release == release)
+            .collect();
+        assert_eq!(
+            records.len(),
+            24,
+            "{release} generated digest count changed"
+        );
+        let paths: BTreeSet<_> = records.iter().map(|record| record.path).collect();
+        assert_eq!(
+            paths.len(),
+            records.len(),
+            "{release} has duplicate digest paths"
+        );
+        assert!(
+            paths.contains("AGENTS.md"),
+            "{release} is missing AGENTS.md digest"
+        );
+        for record in records {
+            if record.path != "AGENTS.md" {
+                assert!(
+                    TEMPLATES.iter().any(|(path, _)| *path == record.path),
+                    "{release} digest references unknown template path {}",
+                    record.path
+                );
+            }
+            assert_eq!(record.sha256.len(), 64);
+        }
     }
 }
 
@@ -58,6 +138,42 @@ fn rerunning_reports_unchanged_and_writes_nothing() {
 }
 
 #[test]
+fn crlf_copy_of_current_template_is_unchanged() {
+    let root = temp_root("crlf-current");
+    let target = root.join(".claude/rules/standards.md");
+    std::fs::create_dir_all(target.parent().expect("rules directory")).expect("create rules");
+    let current = TEMPLATES
+        .iter()
+        .find(|(relative, _)| *relative == "standards.md")
+        .map(|(_, contents)| contents.replace('\n', "\r\n"))
+        .expect("current entry template");
+    std::fs::write(target, current).expect("write CRLF current template");
+
+    let outcome = install(&root).expect("install current template");
+
+    assert!(outcome.unchanged.contains(&"standards.md".to_string()));
+    assert!(!outcome.updated.contains(&"standards.md".to_string()));
+    assert!(!outcome.kept.contains(&"standards.md".to_string()));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn crlf_copy_of_prior_release_template_is_upgraded() {
+    let root = temp_root("crlf-legacy");
+    let target = root.join(".claude/rules/standards.md");
+    std::fs::create_dir_all(target.parent().expect("rules directory")).expect("create rules");
+    let legacy = include_str!("../../../tests/fixtures/legacy-rules/v0.6.0/standards.md")
+        .replace('\n', "\r\n");
+    std::fs::write(target, legacy).expect("write CRLF legacy template");
+
+    let outcome = install(&root).expect("upgrade legacy template");
+
+    assert!(outcome.updated.contains(&"standards.md".to_string()));
+    assert!(!outcome.kept.contains(&"standards.md".to_string()));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn edited_files_are_kept_rather_than_overwritten() {
     let root = temp_root("edited");
     install(&root).expect("first");
@@ -71,6 +187,42 @@ fn edited_files_are_kept_rather_than_overwritten() {
             .contains("# Local")
     );
     std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn exact_v05_and_v06_templates_are_updated_and_then_idempotent() {
+    for release in ["v0.5.0", "v0.6.0"] {
+        let root = temp_root(&format!("legacy-{release}"));
+        let rules = root.join(".claude/rules");
+        std::fs::create_dir_all(&rules).expect("create legacy rules");
+        std::fs::write(
+            rules.join("standards.md"),
+            include_str!("../../../tests/fixtures/legacy-rules/v0.6.0/standards.md"),
+        )
+        .expect("write legacy standards");
+        std::fs::write(
+            rules.join("c-cpp.md"),
+            include_str!("../../../tests/fixtures/legacy-rules/v0.6.0/c-cpp.md"),
+        )
+        .expect("write legacy C and C++ rules");
+
+        let first = install(&root).expect("upgrade legacy templates");
+        assert_eq!(first.updated.len(), 2, "{release} files must be updated");
+        assert!(first.updated.contains(&"standards.md".to_string()));
+        assert!(first.updated.contains(&"c-cpp.md".to_string()));
+        assert!(first.kept.is_empty());
+        assert!(
+            std::fs::read_to_string(rules.join("standards.md"))
+                .expect("read upgraded standards")
+                .lines()
+                .any(|line| line.trim() == ENTRY_DOCUMENT_MARKER)
+        );
+
+        let second = install(&root).expect("rerun upgraded templates");
+        assert!(second.updated.is_empty());
+        assert_eq!(second.unchanged.len(), TEMPLATES.len());
+        std::fs::remove_dir_all(root).ok();
+    }
 }
 
 #[test]

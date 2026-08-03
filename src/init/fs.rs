@@ -59,6 +59,31 @@ pub(super) fn preflight_targets(paths: &[&Path]) -> Result<(), InitError> {
     Ok(())
 }
 
+/// Validate file destinations before any directory is created or file is staged.
+///
+/// Existing destinations must be regular files. This catches a directory, FIFO,
+/// device, or socket at a path that would otherwise fail only during commit,
+/// after earlier outputs had already been published.
+pub(super) fn preflight_file_targets(paths: &[&Path]) -> Result<(), InitError> {
+    for path in paths {
+        let Ok(metadata) = std::fs::symlink_metadata(path) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(InitError::SymlinkTarget {
+                path: path.to_path_buf(),
+            });
+        }
+        if !metadata.is_file() {
+            return Err(InitError::UnwritableTarget {
+                path: path.to_path_buf(),
+                reason: "file destination exists and is not a regular file".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Reject any existing ancestor of `path` that is not a usable directory.
 ///
 /// Walks each parent directory of `path` from the root down; the first ancestor

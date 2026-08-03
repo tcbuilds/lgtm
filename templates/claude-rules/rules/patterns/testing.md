@@ -9,18 +9,6 @@ paths:
 
 # Testing Patterns
 
-## Name the behaviour, not the function
-
-The name should read as a claim about the system, so a failure line tells you what
-broke without opening the file.
-
-```
-bad:   test_parse_date_2
-good:  test_elapsed_expiry_does_not_invalidate_the_store
-bad:   it('works')
-good:  it('drops expired waivers and keeps current ones')
-```
-
 ## Arrange, act, assert — with the act on one line
 
 ```python
@@ -58,18 +46,6 @@ fn calendar_validation_rejects_impossible_dates() {
 
 Always include the input in the failure message; otherwise a table failure tells
 you nothing about which row broke.
-
-## Test both directions of every guard
-
-A test proving a check fires is half a test. The other half proves it does not fire
-when it shouldn't — that is where false positives hide.
-
-```
-elapsed_expiry_does_not_invalidate_the_store   # the guard relaxes
-creating_a_waiver_still_requires_future_expiry # the guard still bites
-```
-
-Every bug fixed by loosening a rule needs both.
 
 ## Fakes over mocks
 
@@ -155,34 +131,6 @@ invariant. One property replaces dozens of examples.
 Pin exact bytes for CLI output, generated files, and wire formats. When a golden
 test fails, review the diff and update deliberately — never regenerate blindly to
 make it green, which defeats the purpose.
-
-## Regression test names the bug
-
-```rust
-#[test]
-fn accepts_new_file_inside_directories_that_do_not_exist_yet() { ... }
-```
-
-Write it before the fix and watch it fail. A regression test that has never failed
-proves nothing.
-
-## Tests are deterministic and order-independent
-
-No shared mutable fixtures, no reliance on execution order, no real network, no
-sleeps. Use unique temp directories per test and clean up. A flaky test is worse
-than no test: it trains people to ignore red.
-
-## Assert on values, not on logs
-
-```python
-# bad
-assert "saved" in caplog.text
-
-# good
-assert store.get(key) == value
-```
-
-Log text is presentation. Asserting on it breaks when you improve a message.
 
 ## Fixture data is not production code
 

@@ -16,7 +16,7 @@ pub struct DriftReport {
 
 pub fn compare(candidate: &Path) -> Result<DriftReport, String> {
     let base = super::load_embedded_registry().map_err(|error| error.to_string())?;
-    let installed = super::authoring::load_file(candidate)?;
+    let installed = super::authoring::load_file_for_drift(candidate)?;
     Ok(compare_rules(&base, &installed))
 }
 
@@ -123,7 +123,6 @@ mod tests {
             evidence: super::super::Evidence {
                 required: vec!["review".to_string()],
             },
-            references: vec!["test".to_string()],
         }
     }
 }

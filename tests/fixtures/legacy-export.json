@@ -1,0 +1,41 @@
+[
+  {
+    "id": "legacy-drift-fixture",
+    "title": "Legacy drift fixture",
+    "description": "A previous-release export shape used to verify drift compatibility.",
+    "mechanism": "instruction",
+    "confidence": "high",
+    "examples": [
+      {
+        "language": "all",
+        "text": "good: preserve the rule; bad: bypass it",
+        "provenance": "legacy-standards.md#example",
+        "schematic": true
+      }
+    ],
+    "limitations": ["Fixture exists only for drift compatibility coverage."],
+    "enforcement_stage": "none",
+    "severity": "warning",
+    "level": "review",
+    "category": "documentation",
+    "applies_to": {
+      "languages": [],
+      "domains": [],
+      "file_patterns": []
+    },
+    "activation": {
+      "change_types": [],
+      "signals": []
+    },
+    "instruction": "Preserve the documented rule intent.",
+    "enforcement": {
+      "mode": "instruction",
+      "checks": []
+    },
+    "overridable": true,
+    "evidence": {
+      "required": []
+    },
+    "references": ["legacy-standards.md#example"]
+  }
+]

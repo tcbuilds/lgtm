@@ -5,7 +5,7 @@
     "description": "A schema-valid rule whose id is intentionally reused by a later rule in this fixture to exercise the registry-wide uniqueness check.",
     "mechanism": "native",
     "confidence": "high",
-    "examples": [{"language": "all", "text": "good: use the registered check; bad: bypass it", "provenance": "codingStandards.md#non-negotiable-rules", "schematic": true}],
+    "examples": [{"language": "all", "text": "good: use the registered check; bad: bypass it", "schematic": true}],
     "limitations": ["Fixture only exercises registry identity validation."],
     "enforcement_stage": "post_tool",
     "severity": "error",
@@ -28,8 +28,7 @@
     "overridable": false,
     "evidence": {
       "required": ["check_result"]
-    },
-    "references": ["codingStandards.md#non-negotiable-rules"]
+    }
   },
   {
     "id": "shared-id",
@@ -37,7 +36,7 @@
     "description": "A schema-valid rule that duplicates the id of the first rule; the registry loader must reject the pair before deserialization.",
     "mechanism": "native",
     "confidence": "high",
-    "examples": [{"language": "all", "text": "good: use the registered check; bad: bypass it", "provenance": "codingStandards.md#non-negotiable-rules", "schematic": true}],
+    "examples": [{"language": "all", "text": "good: use the registered check; bad: bypass it", "schematic": true}],
     "limitations": ["Fixture only exercises registry identity validation."],
     "enforcement_stage": "post_tool",
     "severity": "warning",
@@ -60,7 +59,6 @@
     "overridable": true,
     "evidence": {
       "required": ["check_result"]
-    },
-    "references": ["codingStandards.md#error-handling"]
+    }
   }
 ]

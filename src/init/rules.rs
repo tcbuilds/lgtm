@@ -10,9 +10,22 @@
 //! single `AGENTS.md`. That trades away lazy loading — the whole document enters
 //! every session — which the CLI states plainly rather than hiding.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
+
+use super::fs::{
+    commit_write, create_dir_all, preflight_file_targets, preflight_targets, read_if_exists,
+    stage_write,
+};
+use super::template_digests::LEGACY_TEMPLATE_DIGESTS;
+use super::{InitAgent, InitError};
 
 const PREFIX: &str = ".claude/rules";
+
+/// Exact marker written into the shipped entry document and required by the
+/// native Claude hook before it suppresses fallback guidance.
+pub const ENTRY_DOCUMENT_MARKER: &str = "<!-- lgtm-entry-document: standards-v1 -->";
 
 /// The single file Codex reads for repository guidance.
 const AGENTS_FILE: &str = "AGENTS.md";
@@ -28,12 +41,24 @@ const TEMPLATES: &[(&str, &str)] = &[
         include_str!("../../templates/claude-rules/rules/c-cpp.md"),
     ),
     (
+        "anti-slop.md",
+        include_str!("../../templates/claude-rules/rules/anti-slop.md"),
+    ),
+    (
+        "code-organization.md",
+        include_str!("../../templates/claude-rules/rules/code-organization.md"),
+    ),
+    (
         "config.md",
         include_str!("../../templates/claude-rules/rules/config.md"),
     ),
     (
         "csharp.md",
         include_str!("../../templates/claude-rules/rules/csharp.md"),
+    ),
+    (
+        "error-handling.md",
+        include_str!("../../templates/claude-rules/rules/error-handling.md"),
     ),
     (
         "go.md",
@@ -48,6 +73,18 @@ const TEMPLATES: &[(&str, &str)] = &[
         include_str!("../../templates/claude-rules/rules/jvm.md"),
     ),
     (
+        "naming.md",
+        include_str!("../../templates/claude-rules/rules/naming.md"),
+    ),
+    (
+        "observability.md",
+        include_str!("../../templates/claude-rules/rules/observability.md"),
+    ),
+    (
+        "performance.md",
+        include_str!("../../templates/claude-rules/rules/performance.md"),
+    ),
+    (
         "python.md",
         include_str!("../../templates/claude-rules/rules/python.md"),
     ),
@@ -58,6 +95,10 @@ const TEMPLATES: &[(&str, &str)] = &[
     (
         "rust.md",
         include_str!("../../templates/claude-rules/rules/rust.md"),
+    ),
+    (
+        "security.md",
+        include_str!("../../templates/claude-rules/rules/security.md"),
     ),
     (
         "shell.md",
@@ -114,11 +155,153 @@ const TEMPLATES: &[(&str, &str)] = &[
 ];
 
 /// Outcome of a rules-only installation.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Installed {
     pub written: Vec<String>,
+    pub updated: Vec<String>,
     pub unchanged: Vec<String>,
     pub kept: Vec<String>,
+}
+
+/// One rule document that is ready to enter init's staged-write batch.
+pub(super) struct PlannedRuleWrite {
+    pub(super) path: PathBuf,
+    pub(super) label: String,
+    pub(super) contents: Vec<u8>,
+}
+
+/// Return every guidance destination for an agent, including locally edited files.
+pub(super) fn target_paths(root: &Path, agent: InitAgent) -> Vec<PathBuf> {
+    match agent {
+        InitAgent::Claude => TEMPLATES
+            .iter()
+            .map(|(relative, _)| root.join(PREFIX).join(relative))
+            .collect(),
+        InitAgent::Codex => vec![root.join(AGENTS_FILE)],
+    }
+}
+
+/// Plan missing guidance files without changing the repository.
+pub(super) fn plan(
+    root: &Path,
+    agent: InitAgent,
+) -> Result<(Vec<PlannedRuleWrite>, Installed), InitError> {
+    let mut planned = Vec::new();
+    let mut outcome = Installed::default();
+    match agent {
+        InitAgent::Claude => {
+            for (relative, contents) in TEMPLATES {
+                let target = root.join(PREFIX).join(relative);
+                plan_one(
+                    &target,
+                    (*relative).to_string(),
+                    contents.as_bytes(),
+                    &mut planned,
+                    &mut outcome,
+                )?;
+            }
+        }
+        InitAgent::Codex => {
+            let document = agents_document();
+            let target = root.join(AGENTS_FILE);
+            plan_one(
+                &target,
+                AGENTS_FILE.to_string(),
+                document.as_bytes(),
+                &mut planned,
+                &mut outcome,
+            )?;
+        }
+    }
+    Ok((planned, outcome))
+}
+
+/// Classify one destination and add it to the staged batch when it is new or stale.
+fn plan_one(
+    target: &Path,
+    label: String,
+    contents: &[u8],
+    planned: &mut Vec<PlannedRuleWrite>,
+    outcome: &mut Installed,
+) -> Result<(), InitError> {
+    match read_if_exists(target)? {
+        Some(existing) if existing.as_bytes() == contents => outcome.unchanged.push(label),
+        Some(existing) if same_template_line_endings(existing.as_bytes(), contents) => {
+            outcome.unchanged.push(label);
+        }
+        Some(existing) if matches_legacy_template(&label, existing.as_bytes()) => {
+            planned.push(PlannedRuleWrite {
+                path: target.to_path_buf(),
+                label: label.clone(),
+                contents: contents.to_vec(),
+            });
+            outcome.updated.push(label);
+        }
+        Some(_) => outcome.kept.push(label),
+        None => {
+            planned.push(PlannedRuleWrite {
+                path: target.to_path_buf(),
+                label: label.clone(),
+                contents: contents.to_vec(),
+            });
+            outcome.written.push(label);
+        }
+    }
+    Ok(())
+}
+
+fn same_template_line_endings(left: &[u8], right: &[u8]) -> bool {
+    normalized_template_digest(left) == normalized_template_digest(right)
+}
+
+/// Recognize only bytes previously emitted for this exact generated path.
+fn matches_legacy_template(path: &str, contents: &[u8]) -> bool {
+    let mut candidates = LEGACY_TEMPLATE_DIGESTS
+        .iter()
+        .filter(|record| record.path == path);
+    if candidates.clone().next().is_none() {
+        return false;
+    }
+    let digest = normalized_template_digest(contents);
+    candidates.any(|record| record.sha256 == format!("{digest:x}"))
+}
+
+fn normalized_template_digest(contents: &[u8]) -> Sha256Digest {
+    let mut normalized = Vec::with_capacity(contents.len());
+    let mut index = 0;
+    while index < contents.len() {
+        if contents[index] == b'\r' && contents.get(index + 1) == Some(&b'\n') {
+            index += 1;
+        }
+        normalized.push(contents[index]);
+        index += 1;
+    }
+    Sha256::digest(normalized)
+}
+
+type Sha256Digest = sha2::digest::Output<Sha256>;
+
+/// Describe the files a fresh Claude rules installation would write.
+pub fn planned() -> Installed {
+    Installed {
+        written: TEMPLATES
+            .iter()
+            .map(|(relative, _)| (*relative).to_string())
+            .collect(),
+        updated: Vec::new(),
+        unchanged: Vec::new(),
+        kept: Vec::new(),
+    }
+}
+
+/// Describe the file a fresh Codex guidance installation would write.
+pub fn planned_agents_md() -> Installed {
+    Installed {
+        written: vec![AGENTS_FILE.to_string()],
+        updated: Vec::new(),
+        unchanged: Vec::new(),
+        kept: Vec::new(),
+    }
 }
 
 /// Write the templates under `.claude/rules`, preserving edited files.
@@ -127,21 +310,7 @@ pub struct Installed {
 /// file that differs is left alone and reported as kept, so local edits survive
 /// re-running the command.
 pub fn install(root: &Path) -> Result<Installed, String> {
-    let mut outcome = Installed::default();
-    for (relative, contents) in TEMPLATES {
-        let target = root.join(PREFIX).join(relative);
-        match read_existing(&target)? {
-            Some(existing) if existing == *contents => {
-                outcome.unchanged.push((*relative).to_string())
-            }
-            Some(_) => outcome.kept.push((*relative).to_string()),
-            None => {
-                write_template(&target, contents)?;
-                outcome.written.push((*relative).to_string());
-            }
-        }
-    }
-    Ok(outcome)
+    install_transaction(root, InitAgent::Claude).map_err(|error| error.to_string())
 }
 
 /// Write every template concatenated into `AGENTS.md`, preserving an edited file.
@@ -156,16 +325,32 @@ pub fn install(root: &Path) -> Result<Installed, String> {
 /// An existing `AGENTS.md` is never overwritten: it is reported as kept, exactly
 /// as [`install`] treats an edited rules file.
 pub fn install_agents_md(root: &Path) -> Result<Installed, String> {
-    let mut outcome = Installed::default();
-    let target = root.join(AGENTS_FILE);
-    let document = agents_document();
-    match read_existing(&target)? {
-        Some(existing) if existing == document => outcome.unchanged.push(AGENTS_FILE.to_string()),
-        Some(_) => outcome.kept.push(AGENTS_FILE.to_string()),
-        None => {
-            write_template(&target, &document)?;
-            outcome.written.push(AGENTS_FILE.to_string());
+    install_transaction(root, InitAgent::Codex).map_err(|error| error.to_string())
+}
+
+/// Apply guidance files only after every destination has passed preflight.
+fn install_transaction(root: &Path, agent: InitAgent) -> Result<Installed, InitError> {
+    let targets = target_paths(root, agent);
+    let target_refs: Vec<&Path> = targets.iter().map(PathBuf::as_path).collect();
+    preflight_targets(&target_refs)?;
+    preflight_file_targets(&target_refs)?;
+    let (planned, outcome) = plan(root, agent)?;
+
+    for write in &planned {
+        if let Some(parent) = write.path.parent() {
+            create_dir_all(parent)?;
         }
+    }
+
+    let mut staged = Vec::new();
+    for write in &planned {
+        staged.push((
+            stage_write(&write.path, &write.contents)?,
+            write.label.as_str(),
+        ));
+    }
+    for (handle, _) in staged {
+        commit_write(handle)?;
     }
     Ok(outcome)
 }
@@ -201,30 +386,9 @@ fn agents_document() -> String {
 /// when the block is unterminated, so a malformed template degrades to being
 /// included verbatim rather than being silently truncated.
 fn strip_frontmatter(contents: &str) -> &str {
-    let Some(rest) = contents.strip_prefix("---\n") else {
-        return contents;
-    };
-    match rest.split_once("\n---\n") {
-        Some((_, body)) => body.trim_start_matches('\n'),
-        None => contents,
-    }
-}
-
-fn read_existing(target: &Path) -> Result<Option<String>, String> {
-    match std::fs::read_to_string(target) {
-        Ok(contents) => Ok(Some(contents)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("read {}: {error}", target.display())),
-    }
-}
-
-fn write_template(target: &Path, contents: &str) -> Result<(), String> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| format!("{} has no parent", target.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("create {}: {error}", parent.display()))?;
-    std::fs::write(target, contents).map_err(|error| format!("write {}: {error}", target.display()))
+    crate::policy::frontmatter::body(contents)
+        .map(|body| body.trim_start_matches(['\n', '\r']))
+        .unwrap_or(contents)
 }
 
 #[cfg(test)]

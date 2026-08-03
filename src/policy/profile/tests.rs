@@ -6,7 +6,7 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 #[test]
 fn all_four_embedded_profiles_validate() {
-    let rules = super::super::load_and_validate(super::super::RULES_JSON).expect("registry valid");
+    let rules = super::super::frontmatter::load_registry().expect("registry valid");
     for name in ["default", "strict", "prototype", "infrastructure"] {
         let resolved = resolve(name, &rules).expect("profile valid");
         assert_eq!(resolved.len(), rules.len());
@@ -15,7 +15,7 @@ fn all_four_embedded_profiles_validate() {
 
 #[test]
 fn strict_profile_changes_severity_and_required_evidence() {
-    let rules = super::super::load_and_validate(super::super::RULES_JSON).expect("registry valid");
+    let rules = super::super::frontmatter::load_registry().expect("registry valid");
     let resolved = resolve("strict", &rules).expect("strict valid");
     let dependency = resolved
         .iter()
@@ -30,7 +30,7 @@ fn strict_profile_changes_severity_and_required_evidence() {
 
 #[test]
 fn prototype_keeps_security_and_destructive_rules_enforced() {
-    let rules = super::super::load_and_validate(super::super::RULES_JSON).expect("registry valid");
+    let rules = super::super::frontmatter::load_registry().expect("registry valid");
     let resolved = resolve("prototype", &rules).expect("prototype valid");
     for id in [
         "no-committed-secrets",

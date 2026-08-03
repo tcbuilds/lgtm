@@ -1,6 +1,65 @@
 ---
 paths:
   - "**/*.{java,kt,kts}"
+headings: ["Java", "Kotlin"]
+rules:
+  [
+    {
+      "id": "jvm-review",
+      "title": "Review Java and Kotlin boundaries",
+      "description": "JVM changes should use nullability, immutable domain values, controller boundaries, structured concurrency, and typed errors.",
+      "mechanism": "review",
+      "confidence": "low",
+      "examples": [
+        {
+          "language": "java",
+          "text": "good: typed domain error at the boundary; bad: nullable controller state leaks into infrastructure",
+          "schematic": true
+        }
+      ],
+      "limitations": [
+        "Formatter, analyzer, nullability, and concurrency semantics depend on configured Gradle/Maven tools."
+      ],
+      "enforcement_stage": "prompt",
+      "severity": "warning",
+      "level": "review",
+      "category": "language-specific",
+      "applies_to": {
+        "languages": [
+          "java",
+          "kotlin"
+        ],
+        "domains": [],
+        "file_patterns": [
+          "**/*.{java,kt,kts}"
+        ]
+      },
+      "activation": {
+        "change_types": [
+          "create",
+          "modify"
+        ],
+        "signals": [
+          "java",
+          "kotlin",
+          "jvm",
+          "controller",
+          "coroutine"
+        ]
+      },
+      "instruction": "Review nullability, immutable domain modeling, controller/infrastructure boundaries, structured concurrency, cancellation, and typed error conversion; run the workspace's configured Gradle/Maven gates.",
+      "enforcement": {
+        "mode": "instruction",
+        "checks": []
+      },
+      "overridable": true,
+      "evidence": {
+        "required": [
+          "review_result"
+        ]
+      }
+    }
+  ]
 ---
 
 # Java And Kotlin
@@ -23,3 +82,6 @@ paths:
 - Use coroutines with structured concurrency.
 - Use `Result` or sealed error types for expected failures.
 - Run ktlint, detekt, and tests.
+
+<!-- lgtm-rule: jvm-review -->
+#### Review Java and Kotlin boundaries

@@ -15,6 +15,5 @@
   "instruction": "Review this fixture rule.",
   "enforcement": {"mode": "instruction", "checks": []},
   "overridable": true,
-  "evidence": {"required": []},
-  "references": ["fixture"]
+  "evidence": {"required": []}
 }

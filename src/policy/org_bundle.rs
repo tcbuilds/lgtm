@@ -164,7 +164,6 @@ mod tests {
             evidence: super::super::Evidence {
                 required: vec!["review".to_string()],
             },
-            references: vec!["test".to_string()],
         }];
         assert_eq!(
             apply(&root, &mut rules).expect("bundle"),

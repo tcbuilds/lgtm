@@ -11,11 +11,11 @@ Operational guidance for Claude Code contributors to `lgtm`.
 - `src/checks/` contains native and wrapped checks; `src/policy/` loads profiles, overrides, and waivers.
 - `src/init/` safely merges repo configuration and hook settings.
 - `src/report.rs` renders evidence summaries.
-- `policy/rules.json`, `policy/profiles/`, and `policy/semgrep-python.yml` define embedded policy.
+- `templates/claude-rules/`, `policy/profiles/`, and `policy/semgrep-python.yml` define embedded policy.
 - `policy/rule.schema.json` and `schemas/` define validation contracts.
 - `tests/` contains integration coverage; `doc/adr/` records architectural decisions.
 
-Read `AGENTS.md`, `codingStandards.md`, and relevant ADRs before changing behavior. Keep edits focused and add regression coverage for fixes.
+Read `AGENTS.md`, the relevant tracked templates under `templates/claude-rules/rules/`, and relevant ADRs before changing behavior. Keep edits focused and add regression coverage for fixes.
 
 ## Build and Verification
 

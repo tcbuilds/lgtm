@@ -78,17 +78,6 @@ const routes = { home: '/', profile: '/me' } satisfies Record<string, string>
 type Route = keyof typeof routes   // 'home' | 'profile'
 ```
 
-## `unknown` at boundaries, never `any`
-
-`any` disables checking silently and spreads. `unknown` forces a narrowing step at
-the point where you actually know the shape.
-
-```typescript
-function handle(input: unknown) {
-  if (typeof input === 'string') { ... }
-}
-```
-
 ## Options objects over positional flags
 
 ```typescript

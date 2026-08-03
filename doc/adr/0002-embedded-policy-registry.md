@@ -10,7 +10,7 @@ Superseded by ADR-0013.
 
 ## Context
 
-The operational source of truth for `lgtm` is a versioned policy registry (`policy/rules.json`) derived from the human-readable `codingStandards.md`. Every consuming repository needs access to the default rule set to select, instruct on, and enforce policy. The question is where that registry physically lives and how it is distributed and upgraded across many repos.
+The operational source of truth for `lgtm` is a versioned policy registry derived from the human-readable rule files. Every consuming repository needs access to the default rule set to select, instruct on, and enforce policy. The question is where that registry physically lives and how it is distributed and upgraded across many repos.
 
 The spec resolves this by versioning the default registry with the binary: the default rules are compiled into the binary, and consuming repos hold only configuration and overrides, not a copy of the rules. Upgrading the rule set means upgrading the binary. This keeps rule authorship and distribution tied to the single artifact already established in ADR-0001, consistent with the zero-setup, fast-failing-hook posture.
 

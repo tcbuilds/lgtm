@@ -2,6 +2,7 @@ const EXTENSIONS: &[&str] = &[
     ".py", ".rs", ".ts", ".tsx", ".js", ".jsx", ".tf", ".css", ".toml", ".json", ".md",
 ];
 
+/// Extract a bounded set of explicit file-looking tokens from a prompt.
 pub(super) fn likely_files(prompt: &str) -> Vec<String> {
     prompt
         .split_whitespace()
@@ -16,6 +17,7 @@ pub(super) fn likely_files(prompt: &str) -> Vec<String> {
         .collect()
 }
 
+/// Remove punctuation around a prompt token while keeping its path text.
 fn clean_candidate(token: &str) -> Option<&str> {
     let candidate = token.trim_matches(|character: char| {
         matches!(

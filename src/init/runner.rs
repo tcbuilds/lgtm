@@ -25,6 +25,7 @@ pub fn migrate_config(root: &Path, dry_run: bool) -> Result<InitSummary, InitErr
             workspaces,
             files_written: Vec::new(),
             notes: vec!["config is already V2; no migration needed".to_string()],
+            rules: None,
         });
     }
     let config =
@@ -49,6 +50,7 @@ pub fn migrate_config(root: &Path, dry_run: bool) -> Result<InitSummary, InitErr
                 "dry-run: no files changed".to_string(),
                 "V1 config will be backed up before V2 replacement".to_string(),
             ],
+            rules: None,
         });
     }
     preflight_targets(&[&config_path, &backup_path])?;
@@ -61,6 +63,7 @@ pub fn migrate_config(root: &Path, dry_run: bool) -> Result<InitSummary, InitErr
         workspaces,
         files_written: labels.into_iter().map(str::to_string).collect(),
         notes: vec!["migrated V1 shell commands to structured V2 argv".to_string()],
+        rules: None,
     })
 }
 
@@ -91,6 +94,7 @@ pub fn preview_with_agent(root: &Path, agent: InitAgent) -> Result<InitSummary, 
             ));
         }
     }
+    let (_, guidance_summary) = rules::plan(root, agent)?;
     Ok(InitSummary {
         detection,
         workspaces,
@@ -101,6 +105,7 @@ pub fn preview_with_agent(root: &Path, agent: InitAgent) -> Result<InitSummary, 
             hooks_label(agent).to_string(),
         ],
         notes,
+        rules: Some(guidance_summary),
     })
 }
 
@@ -166,10 +171,18 @@ pub fn run_with_agent(
         gitignore_path.as_path(),
         settings_path.as_path(),
     ];
+    let guidance_targets = rules::target_paths(root, agent);
+    targets.extend(guidance_targets.iter().map(PathBuf::as_path));
     if agent == InitAgent::Codex {
         targets.push(rules_path.as_path());
     }
     preflight_targets(&targets)?;
+    let file_targets: Vec<&Path> = targets
+        .iter()
+        .copied()
+        .filter(|path| *path != evidence_dir.as_path())
+        .collect();
+    preflight_file_targets(&file_targets)?;
 
     let mut files_written = Vec::new();
     let mut notes = Vec::new();
@@ -202,24 +215,42 @@ pub fn run_with_agent(
     };
     notes.extend(rules_notes);
 
+    let (guidance_plan, guidance_summary) = rules::plan(root, agent)?;
+
     create_output_directories(
         &evidence_dir,
         &settings_path,
         rules_render.is_some(),
         &rules_path,
+        &guidance_plan,
     )?;
 
-    let planned: [PlannedWrite<'_>; 5] = [
-        (&config_path, ".lgtm/config.json", config_render),
+    let mut planned: Vec<PlannedWrite<'_>> = vec![
+        (&config_path, ".lgtm/config.json".to_string(), config_render),
         (
             &execpolicy_path,
-            ".lgtm/execpolicy.json",
+            ".lgtm/execpolicy.json".to_string(),
             execpolicy_default_render,
         ),
-        (&gitignore_path, ".gitignore", gitignore_render),
-        (&settings_path, hooks_label(agent), settings_render),
-        (&rules_path, ".codex/rules/lgtm.rules", rules_render),
+        (&gitignore_path, ".gitignore".to_string(), gitignore_render),
+        (
+            &settings_path,
+            hooks_label(agent).to_string(),
+            settings_render,
+        ),
+        (
+            &rules_path,
+            ".codex/rules/lgtm.rules".to_string(),
+            rules_render,
+        ),
     ];
+    planned.extend(guidance_plan.iter().map(|write| {
+        (
+            write.path.as_path(),
+            guidance_label(agent, &write.label),
+            Some(write.contents.clone()),
+        )
+    }));
 
     stage_and_commit(planned, &mut files_written)?;
 
@@ -228,6 +259,7 @@ pub fn run_with_agent(
         workspaces,
         files_written,
         notes,
+        rules: Some(guidance_summary),
     })
 }
 
@@ -252,7 +284,15 @@ fn track_note(agent: InitAgent) -> String {
     )
 }
 
-type PlannedWrite<'a> = (&'a Path, &'static str, Option<Vec<u8>>);
+/// Convert a rules-relative label into the repo-relative path reported by init.
+fn guidance_label(agent: InitAgent, label: &str) -> String {
+    match agent {
+        InitAgent::Claude => format!(".claude/rules/{label}"),
+        InitAgent::Codex => label.to_string(),
+    }
+}
+
+type PlannedWrite<'a> = (&'a Path, String, Option<Vec<u8>>);
 
 fn note_unsupported_repo(detection: &Detection, notes: &mut Vec<String>) {
     if detection.languages.is_empty() {
@@ -265,6 +305,7 @@ fn create_output_directories(
     settings_path: &Path,
     create_rules: bool,
     rules_path: &Path,
+    guidance_plan: &[rules::PlannedRuleWrite],
 ) -> Result<(), InitError> {
     create_dir_all(evidence_dir)?;
     if let Some(parent) = settings_path.parent() {
@@ -272,6 +313,11 @@ fn create_output_directories(
     }
     if create_rules && let Some(parent) = rules_path.parent() {
         create_dir_all(parent)?;
+    }
+    for write in guidance_plan {
+        if let Some(parent) = write.path.parent() {
+            create_dir_all(parent)?;
+        }
     }
     Ok(())
 }
@@ -288,7 +334,7 @@ fn stage_and_commit<'a>(
     }
     for (handle, label) in staged {
         commit_write(handle)?;
-        files_written.push(label.to_string());
+        files_written.push(label);
     }
     Ok(())
 }

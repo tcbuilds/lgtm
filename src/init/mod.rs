@@ -33,14 +33,19 @@ mod gitignore;
 mod rules;
 mod runner;
 mod settings;
+mod template_digests;
 
 use config::{ValidatedSettings, render_config, validate_config, validate_settings};
-use fs::{commit_write, create_dir_all, preflight_targets, read_if_exists, stage_write};
+use fs::{
+    commit_write, create_dir_all, preflight_file_targets, preflight_targets, read_if_exists,
+    stage_write,
+};
 #[cfg(test)]
 use gitignore::evidence_is_ignored;
 use gitignore::{render_gitignore, render_settings};
 pub use rules::{
-    Installed, agents_document_lines, install as install_rules, install_agents_md as install_agents,
+    ENTRY_DOCUMENT_MARKER, Installed, agents_document_lines, install as install_rules,
+    install_agents_md as install_agents, planned as planned_rules, planned_agents_md,
 };
 pub use runner::{
     migrate_config, preview, preview_with_agent, run, run_with_agent, run_with_options,
@@ -265,4 +270,6 @@ pub struct InitSummary {
     /// Extra human-readable notes for stdout, e.g. preserved config or skipped
     /// gitignore append. Empty when nothing noteworthy happened.
     pub notes: Vec<String>,
+    /// Guidance-file changes included in the same transaction as init outputs.
+    pub rules: Option<Installed>,
 }

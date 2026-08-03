@@ -3,6 +3,31 @@
   "$id": "https://golden-horizons.dev/lgtm/rule.schema.json",
   "title": "lgtm canonical rule model",
   "description": "Agent-neutral engineering rule. One structured object per rule; the operational source of truth compiled into the lgtm binary.",
+  "$defs": {
+    "frontmatter": {
+      "title": "lgtm rule-file frontmatter",
+      "description": "Machine fields carried by a rule file alongside its prose.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "headings": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "rules": {
+          "type": "array",
+          "items": { "$ref": "#" },
+          "minItems": 1
+        }
+      }
+    }
+  },
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -22,8 +47,7 @@
     "instruction",
     "enforcement",
     "overridable",
-    "evidence",
-    "references"
+    "evidence"
   ],
   "properties": {
     "id": {
@@ -58,11 +82,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["language", "text", "provenance", "schematic"],
+        "required": ["language", "text", "schematic"],
         "properties": {
           "language": { "type": "string", "minLength": 1 },
           "text": { "type": "string", "minLength": 1 },
-          "provenance": { "type": "string", "minLength": 1 },
           "schematic": { "type": "boolean" }
         }
       },
@@ -211,13 +234,6 @@
           "uniqueItems": true
         }
       }
-    },
-    "references": {
-      "description": "Source anchors in the human standards this rule derives from.",
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 },
-      "minItems": 1,
-      "uniqueItems": true
     }
   }
 }

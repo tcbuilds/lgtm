@@ -5,28 +5,6 @@ paths:
 
 # Rust Patterns
 
-## Newtypes for identifiers and units
-
-A function taking three `String` arguments accepts them in any order. A function
-taking `UserId`, `TenantId`, `Email` does not.
-
-```rust
-// bad
-fn transfer(from: String, to: String, amount: u64) { ... }
-
-// good
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct AccountId(String);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Cents(u64);
-
-fn transfer(from: &AccountId, to: &AccountId, amount: Cents) { ... }
-```
-
-Wrap units too. `Cents` and `Dollars` are not interchangeable, and `Duration`
-beats a bare `u64` that might be seconds or milliseconds.
-
 ## Smart constructors
 
 Keep the inner field private and validate on construction. Once built, the value

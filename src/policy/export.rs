@@ -7,24 +7,11 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 fn artifacts() -> Vec<(&'static str, String)> {
-    vec![
-        ("rules.json", super::RULES_JSON.to_string()),
-        ("rule.schema.json", super::RULE_SCHEMA_JSON.to_string()),
-        (
-            "standards-coverage.json",
-            super::coverage::COVERAGE_JSON.to_string(),
-        ),
-        (
-            "standards-coverage.schema.json",
-            super::coverage::COVERAGE_SCHEMA_JSON.to_string(),
-        ),
+    let mut artifacts = vec![
+        ("rules.json", embedded_rules_json()),
         (
             "config-v2.schema.json",
             crate::config_v2::SCHEMA_JSON.to_string(),
-        ),
-        (
-            "repository-overlay.schema.json",
-            super::overlay::SCHEMA_JSON.to_string(),
         ),
         (
             "semgrep-python.yml",
@@ -47,7 +34,16 @@ fn artifacts() -> Vec<(&'static str, String)> {
             include_str!("../../policy/profiles/infrastructure.json").to_string(),
         ),
         ("examples.md", examples_markdown()),
-    ]
+    ];
+    artifacts.extend(
+        super::bundle_digest_sources().map(|(path, contents, _)| (path, contents.to_string())),
+    );
+    artifacts
+}
+
+fn embedded_rules_json() -> String {
+    let rules = super::load_embedded_registry().expect("embedded policy registry must validate");
+    serde_json::to_string_pretty(&rules).expect("embedded policy registry must serialize")
 }
 
 #[derive(Debug, Serialize)]
@@ -131,7 +127,7 @@ pub fn run(output: &Path, force: bool) -> Result<String, String> {
 }
 
 fn examples_markdown() -> String {
-    let rules = super::load_embedded_registry().unwrap_or_default();
+    let rules = super::load_embedded_registry().expect("embedded policy registry must validate");
     let mut markdown = String::from(
         "# LGTM Policy Examples\n\nGenerated from the embedded policy registry. Examples are guidance, not automated proof.\n\n",
     );
@@ -141,17 +137,15 @@ fn examples_markdown() -> String {
         }
         markdown.push_str(&format!("## `{}` — {}\n\n", rule.id, rule.title));
         markdown.push_str(&format!("- Languages: {}\n", language_scope(&rule)));
-        markdown.push_str(&format!("- Provenance: {}\n", rule.references.join(", ")));
         markdown.push_str(&format!(
             "- Limitations: {}\n\n",
             rule.limitations.join(" ")
         ));
         for example in rule.examples {
             markdown.push_str(&format!(
-                "- [{}] {} (provenance: {}; schematic: {})\n",
+                "- [{}] {} (schematic: {})\n",
                 example.language,
                 example.text.replace('\n', " "),
-                example.provenance,
                 example.schematic
             ));
         }
@@ -181,6 +175,7 @@ mod tests {
     #[test]
     fn export_writes_manifest_and_embedded_sources() {
         let output = std::env::temp_dir().join(format!("lgtm-export-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
         let message = run(&output, false).expect("export succeeds");
         assert!(message.contains("exported policy bundle"));
         assert!(output.join("manifest.json").is_file());
@@ -192,17 +187,43 @@ mod tests {
                 .contains("LGTM Policy Examples")
         );
         assert!(output.join("profiles/strict.json").is_file());
+        let exported_rules = fs::read_to_string(output.join("rules.json")).expect("exported rules");
+        let rules: serde_json::Value = serde_json::from_str(&exported_rules).expect("rules JSON");
+        assert_eq!(rules.as_array().expect("rule array").len(), 71);
+
+        // Every source hashed by bundle_digest must be present in the export.
+        let manifest_text =
+            fs::read_to_string(output.join("manifest.json")).expect("exported manifest");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&manifest_text).expect("manifest JSON");
+        let manifest_files = manifest["files"].as_array().expect("manifest files");
+        for (path, contents, _) in crate::policy::bundle_digest_sources() {
+            assert_eq!(
+                fs::read_to_string(output.join(path)).expect("exported digest source"),
+                contents,
+                "exported source must preserve {path}"
+            );
+            assert!(
+                manifest_files.iter().any(|file| {
+                    file["path"] == path && file["sha256"] == digest(contents.as_bytes())
+                }),
+                "manifest must enumerate digest source {path}"
+            );
+        }
         assert_eq!(
-            fs::read_to_string(output.join("rules.json")).expect("exported rules"),
-            include_str!("../../policy/rules.json")
+            manifest["binary_version"],
+            env!("CARGO_PKG_VERSION"),
+            "manifest must expose the version hashed by bundle_digest"
         );
+
         assert!(run(&output, false).is_err());
         fs::write(output.join("rules.json"), "modified\n").expect("modify export");
         run(&output, true).expect("force replaces modified export");
-        assert_eq!(
-            fs::read_to_string(output.join("rules.json")).expect("re-exported rules"),
-            include_str!("../../policy/rules.json")
-        );
+        let reexported_rules =
+            fs::read_to_string(output.join("rules.json")).expect("re-exported rules");
+        let rules: serde_json::Value =
+            serde_json::from_str(&reexported_rules).expect("re-exported rules JSON");
+        assert_eq!(rules.as_array().expect("rule array").len(), 71);
         fs::remove_dir_all(output).ok();
     }
 }

@@ -135,56 +135,39 @@ fn session_start_injects_context_envelope() {
 }
 
 #[test]
-fn user_prompt_submit_injects_intent_framed_context() {
-    let repo = TempRepo::new();
-    repo.write("pyproject.toml", "[project]\nname = \"fixture\"\n");
-    repo.write("src/routes/events.py", "def route():\n    pass\n");
-    let stdin = json!({
-        "cwd": repo.path(),
-        "user_prompt": "fix src/routes/events.py using requests.post",
-    })
-    .to_string();
+fn user_prompt_submit_avoids_guidance_for_native_claude() {
+    for prompt in [
+        "fix src/api.py using requests.post",
+        "fix the API request using requests.post",
+    ] {
+        let repo = TempRepo::new();
+        repo.write("pyproject.toml", "[project]\nname = \"fixture\"\n");
+        repo.write("src/api.py", "def request():\n    pass\n");
+        repo.write(
+            ".claude/rules/standards.md",
+            include_str!("../templates/claude-rules/CLAUDE.md"),
+        );
+        let stdin = json!({
+            "cwd": repo.path(),
+            "user_prompt": prompt,
+        })
+        .to_string();
 
-    let (code, stdout, stderr) = run_hook("user-prompt-submit", &stdin);
-    assert_eq!(code, 0, "user-prompt-submit must always exit 0");
-    assert_eq!(
-        stdout,
-        concat!(
-            r#"{"hookSpecificOutput":{"additionalContext":"Detected task intent: bug-fix.\n\n"#,
-            r#"Applicable engineering constraints:\n\nMUST\n"#,
-            r#"- Add an explicit timeout and ensure cancellation or cleanup is handled.\n"#,
-            r#"- Add deterministic tests for new or changed source behavior.\n"#,
-            r#"- Do not claim a command or tests passed unless current Stop evidence proves exit status 0.\n"#,
-            r#"- Preserve unrelated work and restrict edits to files recorded for this task.\n"#,
-            r#"- Run every configured repository validation command and fix failures.\n\nREVIEW\n"#,
-            r#"- Files over 300 lines require review and should be split before 500 lines.\n"#,
-            r#"- Functions should keep parameters, nesting, and cyclomatic complexity bounded.\n"#,
-            r#"- Keep functions near 20–30 lines and split before 50 unless a documented exemption applies.\n"#,
-            r#"- Review the diff for debug prints, scaffolding, broad suppressions, and temporary code.\n\n"#,
-            r#"Verification required:\n- check: command.required\n- check: git.diff\n"#,
-            r#"- check: native.file-size\n- check: native.function-complexity\n- check: native.function-size\n"#,
-            r#"- check: semgrep.external-call-timeout\n- check: transcript.claims\n"#,
-            r#"- evidence: changed_locations\n- evidence: check_result\n- evidence: command_result\n\n"#,
-            r#"Examples (guidance only):\n"#,
-            r#"- good: keep one abstraction level; bad: combine unrelated branches\n"#,
-            r#"- good: satisfy External calls require timeouts; bad: bypass it\n"#,
-            r#"- good: satisfy New behavior tests required; bad: bypass it\n"#,
-            r#"- good: satisfy Preserve unrelated user changes; bad: bypass it\n"#,
-            r#"- good: satisfy Required repository commands pass; bad: bypass it\n"#,
-            r#"- good: satisfy Verification claims require evidence; bad: bypass it\n"#,
-            r#"- good: ship focused code; bad: leave debug output or temporary suppressions\n"#,
-            r#"- good: split cohesive responsibilities; bad: grow one multi-concern function\n\n"#,
-            r#"Do not claim a check passed unless it was executed successfully.\n"#,
-            r#"","hookEventName":"UserPromptSubmit"}}"#,
-            "\n"
-        ),
-        "UserPromptSubmit envelope must be byte-for-byte stable"
-    );
-    assert_eq!(
-        stderr,
-        format!("{CONFIG_VERSION_DIAGNOSTIC}\n"),
-        "UserPromptSubmit stderr must carry exactly the unversioned-config diagnostic: {stderr:?}"
-    );
+        let (code, stdout, stderr) = run_hook("user-prompt-submit", &stdin);
+        assert_eq!(code, 0, "user-prompt-submit must always exit 0");
+        assert_eq!(
+            stdout,
+            concat!(
+                r#"{"hookSpecificOutput":{"additionalContext":"Detected task intent: bug-fix.","hookEventName":"UserPromptSubmit"}}"#,
+                "\n"
+            ),
+            "Claude's native rules must leave file and generic prompts without guidance"
+        );
+        assert_eq!(
+            stderr, "",
+            "native Claude rules must not emit policy guidance diagnostics: {stderr:?}"
+        );
+    }
 }
 
 #[test]

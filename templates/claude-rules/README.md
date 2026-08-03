@@ -1,7 +1,8 @@
-# Claude rules templates
+# Claude rule files
 
-A binary-free way to carry these standards into a repository. Copy the files in,
-and Claude Code loads them with no install step.
+These files are the human-readable and machine-readable source for LGTM's
+engineering rules. Claude Code loads the Markdown bodies; lgtm embeds the
+frontmatter rules for enforcement.
 
 ## Install
 
@@ -17,6 +18,13 @@ touched. The entry document is written as `.claude/rules/standards.md` with no
 files matching the shipped template are reported unchanged, and files you have
 edited are kept as they are.
 
+The shipped entry document contains the exact marker
+<!-- lgtm-entry-document: standards-v1 -->. The UserPromptSubmit hook
+suppresses fallback guidance only when .claude/rules/standards.md contains that
+marker. Removing it is an explicit opt-out from the installed entry document;
+an unrelated or locally authored standards.md continues to receive fallback
+guidance.
+
 This installs guidance only. No hooks are registered, no `.lgtm/` directory is
 created, and nothing is enforced.
 
@@ -27,23 +35,22 @@ curl -fsSL https://github.com/tcbuilds/lgtm/archive/refs/tags/v0.6.0.tar.gz \
   | tar -xz --strip-components=3 -C .claude 'lgtm-0.6.0/templates/claude-rules'
 ```
 
-Create `.claude/` first. This copies `CLAUDE.md` and `rules/` verbatim; rename
-`CLAUDE.md` to `rules/standards.md` if you already have one at the repository root.
+Create `.claude/rules/` first and copy `CLAUDE.md` to
+`.claude/rules/standards.md` with every file under `rules/` beside it.
 
 `CLAUDE.md` loads at the start of every session. Each file under `.claude/rules/`
 declares a `paths:` glob in YAML frontmatter and loads only when Claude reads a
 file matching it, so a Python change never pulls in the Rust or Terraform rules.
 
-## Two layers
+## File layout
 
-- `rules/*.md` — the gate checklist per language: what must pass, what is banned.
-  Short, scannable, no code.
-- `rules/patterns/*.md` — craft patterns with bad/good code pairs: how to shape
-  the code you are about to write.
+- `standards.md` is always loaded and carries workflow guidance that has no safe
+  file glob.
+- `rules/*.md` contains path-scoped standards and language checklists.
+- `rules/patterns/*.md` contains path-scoped craft patterns with bad/good pairs.
 
-Both load for a matching file. Editing `store.rs` pulls in `rules/rust.md` and
-`rules/patterns/rust.md`; editing `store_test.rs` adds `rules/patterns/testing.md`
-on top. Drop the `patterns/` directory if you only want the checklists.
+Both rule layers load for a matching file. Editing `store.rs` pulls in the Rust
+and core patterns; editing `store_test.rs` also loads the testing rules.
 
 Confirm what loaded with `/context` in a session; the files appear under
 **Memory files**.
@@ -70,7 +77,20 @@ secrets, no claiming a command succeeded without evidence, no merging source
 changes with no accompanying test — needs the hooks that `lgtm init` installs.
 The two are complementary: rules shape behavior, hooks enforce it.
 
-## Source
+## Source and placement
 
-Derived from `codingStandards.md` at the repository root. Edit that file first,
-then update these templates so the two do not drift.
+Each file carries prose in its body and, where the enforcement registry needs
+it, machine fields in frontmatter. Installed files are guidance; enforcement
+uses the same source files embedded in the binary.
+
+Path-scoped guidance belongs beside the file types it describes. The broad
+source glob in `patterns/core.md` carries Core Principles, Refactoring Standards,
+and Master Techniques because they shape implementation craft. The config file
+also covers manifests and docs/README paths, so Dependency Standards and
+Documentation Standards load where their triggers live. Review, debugging,
+quality-gate, and AI workflow guidance stays in `standards.md` because no file
+type reliably triggers it. Design For Debugging and Observability share a broad
+source-scoped rule file.
+
+Edit the rule-file body and its frontmatter together, then run the policy and
+template tests. Keep the always-loaded entry document below 200 lines.

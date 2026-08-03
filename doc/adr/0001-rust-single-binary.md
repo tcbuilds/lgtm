@@ -35,6 +35,6 @@ Distribution is via `cargo install` or GitHub release. The per-repo version pin 
 - The agent feedback loop stays fast; hooks fail safely and fast with no interpreter to warm up.
 - Consumer repos gain enforcement with no added language runtime, virtualenv, or dependency footprint of their own.
 - Rule upgrades are delivered by shipping a new binary, and repos pin to a known version for reproducible enforcement.
-- The team commits to Rust for the core: contributors need Rust proficiency, and the language-specific Rust standards from `codingStandards.md` (§Rust: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` must pass; no unchecked `unwrap()`/`expect()` in production paths; `thiserror` for libraries/domain errors and `anyhow` at binary boundaries) apply to the harness itself.
+- The team commits to Rust for the core: contributors need Rust proficiency, and the language-specific Rust rule file (`cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` must pass; no unchecked `unwrap()`/`expect()` in production paths; `thiserror` for libraries/domain errors and `anyhow` at binary boundaries) applies to the harness itself.
 - The default policy registry is compiled into the binary (see ADR-0002), so the binary is the unit of both code and default rules.
 - A binary distribution channel must be chosen at first release (GitHub releases with an install script versus cargo-only); this is tracked as an open question and does not change this decision.
