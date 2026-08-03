@@ -115,6 +115,51 @@ fn installs_every_template_under_the_rules_directory() {
     std::fs::remove_dir_all(root).ok();
 }
 
+/// A symlink on the way to the repository must not be mistaken for one inside it.
+///
+/// The ancestor walk previously ran to the filesystem root, so any symlink above
+/// the repository refused the install. That is the ordinary layout on macOS,
+/// where `std::env::temp_dir()` yields `/var/folders/...` and `/var` is a symlink
+/// to `/private/var`, and it reaches this test through an unresolved root rather
+/// than through `getcwd`, which would have flattened it. The guard covers escapes
+/// out of the repository, not the path used to reach it.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_ancestor_above_the_root_does_not_refuse_the_install() {
+    let base = temp_root("symlinked-ancestor");
+    let real = base.join("real");
+    std::fs::create_dir_all(&real).expect("real ancestor");
+    let link = base.join("link");
+    std::os::unix::fs::symlink(&real, &link).expect("ancestor symlink");
+
+    let root = link.join("repo");
+    std::fs::create_dir_all(&root).expect("repository root");
+
+    let outcome = install(&root).expect("install through a symlinked ancestor");
+    assert_eq!(outcome.written.len(), TEMPLATES.len());
+    assert!(root.join(".claude/rules/standards.md").is_file());
+    std::fs::remove_dir_all(base).ok();
+}
+
+/// A symlinked destination inside the repository must still be refused.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_rules_directory_inside_the_root_is_still_refused() {
+    let root = temp_root("symlinked-rules");
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&outside).expect("outside directory");
+    std::fs::create_dir_all(root.join(".claude")).expect("claude directory");
+    std::os::unix::fs::symlink(&outside, root.join(".claude/rules")).expect("rules symlink");
+
+    let error = install(&root).expect_err("a symlinked rules directory must be refused");
+    assert!(
+        error.contains("symlink"),
+        "refusal must name the symlink: {error}"
+    );
+    assert!(!outside.join("standards.md").exists());
+    std::fs::remove_dir_all(root).ok();
+}
+
 #[test]
 fn never_creates_a_claude_md_at_the_repository_root() {
     let root = temp_root("noclobber");

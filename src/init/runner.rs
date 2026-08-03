@@ -53,7 +53,7 @@ pub fn migrate_config(root: &Path, dry_run: bool) -> Result<InitSummary, InitErr
             rules: None,
         });
     }
-    preflight_targets(&[&config_path, &backup_path])?;
+    preflight_targets(root, &[&config_path, &backup_path])?;
     let backup = stage_write(&backup_path, contents.as_bytes())?;
     let replacement = stage_write(&config_path, &rendered)?;
     commit_write(backup)?;
@@ -176,7 +176,7 @@ pub fn run_with_agent(
     if agent == InitAgent::Codex {
         targets.push(rules_path.as_path());
     }
-    preflight_targets(&targets)?;
+    preflight_targets(root, &targets)?;
     let file_targets: Vec<&Path> = targets
         .iter()
         .copied()

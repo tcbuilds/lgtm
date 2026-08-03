@@ -39,13 +39,28 @@ pub(super) fn create_dir_all(path: &Path) -> Result<(), InitError> {
 /// Validate every destination path and its parents before any write occurs.
 ///
 /// For each target this rejects: a target that already exists as a symlink (a
-/// write would follow it out of the repo), and any existing ancestor along the
-/// path that is not a directory (a required parent that is a regular file or a
-/// symlink would make directory creation or the final write fail partway
-/// through). Running this preflight before the first `create_dir_all` keeps a
-/// later failure — e.g. an unwritable `.gitignore` — from leaving partial
-/// scaffolding behind.
-pub(super) fn preflight_targets(paths: &[&Path]) -> Result<(), InitError> {
+/// write would follow it out of the repo), and any existing ancestor **within
+/// the repository** that is not a directory (a required parent that is a regular
+/// file or a symlink would make directory creation or the final write fail
+/// partway through). Running this preflight before the first `create_dir_all`
+/// keeps a later failure — e.g. an unwritable `.gitignore` — from leaving
+/// partial scaffolding behind.
+///
+/// Ancestors at or above `root` are deliberately not inspected. The guard exists
+/// to stop a write from escaping the repository through a symlink placed inside
+/// it; how the repository itself is reached is the caller's own path, not an
+/// escape. Walking to the filesystem root instead rejected ordinary layouts,
+/// because `/var` and `/tmp` are symlinks on macOS and a symlinked home or work
+/// directory is common elsewhere.
+pub(super) fn preflight_targets(root: &Path, paths: &[&Path]) -> Result<(), InitError> {
+    if let Ok(metadata) = std::fs::metadata(root)
+        && !metadata.is_dir()
+    {
+        return Err(InitError::UnwritableTarget {
+            path: root.to_path_buf(),
+            reason: "repository root exists and is not a directory".to_string(),
+        });
+    }
     for path in paths {
         if let Ok(metadata) = std::fs::symlink_metadata(path)
             && metadata.file_type().is_symlink()
@@ -54,7 +69,7 @@ pub(super) fn preflight_targets(paths: &[&Path]) -> Result<(), InitError> {
                 path: path.to_path_buf(),
             });
         }
-        preflight_ancestors(path)?;
+        preflight_ancestors(root, path)?;
     }
     Ok(())
 }
@@ -86,15 +101,20 @@ pub(super) fn preflight_file_targets(paths: &[&Path]) -> Result<(), InitError> {
 
 /// Reject any existing ancestor of `path` that is not a usable directory.
 ///
-/// Walks each parent directory of `path` from the root down; the first ancestor
-/// that exists but is not a directory (a regular file or a symlink) is a hard
-/// error, because both directory creation under it and the eventual atomic write
-/// would fail. Ancestors that do not yet exist are fine — they will be created.
-fn preflight_ancestors(path: &Path) -> Result<(), InitError> {
+/// Walks each parent directory of `path` up to but not including `root`; the
+/// first ancestor that exists but is not a directory (a regular file or a
+/// symlink) is a hard error, because both directory creation under it and the
+/// eventual atomic write would fail. Ancestors that do not yet exist are fine —
+/// they will be created. The walk stops at `root` so that a symlink on the way
+/// to the repository is not mistaken for one inside it.
+fn preflight_ancestors(root: &Path, path: &Path) -> Result<(), InitError> {
     let Some(parent) = path.parent() else {
         return Ok(());
     };
     for ancestor in parent.ancestors() {
+        if ancestor == root || !ancestor.starts_with(root) {
+            break;
+        }
         let Ok(metadata) = std::fs::symlink_metadata(ancestor) else {
             continue;
         };

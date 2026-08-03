@@ -332,7 +332,7 @@ pub fn install_agents_md(root: &Path) -> Result<Installed, String> {
 fn install_transaction(root: &Path, agent: InitAgent) -> Result<Installed, InitError> {
     let targets = target_paths(root, agent);
     let target_refs: Vec<&Path> = targets.iter().map(PathBuf::as_path).collect();
-    preflight_targets(&target_refs)?;
+    preflight_targets(root, &target_refs)?;
     preflight_file_targets(&target_refs)?;
     let (planned, outcome) = plan(root, agent)?;
 
