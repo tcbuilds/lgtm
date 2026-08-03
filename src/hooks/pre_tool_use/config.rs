@@ -111,9 +111,28 @@ fn normalize_pattern(pattern: String) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("lgtm-pre-config-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".lgtm")).expect("root");
+        root
+    }
+
+    fn padded_json(limit: usize) -> String {
+        let prefix = r#"{"padding":""#;
+        let suffix = r#""}"#;
+        format!(
+            "{prefix}{}{suffix}",
+            "a".repeat(limit - prefix.len() - suffix.len())
+        )
+    }
+
     #[test]
     fn exact_prefix_and_all_patterns_match_explicitly() {
         assert!(is_prohibited("secrets/key.py", &["secrets/**".to_string()]));
+        assert!(is_prohibited("secrets", &["secrets/**".to_string()]));
+        assert!(!is_prohibited("secret", &["secrets/**".to_string()]));
         assert!(is_prohibited("config.json", &["config.json".to_string()]));
         assert!(is_prohibited("any/path", &["*".to_string()]));
         assert!(!is_prohibited("config.toml", &["config.json".to_string()]));
@@ -124,5 +143,80 @@ mod tests {
         for pattern in ["*.env", "../secret", "/etc", ""] {
             assert!(normalize_pattern(pattern.to_string()).is_err(), "{pattern}");
         }
+    }
+
+    #[test]
+    fn wildcard_patterns_are_valid_only_as_global_patterns() {
+        assert!(normalize_pattern("*".to_string()).is_ok());
+        assert!(normalize_pattern("**".to_string()).is_ok());
+        assert!(normalize_pattern("dir/*".to_string()).is_err());
+    }
+
+    #[test]
+    fn pattern_length_boundary_is_explicit() {
+        assert!(normalize_pattern("a".repeat(4_096)).is_ok());
+        assert!(normalize_pattern("a".repeat(4_097)).is_err());
+    }
+
+    #[test]
+    fn prohibited_path_config_enforces_byte_and_entry_limits() {
+        let root = temp_root("paths");
+        let path = root.join(".lgtm/config.json");
+        let limit = 256 * 1_024;
+        std::fs::write(&path, padded_json(limit)).expect("config");
+        assert!(prohibited_patterns(&root).is_ok());
+        let mut oversized = padded_json(limit);
+        oversized.push(' ');
+        std::fs::write(&path, oversized).expect("oversized config");
+        assert!(prohibited_patterns(&root).is_err());
+
+        let entries = (0..1_024).map(|_| "path").collect::<Vec<_>>();
+        std::fs::write(
+            &path,
+            serde_json::json!({"prohibited_paths": entries}).to_string(),
+        )
+        .expect("bounded entries");
+        assert!(prohibited_patterns(&root).is_ok());
+        let entries = (0..1_025).map(|_| "path").collect::<Vec<_>>();
+        std::fs::write(
+            &path,
+            serde_json::json!({"prohibited_paths": entries}).to_string(),
+        )
+        .expect("too many entries");
+        assert!(prohibited_patterns(&root).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prohibited_command_config_enforces_byte_and_entry_limits() {
+        let root = temp_root("commands");
+        let path = root.join(".lgtm/execpolicy.json");
+        let limit = 256 * 1_024;
+        std::fs::write(&path, padded_json(limit)).expect("policy");
+        assert!(match_prohibited_command(&root, "echo ok").is_ok());
+        let mut oversized = padded_json(limit);
+        oversized.push(' ');
+        std::fs::write(&path, oversized).expect("oversized policy");
+        assert!(match_prohibited_command(&root, "echo ok").is_err());
+
+        let entries = (0..256)
+            .map(|index| vec!["echo".to_string(), format!("arg{index}")])
+            .collect::<Vec<_>>();
+        std::fs::write(
+            &path,
+            serde_json::json!({"prohibited_commands": entries}).to_string(),
+        )
+        .expect("bounded policy");
+        assert!(match_prohibited_command(&root, "echo ok").is_ok());
+        let entries = (0..257)
+            .map(|index| vec!["echo".to_string(), format!("arg{index}")])
+            .collect::<Vec<_>>();
+        std::fs::write(
+            &path,
+            serde_json::json!({"prohibited_commands": entries}).to_string(),
+        )
+        .expect("too many commands");
+        assert!(match_prohibited_command(&root, "echo ok").is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

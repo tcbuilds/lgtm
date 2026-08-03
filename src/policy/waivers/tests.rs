@@ -47,6 +47,33 @@ fn calendar_validation_rejects_impossible_dates() {
     assert!(parse_date("2028-02-29").is_ok());
 }
 
+#[test]
+fn protected_rule_ids_are_unwaivable_even_if_category_metadata_drifts() {
+    let rules = super::super::load_embedded_registry().expect("registry");
+    for rule_id in [
+        "no-committed-secrets",
+        "sql-parameterization",
+        "destructive-operation-safeguards",
+        "auth-change-security-review",
+    ] {
+        let mut rule = find_rule(&rules, rule_id)
+            .expect("protected rule exists")
+            .clone();
+        rule.category = Category::Architecture;
+        assert!(
+            ensure_waivable(&rule).is_err(),
+            "{rule_id} must stay protected"
+        );
+    }
+}
+
+#[test]
+fn an_overridable_nonsecurity_rule_remains_waivable() {
+    let rules = super::super::load_embedded_registry().expect("registry");
+    let rule = find_rule(&rules, "function-size").expect("overridable rule");
+    assert!(ensure_waivable(rule).is_ok());
+}
+
 fn temp_root(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("lgtm-waivers-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -60,6 +87,115 @@ fn write_store(root: &Path, waivers: &[Waiver]) {
     };
     let bytes = serde_json::to_vec_pretty(&store).expect("serialize store");
     std::fs::write(root.join(".lgtm/waivers.json"), bytes).expect("write store");
+}
+
+#[derive(Debug, Deserialize)]
+struct SurvivorBaseline {
+    schema_version: u32,
+    budget_seconds: u64,
+    survivors: Vec<SurvivorEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SurvivorEntry {
+    file: String,
+    line: u32,
+    name: String,
+    mutation: String,
+    reason: String,
+    owner: String,
+    date: String,
+    classification: String,
+}
+
+fn read_survivor_baseline() -> SurvivorBaseline {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("mutation-survivors.json");
+    let raw = std::fs::read_to_string(path).expect("survivor baseline is checked in");
+    serde_json::from_str(&raw).expect("survivor baseline has valid metadata")
+}
+
+fn validate_survivor_baseline(baseline: &SurvivorBaseline) -> BTreeSet<String> {
+    assert_eq!(baseline.schema_version, 1);
+    assert!(baseline.budget_seconds > 0);
+    let mut names = BTreeSet::new();
+    for entry in &baseline.survivors {
+        assert!(entry.file.starts_with("src/"));
+        assert!(entry.line > 0);
+        assert!(!entry.reason.trim().is_empty());
+        assert!(!entry.owner.trim().is_empty());
+        assert!(matches!(
+            entry.classification.as_str(),
+            "equivalent" | "gap"
+        ));
+        assert_eq!(entry.date.len(), 10);
+        assert!(
+            entry
+                .date
+                .as_bytes()
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| {
+                    if matches!(index, 4 | 7) {
+                        *byte == b'-'
+                    } else {
+                        byte.is_ascii_digit()
+                    }
+                })
+        );
+        assert!(parse_date(&entry.date).is_ok());
+        assert!(
+            entry
+                .name
+                .starts_with(&format!("{}:{}:", entry.file, entry.line))
+        );
+        assert_eq!(
+            entry.name.rsplit_once(": ").map(|(_, value)| value),
+            Some(entry.mutation.as_str())
+        );
+        assert!(
+            names.insert(entry.name.clone()),
+            "duplicate survivor: {}",
+            entry.name
+        );
+    }
+    names
+}
+
+fn assert_missed_report_is_reviewed(path: &Path, names: &BTreeSet<String>) {
+    let raw = std::fs::read_to_string(path).expect("missed survivor fixture exists");
+    for name in raw.lines().filter(|line| !line.is_empty()) {
+        assert!(names.contains(name), "unreviewed mutation survivor: {name}");
+    }
+}
+
+#[test]
+fn survivor_baseline_validates_metadata_and_rejects_unlisted_misses() {
+    let baseline = read_survivor_baseline();
+    let names = validate_survivor_baseline(&baseline);
+    let empty_baseline = SurvivorBaseline {
+        schema_version: baseline.schema_version,
+        budget_seconds: baseline.budget_seconds,
+        survivors: Vec::new(),
+    };
+    assert!(validate_survivor_baseline(&empty_baseline).is_empty());
+    let root = temp_root("survivor-report");
+    let output = root.join("mutants.out");
+    std::fs::create_dir_all(&output).expect("create survivor fixture");
+    let missed = output.join("missed.txt");
+    if let Some(listed) = baseline.survivors.first().map(|entry| entry.name.as_str()) {
+        std::fs::write(&missed, format!("{listed}\n")).expect("write listed survivor fixture");
+        assert_missed_report_is_reviewed(&missed, &names);
+    } else {
+        std::fs::write(&missed, "").expect("write empty survivor fixture");
+        assert_missed_report_is_reviewed(&missed, &names);
+    }
+
+    std::fs::write(&missed, "unlisted survivor\n").expect("write unlisted survivor fixture");
+    let rejection = std::panic::catch_unwind(|| {
+        assert_missed_report_is_reviewed(&missed, &names);
+    });
+    assert!(rejection.is_err(), "unlisted survivor must be rejected");
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -85,6 +221,32 @@ fn load_active_drops_expired_waivers_and_keeps_current_ones() {
     let loaded = load_active(&root, &rules).expect("an expired waiver must not fail the load");
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].rule_id, "function-size");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn load_active_uses_the_expiry_boundary_of_an_injected_day() {
+    let root = temp_root("boundary");
+    let evaluated = parse_date("2026-08-02").expect("fixed evaluated date");
+    let mut before = waiver();
+    before.rule_id = "function-size".to_string();
+    before.expires = "2026-08-01".to_string();
+    let mut on = waiver();
+    on.rule_id = "file-size".to_string();
+    on.expires = "2026-08-02".to_string();
+    let mut after = waiver();
+    after.rule_id = "function-complexity".to_string();
+    after.expires = "2026-08-03".to_string();
+    write_store(&root, &[before, on, after]);
+    let rules = super::super::load_embedded_registry().expect("registry");
+    let loaded = load_active_at(&root, &rules, evaluated).expect("fixed-date load");
+    assert_eq!(
+        loaded
+            .iter()
+            .map(|item| item.rule_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["function-complexity"]
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
