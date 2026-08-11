@@ -1,0 +1,87 @@
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "command": "/home/ubuntu/.local/bin/lgtm hook permission-request --adapter codex",
+            "type": "command"
+          }
+        ],
+        "matcher": "^(apply_patch|Edit|Write|exec_command|unified_exec|Bash)$"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/home/ubuntu/.local/bin/lgtm hook post-tool-use --adapter codex",
+            "type": "command"
+          }
+        ],
+        "matcher": "^(apply_patch|Edit|Write|exec_command|unified_exec|Bash)$"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/home/ubuntu/.local/bin/lgtm hook pre-tool-use --adapter codex",
+            "type": "command"
+          }
+        ],
+        "matcher": "^(apply_patch|Edit|Write|exec_command|unified_exec|Bash)$"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "/home/ubuntu/.local/bin/lgtm hook session-start --adapter codex",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "/home/ubuntu/.local/bin/lgtm hook stop --adapter codex",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "command": "/home/ubuntu/.local/bin/lgtm hook subagent-start --adapter codex",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "command": "/home/ubuntu/.local/bin/lgtm hook subagent-stop --adapter codex",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "/home/ubuntu/.local/bin/lgtm hook user-prompt-submit --adapter codex",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}
