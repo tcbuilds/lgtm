@@ -154,6 +154,11 @@ const TEMPLATES: &[(&str, &str)] = &[
     ),
 ];
 
+/// Compact always-loaded guidance shared by non-Claude global harnesses.
+pub(super) fn entry_document() -> String {
+    strip_frontmatter(TEMPLATES[0].1).trim().to_string()
+}
+
 /// Outcome of a rules-only installation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Installed {

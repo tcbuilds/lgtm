@@ -303,7 +303,7 @@ fn hook_entry(wiring: &HookWiring, binary: &str) -> Value {
     }
 }
 
-fn hook_binary() -> String {
+pub(super) fn hook_binary() -> String {
     if let Some(binary) = std::env::var_os("LGTM_HOOK_BINARY") {
         return binary.to_string_lossy().into_owned();
     }

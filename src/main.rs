@@ -34,9 +34,16 @@ enum Command {
         /// Allow medium-confidence fallback commands during normal init.
         #[arg(long)]
         accept_guesses: bool,
-        /// Agent hook format to install.
-        #[arg(long, value_enum, default_value_t = AgentKind::Claude)]
-        agent: AgentKind,
+        /// Agent hook format to install (defaults to claude for project init).
+        #[arg(long, value_enum)]
+        agent: Option<AgentKind>,
+        /// Install every supported harness under $HOME instead of this repository.
+        #[arg(
+            short = 'g',
+            long = "global",
+            conflicts_with_all = ["migrate_config", "accept_guesses", "agent", "rules_only"]
+        )]
+        global: bool,
         /// Write the standards (.claude/rules/ for claude, AGENTS.md for codex) and register no hooks.
         #[arg(long, conflicts_with_all = ["dry_run", "migrate_config", "accept_guesses"])]
         rules_only: bool,
@@ -259,9 +266,13 @@ fn run(command: Command) -> ExitCode {
             migrate_config,
             accept_guesses,
             agent,
+            global,
             rules_only,
         } => {
-            if rules_only {
+            let agent = agent.unwrap_or(AgentKind::Claude);
+            if global {
+                run_init_global(dry_run)
+            } else if rules_only {
                 run_init_rules_only(agent)
             } else {
                 run_init(dry_run, migrate_config, accept_guesses, agent)
@@ -898,6 +909,37 @@ fn report_rules_only_summary(agent: AgentKind, summary: &init::Installed) {
     println!("  note: run `lgtm init` to install enforcement hooks as well");
 }
 
+/// Install every supported harness in the current user's home directory.
+fn run_init_global(dry_run: bool) -> ExitCode {
+    let Some(user_home) = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
+        eprintln!("init failed: HOME is missing or empty");
+        return ExitCode::FAILURE;
+    };
+    match init::run_global(&user_home, dry_run) {
+        Ok(summary) => {
+            println!("lgtm global init complete");
+            if summary.files_written.is_empty() {
+                println!("  files: already up to date");
+            } else {
+                let label = if dry_run { "planned" } else { "written" };
+                println!("  files {label}: {}", summary.files_written.join(", "));
+            }
+            for note in summary.notes {
+                println!("  note: {note}");
+            }
+            report_rule_files(init::InitAgent::Claude, &summary.rules, dry_run);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("init failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn run_init(
     dry_run: bool,
     migrate_config: bool,
@@ -1215,7 +1257,8 @@ mod tests {
                 dry_run: false,
                 migrate_config: false,
                 accept_guesses: false,
-                agent: AgentKind::Claude,
+                agent: None,
+                global: false,
                 rules_only: false,
             }
         ));
@@ -1347,7 +1390,20 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Init {
-                agent: AgentKind::Codex,
+                agent: Some(AgentKind::Codex),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_global_init_short_flag() {
+        let cli = Cli::try_parse_from(["lgtm", "init", "-g"]).expect("global init should parse");
+        assert!(matches!(
+            cli.command,
+            Command::Init {
+                global: true,
+                agent: None,
                 ..
             }
         ));

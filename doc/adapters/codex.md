@@ -6,6 +6,7 @@ from a payload:
 
 ```bash
 lgtm init --agent codex
+lgtm init -g
 lgtm hook session-start --adapter codex
 lgtm check --tier full
 ```
@@ -18,6 +19,12 @@ other hooks. It registers `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
 idempotent. When `lgtm` is installed at a stable absolute path, init records
 that path so Codex does not depend on the session's `PATH`; source-tree runs
 fall back to the portable `lgtm` command. Re-run init if the binary moves.
+
+`lgtm init -g` writes the same hook contract to `~/.codex/hooks.json` and
+merges LGTM's compact always-loaded guidance into `~/.codex/AGENTS.md`. It also
+installs every other harness supported by the binary under the same `$HOME`.
+Global init preserves instruction text outside its marked block and does not
+create repository `.lgtm` policy or command configuration.
 
 ## Response contract
 
