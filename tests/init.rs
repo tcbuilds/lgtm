@@ -230,6 +230,71 @@ fn codex_init_generates_optional_execpolicy_rules_without_overclaiming_paths() {
 }
 
 #[test]
+fn codex_init_clears_stale_generated_rules_when_last_command_is_removed() {
+    let repo = TempRepo::new();
+    repo.write(
+        ".lgtm/execpolicy.json",
+        r#"{"prohibited_commands":[["git","reset","--hard"]],"prohibited_paths":["secrets/**"]}"#,
+    );
+
+    let first = run_init_codex(&repo);
+    assert!(first.status.success(), "initial Codex init must succeed");
+    assert!(
+        repo.read(".codex/rules/lgtm.rules")
+            .contains("prefix_rule(")
+    );
+
+    repo.write(
+        ".lgtm/execpolicy.json",
+        r#"{"prohibited_commands":[],"prohibited_paths":["secrets/**"]}"#,
+    );
+    let cleared = run_init_codex(&repo);
+    assert!(
+        cleared.status.success(),
+        "empty-command re-init must succeed"
+    );
+    let cleared_rules = repo.read(".codex/rules/lgtm.rules");
+    assert!(!cleared_rules.contains("prefix_rule("));
+    assert!(cleared_rules.contains("# lgtm path rule (hook-enforced): secrets/**"));
+    let cleared_stdout = String::from_utf8_lossy(&cleared.stdout);
+    assert!(cleared_stdout.contains("regenerating "));
+    assert!(cleared_stdout.contains(".codex/rules/lgtm.rules"));
+
+    let stable_rules = cleared_rules.clone();
+    let stable = run_init_codex(&repo);
+    assert!(
+        stable.status.success(),
+        "idempotent Codex re-init must succeed"
+    );
+    assert_eq!(repo.read(".codex/rules/lgtm.rules"), stable_rules);
+    assert!(
+        !String::from_utf8_lossy(&stable.stdout).contains("regenerating .codex/rules/lgtm.rules")
+    );
+}
+
+#[test]
+fn codex_init_preserves_user_written_rules_byte_for_byte() {
+    let repo = TempRepo::new();
+    let authored = "# user-owned Codex rules\nprefix_rule(pattern=[\"ls\"], decision=\"allow\")\n";
+    repo.write(
+        ".lgtm/execpolicy.json",
+        r#"{"prohibited_commands":[["git","reset","--hard"]]}"#,
+    );
+    repo.write(".codex/rules/lgtm.rules", authored);
+
+    let output = run_init_codex(&repo);
+    assert!(
+        output.status.success(),
+        "Codex init must preserve user rules"
+    );
+    assert_eq!(repo.read(".codex/rules/lgtm.rules"), authored);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("preserving existing "));
+    assert!(stdout.contains(".codex/rules/lgtm.rules"));
+    assert!(!stdout.contains("regenerating "));
+}
+
+#[test]
 fn codex_hook_command_runs_from_subdirectory_without_path_lookup() {
     let repo = TempRepo::new();
     repo.write("nested/.keep", "fixture\n");
