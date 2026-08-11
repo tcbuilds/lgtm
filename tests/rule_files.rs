@@ -218,7 +218,7 @@ fn rule_files_have_reviewable_line_lengths() {
 
 #[test]
 fn repository_files_do_not_refer_to_the_retired_standards_filename() {
-    let retired_name = ["codingStandards", "md"].join(".");
+    let retired_name = ["coding", "Standards", ".md"].concat();
     for absolute in repository_files() {
         let path = absolute
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
