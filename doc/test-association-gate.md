@@ -40,9 +40,11 @@ production path such as `src/integrations/stripe.rs` remains source code.
 
 When a repository contains nested workspaces, the deepest discovered workspace
 owns a path. A frontend test cannot satisfy a backend source change merely
-because both files are in the same repository. If workspace discovery fails or
-a changed file has no supported language pack, the result is `unverified` and
-the evidence records the reason; the gate never silently treats it as passed.
+because both files are in the same repository. Files outside the registered
+language packs, including configuration and image assets, are not applicable to
+this gate. If workspace discovery fails for a supported source file, the result
+is `unverified` and the evidence records the reason; the gate never silently
+treats a failed applicable check as passed.
 
 ## Enforcement and evidence
 

@@ -7,6 +7,7 @@ use crate::policy::Severity;
 
 const MAX_TRANSCRIPT_BYTES: u64 = 2 * 1_024 * 1_024;
 const MAX_CLAIMS: usize = 32;
+const NO_ASSISTANT_ENTRY: &str = "Transcript has no assistant entry.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Claim {
@@ -31,6 +32,13 @@ pub fn evaluate(
     };
     let claims = match read_claims(path, configured) {
         Ok(claims) => claims,
+        Err(reason) if reason == NO_ASSISTANT_ENTRY => {
+            return outcome(
+                Status::NotApplicable,
+                "Claims review deferred until the assistant transcript entry is persisted.",
+                Vec::new(),
+            );
+        }
         Err(reason) => return outcome(Status::Unverified, &reason, Vec::new()),
     };
     if claims.is_empty() {
@@ -54,6 +62,11 @@ pub fn evaluate(
             descriptors,
         )
     }
+}
+
+pub fn has_verification_claims(path: Option<&Path>, configured: &[String]) -> bool {
+    path.and_then(|path| read_claims(path, configured).ok())
+        .is_some_and(|claims| !claims.is_empty())
 }
 
 fn read_claims(path: &Path, configured: &[String]) -> Result<Vec<Claim>, String> {
@@ -89,7 +102,7 @@ fn parse_claims(raw: &str, configured: &[String]) -> Result<Vec<Claim>, String> 
             last = Some(value);
         }
     }
-    let last = last.ok_or_else(|| "Transcript has no assistant entry.".to_string())?;
+    let last = last.ok_or_else(|| NO_ASSISTANT_ENTRY.to_string())?;
     let blocks = last
         .pointer("/message/content")
         .and_then(|value| value.as_array())
@@ -522,5 +535,16 @@ mod tests {
     #[test]
     fn malformed_jsonl_is_unverified_input() {
         assert!(parse_claims("{not json\n", &gates()).is_err());
+    }
+
+    #[test]
+    fn transcript_without_assistant_entry_is_not_yet_applicable() {
+        let path =
+            std::env::temp_dir().join(format!("lgtm-claims-pending-{}.jsonl", std::process::id()));
+        std::fs::write(&path, "{\"type\":\"user\",\"message\":{\"content\":[]}}\n")
+            .expect("pending transcript");
+        let result = evaluate(Some(&path), &[], &gates());
+        assert_eq!(result.status, Status::NotApplicable);
+        std::fs::remove_file(path).ok();
     }
 }

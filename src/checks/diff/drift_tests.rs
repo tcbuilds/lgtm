@@ -222,10 +222,10 @@ fn association_messages_match_status_and_evidence() {
         Some(&empty_baseline()),
         Some("feature"),
     );
-    assert_eq!(no_source[1].status, Status::Passed);
+    assert_eq!(no_source[1].status, Status::NotApplicable);
     assert_eq!(
         no_source[1].message,
-        "No changed source files require behavior-test association; coverage is not proven."
+        "Source behavior test association is not applicable to this diff."
     );
     assert!(!no_source[1].message.contains("have plausible associated"));
     std::fs::remove_dir_all(no_source_root).expect("repo removable");

@@ -97,32 +97,48 @@ pub fn evaluate(
                 .collect();
         }
     };
+    let association_files: BTreeSet<String> = baseline.map_or_else(
+        || touched.clone(),
+        |baseline| {
+            changes
+                .files
+                .difference(baseline)
+                .chain(touched.iter())
+                .cloned()
+                .collect()
+        },
+    );
     let association = classify_changes_with_patch(
         root,
-        &changes.files,
+        &association_files,
         &changes.test_evidence_excluded,
         &changes.patch,
     );
     let source_changed = !association.sources.is_empty();
     let association_missing = !association.missing_sources.is_empty();
     let association_unverified = !association.unverified.is_empty();
-    let behavior_status = if association_missing || association_unverified {
+    let behavior_status = if association_unverified {
+        Status::Unverified
+    } else if !source_changed {
+        Status::NotApplicable
+    } else if association_missing {
         Status::Unverified
     } else {
         Status::Passed
     };
-    let bug_status =
-        if intent == Some("bug-fix") && (source_changed || !association.tests.is_empty()) {
-            if association_missing || association_unverified {
-                Status::Unverified
-            } else {
-                Status::Passed
-            }
-        } else if intent == Some("bug-fix") && association_unverified {
+    let bug_status = if intent == Some("bug-fix") {
+        if association_unverified {
+            Status::Unverified
+        } else if !source_changed {
+            Status::NotApplicable
+        } else if association_missing {
             Status::Unverified
         } else {
-            Status::NotApplicable
-        };
+            Status::Passed
+        }
+    } else {
+        Status::NotApplicable
+    };
     let unrelated: Option<BTreeSet<_>> = baseline.map(|baseline| {
         changes
             .files
@@ -134,9 +150,9 @@ pub fn evaluate(
     let preserve_status = unrelated.as_ref().map_or(Status::Unverified, |unrelated| {
         preserve_status(&changes.files, touched, unrelated)
     });
-    let dependency = changes.files.iter().any(|file| is_dependency(file));
+    let dependency = touched.iter().any(|file| is_dependency(file));
     let auth =
-        changes.files.iter().any(|file| is_auth_path(file)) || contains_auth_signal(&changes.patch);
+        touched.iter().any(|file| is_auth_path(file)) || contains_auth_signal(&changes.patch);
     let anti_slop = contains_anti_slop_signal(&changes.patch);
     let error_contract = contains_error_contract_signal(&changes.patch);
     let behavior_test_quality = contains_trivial_test_signal(&changes.patch);

@@ -17,7 +17,7 @@ fn stop(repo: &TempRepo) -> std::process::Output {
     write!(
         child.stdin.take().unwrap(),
         "{}",
-        json!({"cwd": repo.path(), "session_id": "override-e2e"})
+        json!({"cwd": repo.path(), "session_id": "override-e2e", "check": true})
     )
     .unwrap();
     child.wait_with_output().unwrap()

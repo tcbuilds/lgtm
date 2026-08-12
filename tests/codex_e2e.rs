@@ -67,6 +67,203 @@ exit 0
     std::fs::set_permissions(path, permissions).expect("fake executable");
 }
 
+fn git(repo: &TempRepo, args: &[&str]) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(args)
+        .status()
+        .expect("git command runs");
+    assert!(status.success(), "git command failed: {args:?}");
+}
+
+fn initialize_repo(repo: &TempRepo) {
+    repo.write(
+        ".lgtm/config.json",
+        r#"{"version":"2","profile":"default","workspaces":[],"disabled_rules":[],"severity_overrides":{}}"#,
+    );
+    repo.write(".gitignore", ".lgtm/evidence/\nbin/\n");
+    git(repo, &["init", "-q"]);
+    git(
+        repo,
+        &[
+            "config",
+            "user.email",
+            "254259785+tcbuilds@users.noreply.github.com",
+        ],
+    );
+    git(repo, &["config", "user.name", "LGTM tests"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "fixture"]);
+    install_fake_gitleaks(repo);
+}
+
+fn record_edit(repo: &TempRepo, path: &str, content: &str, capture_baseline: bool) {
+    let absolute = repo.path().join(path);
+    if capture_baseline {
+        let pre = run_hook(
+            repo,
+            "pre-tool-use",
+            tool_payload(repo, "PreToolUse", "Write", &absolute.to_string_lossy()),
+        );
+        assert!(pre.status.success());
+        assert!(pre.stdout.is_empty());
+    }
+    repo.write(path, content);
+    let post = run_hook(
+        repo,
+        "post-tool-use",
+        tool_payload(repo, "PostToolUse", "Write", &absolute.to_string_lossy()),
+    );
+    assert!(post.status.success());
+    assert!(post.stdout.is_empty());
+}
+
+fn pending_transcript(repo: &TempRepo) -> Value {
+    repo.write(
+        ".lgtm/evidence/transcript.jsonl",
+        "{\"type\":\"user\",\"message\":{\"content\":[]}}\n",
+    );
+    json!(repo.path().join(".lgtm/evidence/transcript.jsonl"))
+}
+
+fn stop_payload(repo: &TempRepo, transcript_path: Option<Value>) -> Value {
+    let mut payload = json!({
+        "hookEventName": "Stop",
+        "session_id": "codex-e2e",
+        "cwd": repo.path(),
+    });
+    if let Some(path) = transcript_path {
+        payload["transcript_path"] = path;
+    }
+    payload
+}
+
+#[test]
+fn codex_chat_only_lifecycle_is_silent_and_omits_unknown_intent() {
+    let repo = TempRepo::new();
+    initialize_repo(&repo);
+
+    let prompt = run_hook(
+        &repo,
+        "user-prompt-submit",
+        json!({
+            "hookEventName": "UserPromptSubmit",
+            "session_id": "codex-e2e",
+            "cwd": repo.path(),
+            "prompt": "what is this repository?",
+        }),
+    );
+    assert!(prompt.status.success());
+    assert!(!String::from_utf8_lossy(&prompt.stdout).contains("Detected task intent: unknown"));
+
+    let stop = run_hook(&repo, "stop", stop_payload(&repo, None));
+    assert!(stop.status.success());
+    assert!(
+        stop.stdout.is_empty(),
+        "stdout: {}",
+        String::from_utf8_lossy(&stop.stdout)
+    );
+    assert!(
+        stop.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+}
+
+#[test]
+fn codex_config_only_turn_has_no_test_association_noise() {
+    let repo = TempRepo::new();
+    repo.write("settings.json", "{}\n");
+    initialize_repo(&repo);
+    let transcript = pending_transcript(&repo);
+
+    record_edit(&repo, "settings.json", "{\"enabled\":true}\n", true);
+    let stop = run_hook(&repo, "stop", stop_payload(&repo, Some(transcript)));
+    assert!(stop.status.success());
+    let response: Value = serde_json::from_slice(&stop.stdout).expect("Stop summary JSON");
+    assert_eq!(response["systemMessage"], "lgtm: passed");
+}
+
+#[test]
+fn codex_source_edit_keeps_actionable_test_association_signal() {
+    let repo = TempRepo::new();
+    repo.write("src/lib.rs", "pub fn value() -> u8 { 1 }\n");
+    initialize_repo(&repo);
+    let transcript = pending_transcript(&repo);
+
+    record_edit(&repo, "src/lib.rs", "pub fn value() -> u8 { 2 }\n", true);
+    let stop = run_hook(&repo, "stop", stop_payload(&repo, Some(transcript)));
+    assert!(stop.status.success());
+    let response: Value = serde_json::from_slice(&stop.stdout).expect("Stop summary JSON");
+    let summary = response["systemMessage"].as_str().expect("summary text");
+    assert!(summary.contains("UNVERIFIED new-behavior-tests-required"));
+    assert!(summary.contains("src/lib.rs"));
+}
+
+#[test]
+fn codex_stop_defers_claims_until_assistant_transcript_exists() {
+    let repo = TempRepo::new();
+    repo.write("src/lib.rs", "pub fn value() -> u8 { 1 }\n");
+    repo.write(
+        "tests/lib_test.rs",
+        "#[test]\nfn value_is_one() { assert_eq!(1, 1); }\n",
+    );
+    initialize_repo(&repo);
+    let transcript = pending_transcript(&repo);
+
+    record_edit(&repo, "src/lib.rs", "pub fn value() -> u8 { 2 }\n", true);
+    record_edit(
+        &repo,
+        "tests/lib_test.rs",
+        "#[test]\nfn value_is_two() { assert_eq!(2, 2); }\n",
+        true,
+    );
+    let stop = run_hook(&repo, "stop", stop_payload(&repo, Some(transcript)));
+    assert!(stop.status.success());
+    let response: Value = serde_json::from_slice(&stop.stdout).expect("Stop summary JSON");
+    assert_eq!(response["systemMessage"], "lgtm: passed");
+}
+
+#[test]
+fn codex_source_edit_without_baseline_stays_unverified() {
+    let repo = TempRepo::new();
+    repo.write("src/lib.rs", "pub fn value() -> u8 { 1 }\n");
+    initialize_repo(&repo);
+    let transcript = pending_transcript(&repo);
+
+    record_edit(&repo, "src/lib.rs", "pub fn value() -> u8 { 2 }\n", false);
+    let stop = run_hook(&repo, "stop", stop_payload(&repo, Some(transcript)));
+    assert!(stop.status.success());
+    let response: Value = serde_json::from_slice(&stop.stdout).expect("Stop summary JSON");
+    let summary = response["systemMessage"].as_str().expect("summary text");
+    assert!(summary.contains("UNVERIFIED preserve-unrelated-user-changes"));
+}
+
+#[test]
+fn codex_source_edit_without_transcript_stays_unverified() {
+    let repo = TempRepo::new();
+    repo.write("src/lib.rs", "pub fn value() -> u8 { 1 }\n");
+    repo.write(
+        "tests/lib_test.rs",
+        "#[test]\nfn value_is_one() { assert_eq!(1, 1); }\n",
+    );
+    initialize_repo(&repo);
+
+    record_edit(&repo, "src/lib.rs", "pub fn value() -> u8 { 2 }\n", true);
+    record_edit(
+        &repo,
+        "tests/lib_test.rs",
+        "#[test]\nfn value_is_two() { assert_eq!(2, 2); }\n",
+        true,
+    );
+    let stop = run_hook(&repo, "stop", stop_payload(&repo, None));
+    assert!(stop.status.success());
+    let response: Value = serde_json::from_slice(&stop.stdout).expect("Stop summary JSON");
+    let summary = response["systemMessage"].as_str().expect("summary text");
+    assert!(summary.contains("UNVERIFIED evidence-claims-honest"));
+}
+
 #[test]
 fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
     let repo = TempRepo::new();

@@ -24,6 +24,7 @@ pub(super) const MAX_EVIDENCE_BYTES: u64 = 5 * 1024 * 1024;
 pub(super) fn append_evidence(
     root: &Path,
     session_id: Option<&str>,
+    edited_file: Option<&str>,
     result: &EnforcementResult,
 ) -> Result<(), String> {
     let dir = root.join(".lgtm").join("evidence");
@@ -32,6 +33,7 @@ pub(super) fn append_evidence(
 
     let record = json!({
         "session_id": session_id,
+        "edited_file": edited_file,
         "result": result,
     });
     let mut line =

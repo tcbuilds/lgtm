@@ -315,7 +315,7 @@ fn recreated_test_after_staged_deletion_restores_association_evidence() {
 }
 
 #[test]
-fn bug_fix_unverified_message_names_its_reason() {
+fn unsupported_language_is_outside_test_association_scope() {
     let root = repo();
     std::fs::create_dir_all(root.join("src")).expect("source directory");
     std::fs::write(root.join("src/app.rb"), "def value; 1; end\n").expect("unsupported source");
@@ -325,13 +325,8 @@ fn bug_fix_unverified_message_names_its_reason() {
         Some(&BTreeSet::new()),
         Some("bug-fix"),
     );
-    assert_eq!(results[0].status, Status::Unverified);
-    assert!(
-        results[0]
-            .message
-            .contains("src/app.rb: no supported language pack")
-    );
-    assert!(!results[0].message.contains("Missing associations: ."));
+    assert_eq!(results[0].status, Status::NotApplicable);
+    assert_eq!(results[1].status, Status::NotApplicable);
     std::fs::remove_dir_all(root).expect("repo removable");
 }
 
