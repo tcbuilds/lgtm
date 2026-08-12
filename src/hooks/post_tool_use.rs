@@ -60,7 +60,7 @@ fn run_inner(
     let Some(root) = repo_root(hook_input.cwd.as_deref()) else {
         return ExitCode::SUCCESS;
     };
-    let mut results = scan_target(&root, &file_path);
+    let (edited_file, mut results) = scan_target(&root, &file_path);
     let (_, registry, overrides, waivers, compatibility, _) =
         match crate::policy::load_profiled_registry(&root) {
             Ok(profile) => profile,
@@ -81,7 +81,12 @@ fn run_inner(
     crate::policy::overrides::apply_results(&overrides, &mut results);
     crate::policy::waivers::apply(&waivers, &mut results);
     for result in &results {
-        persist(&root, hook_input.session_id.as_deref(), result);
+        persist(
+            &root,
+            hook_input.session_id.as_deref(),
+            edited_file.as_deref(),
+            result,
+        );
     }
     handle_results(output, adapter, &results)
 }
@@ -101,9 +106,9 @@ fn read_input(input: &mut impl Read) -> Option<input::HookInput> {
         .ok()
 }
 
-fn scan_target(root: &Path, file_path: &str) -> Vec<EnforcementResult> {
+fn scan_target(root: &Path, file_path: &str) -> (Option<String>, Vec<EnforcementResult>) {
     let Some(resolved) = resolve_target(root, file_path) else {
-        return vec![unverified_target(file_path)];
+        return (None, vec![unverified_target(file_path)]);
     };
     let mut results = Vec::new();
     for check in tiers::checks(tiers::for_hook(Hook::PostToolUse)) {
@@ -144,7 +149,7 @@ fn scan_target(root: &Path, file_path: &str) -> Vec<EnforcementResult> {
             _ => unreachable!("fast tier contains only fast checks"),
         }
     }
-    results
+    (Some(resolved), results)
 }
 
 fn scan_secrets(resolved: &str) -> EnforcementResult {
@@ -254,8 +259,13 @@ fn diagnostic(action: &str, entity: &str, reason: &str, retryable: bool) {
     );
 }
 
-fn persist(root: &Path, session_id: Option<&str>, result: &EnforcementResult) {
-    if let Err(reason) = append_evidence(root, session_id, result) {
+fn persist(
+    root: &Path,
+    session_id: Option<&str>,
+    edited_file: Option<&str>,
+    result: &EnforcementResult,
+) {
+    if let Err(reason) = append_evidence(root, session_id, edited_file, result) {
         diagnostic("persist", "evidence", &reason, true);
     }
 }

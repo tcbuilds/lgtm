@@ -50,7 +50,7 @@ fn failing_required_command_blocks_stop_and_records_evidence() {
     write!(
         child.stdin.take().expect("stdin available"),
         "{}",
-        json!({"cwd": repo.path(), "session_id": "command-e2e"})
+        json!({"cwd": repo.path(), "session_id": "command-e2e", "check": true})
     )
     .expect("payload writes");
     let output = child.wait_with_output().expect("Stop hook exits");
@@ -90,7 +90,7 @@ fn invalid_command_timeout_is_surfaced_as_unverified() {
     write!(
         child.stdin.take().unwrap(),
         "{}",
-        json!({"cwd":repo.path(),"session_id":"timeout-invalid"})
+        json!({"cwd":repo.path(),"session_id":"timeout-invalid","check":true})
     )
     .unwrap();
     let output = child.wait_with_output().unwrap();

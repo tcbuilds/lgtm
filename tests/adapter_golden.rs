@@ -171,6 +171,26 @@ fn user_prompt_submit_avoids_guidance_for_native_claude() {
 }
 
 #[test]
+fn user_prompt_submit_is_silent_for_unknown_native_intent() {
+    let repo = TempRepo::new();
+    repo.write(
+        ".claude/rules/standards.md",
+        include_str!("../templates/claude-rules/CLAUDE.md"),
+    );
+    let stdin = json!({
+        "cwd": repo.path(),
+        "session_id": "golden",
+        "user_prompt": "what is this repository?",
+    })
+    .to_string();
+
+    let (code, stdout, stderr) = run_hook("user-prompt-submit", &stdin);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "");
+    assert_eq!(stderr, "");
+}
+
+#[test]
 fn pre_tool_use_allows_non_edit_tool_silently() {
     let repo = TempRepo::new();
     repo.write(".lgtm/config.json", "{}");
@@ -353,16 +373,7 @@ fn stop_allows_with_plain_text_summary_on_stdout() {
     let (code, stdout, stderr) = run_hook("stop", &stdin);
     assert_eq!(code, 0, "a clean Stop must exit 0");
     assert_eq!(
-        stdout,
-        "lgtm Stop: passed=2 warning=0 unverified=8 failed=0\n\
-         UNVERIFIED no-committed-secrets: Secret scan unverified: no scannable edited files were recorded for this session.\n\
-         UNVERIFIED regression-test-required: git diff failed or repository is unavailable\n\
-         UNVERIFIED new-behavior-tests-required: git diff failed or repository is unavailable\n\
-         UNVERIFIED preserve-unrelated-user-changes: git diff failed or repository is unavailable\n\
-         UNVERIFIED new-dependency-review: git diff failed or repository is unavailable\n\
-         UNVERIFIED auth-change-security-review: git diff failed or repository is unavailable\n\
-         UNVERIFIED error-contract-review: git diff failed or repository is unavailable\n\
-         UNVERIFIED behavior-test-quality: git diff failed or repository is unavailable\n",
+        stdout, "lgtm: passed\n",
         "a clean Stop must write the exact plain-text summary on stdout"
     );
     assert_eq!(

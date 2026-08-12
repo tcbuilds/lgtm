@@ -153,11 +153,7 @@ fn classify_file(
     if is_ignored_path(file) {
         return None;
     }
-    let Some(pack) = pack_for_file(file) else {
-        return Some(Err(format!(
-            "{file}: no supported language pack or file convention"
-        )));
-    };
+    let pack = pack_for_file(file)?;
     if let Some(reason) = metadata_error {
         return Some(Err(format!(
             "{file}: workspace metadata unavailable ({reason})"
@@ -406,10 +402,6 @@ pub(super) fn behavior_association_message(status: Status, association: &Associa
                 .collect::<Vec<_>>()
                 .join("; ")
         ),
-        Status::Passed if association.sources.is_empty() => {
-            "No changed source files require behavior-test association; coverage is not proven."
-                .to_string()
-        }
         Status::Passed => "Changed source files have plausible associated test file changes; this does not prove behavioral coverage.".to_string(),
         _ => "Source behavior test association does not require a blocking result for this diff."
             .to_string(),
@@ -417,8 +409,9 @@ pub(super) fn behavior_association_message(status: Status, association: &Associa
 }
 pub(super) fn bug_association_message(status: Status, association: &Association) -> String {
     match status {
-        Status::NotApplicable => "Regression-test association is not applicable to this diff."
-            .to_string(),
+        Status::NotApplicable => {
+            "Regression-test association is not applicable to this diff.".to_string()
+        }
         Status::Unverified if !association.missing_sources.is_empty() => format!(
             "Review signal: no associated regression-test file change was found for the bug-fix source; this is not proof that a test is absent, and coverage is not proven. Review: {}.{}",
             association.missing_sources.join(", "),
@@ -433,11 +426,10 @@ pub(super) fn bug_association_message(status: Status, association: &Association)
                 .collect::<Vec<_>>()
                 .join("; ")
         ),
-        Status::Passed if association.sources.is_empty() => {
-            "A regression-test file changed, but no changed source file was found; coverage is not proven."
+        Status::Passed => {
+            "Bug-fix intent has a plausible regression test file change; coverage is not proven."
                 .to_string()
         }
-        Status::Passed => "Bug-fix intent has a plausible regression test file change; coverage is not proven.".to_string(),
         _ => "Regression-test association does not require a blocking result for this diff."
             .to_string(),
     }

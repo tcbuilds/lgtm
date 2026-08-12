@@ -17,6 +17,7 @@ use crate::policy::Severity;
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024;
 const MAX_LEDGER_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_TASK_EVIDENCE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_SUMMARY_MESSAGE_CHARS: usize = 512;
 const EVIDENCE_SCHEMA_JSON: &str = include_str!("../../schemas/evidence.schema.json");
 
 #[derive(Debug, Default, Deserialize)]
@@ -40,7 +41,14 @@ struct HookInput {
 #[derive(Debug, Deserialize)]
 struct EditRecord {
     session_id: Option<String>,
+    #[serde(default)]
+    edited_file: Option<String>,
     result: EnforcementResult,
+}
+
+struct TouchedPaths {
+    files: Vec<String>,
+    had_edits: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -142,39 +150,57 @@ fn run_inner(
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
+    let (paths, had_edits) = if hook_input.check {
+        (check_paths(&root)?, false)
+    } else {
+        let touched = touched_paths(&root, hook_input.session_id.as_deref())?;
+        (touched.files, touched.had_edits)
+    };
+    let configured = configured_executables(&root);
+    let claims_only = !hook_input.check
+        && !had_edits
+        && crate::checks::claims::has_verification_claims(
+            hook_input.transcript_path.as_deref().map(Path::new),
+            &configured,
+        );
+    if !hook_input.check && !had_edits && !claims_only {
+        return Ok(ExitCode::SUCCESS);
+    }
     let (profile, registry, overrides, waivers, compatibility, policy_sources) =
         crate::policy::load_profiled_registry(&root)?;
-    let paths = if hook_input.check {
-        check_paths(&root)?
+    let run_file_checks = hook_input.check || had_edits;
+    let mut results = if run_file_checks {
+        rerun_checks(&paths)
     } else {
-        touched_paths(&root, hook_input.session_id.as_deref())?
+        Vec::new()
     };
-    let mut results = rerun_checks(&paths);
     let touched: BTreeSet<String> = paths
         .iter()
         .filter_map(|path| relative_path(&root, path))
         .collect();
-    let intent = read_intent(&root, hook_input.session_id.as_deref());
-    let baseline = read_diff_baseline(&root, hook_input.session_id.as_deref());
-    results.extend(crate::checks::diff::evaluate(
-        &root,
-        &touched,
-        baseline.as_ref(),
-        intent.as_deref(),
-    ));
-    results.extend(rerun_python_checks(&paths));
-    results.extend(crate::checks::languages::scan(&paths));
-    results.extend(crate::checks::structure::scan(&paths));
-    results.extend(crate::checks::modules::scan(&paths));
-    results.extend(crate::checks::naming::scan(&paths));
-    results.extend(crate::checks::boundary::scan(&paths));
-    results.extend(crate::checks::logging::scan(&paths));
-    results.extend(crate::checks::determinism::scan(&paths));
-    results.extend(crate::checks::ui::scan(&paths));
-    results.extend(crate::checks::justification::scan(&paths));
-    results.extend(crate::checks::construction::scan(&paths));
-    results.extend(crate::checks::endpoints::scan(&paths));
-    results.extend(crate::checks::auth::scan(&paths));
+    if run_file_checks {
+        let intent = read_intent(&root, hook_input.session_id.as_deref());
+        let baseline = read_diff_baseline(&root, hook_input.session_id.as_deref());
+        results.extend(crate::checks::diff::evaluate(
+            &root,
+            &touched,
+            baseline.as_ref(),
+            intent.as_deref(),
+        ));
+        results.extend(rerun_python_checks(&paths));
+        results.extend(crate::checks::languages::scan(&paths));
+        results.extend(crate::checks::structure::scan(&paths));
+        results.extend(crate::checks::modules::scan(&paths));
+        results.extend(crate::checks::naming::scan(&paths));
+        results.extend(crate::checks::boundary::scan(&paths));
+        results.extend(crate::checks::logging::scan(&paths));
+        results.extend(crate::checks::determinism::scan(&paths));
+        results.extend(crate::checks::ui::scan(&paths));
+        results.extend(crate::checks::justification::scan(&paths));
+        results.extend(crate::checks::construction::scan(&paths));
+        results.extend(crate::checks::endpoints::scan(&paths));
+        results.extend(crate::checks::auth::scan(&paths));
+    }
     let mut command_run = run_repository_commands(
         &root,
         hook_input.workspace.as_deref(),
@@ -191,7 +217,6 @@ fn run_inner(
     };
     results.extend(command_run.results);
     if !hook_input.check {
-        let configured = configured_executables(&root);
         results.push(crate::checks::claims::evaluate(
             hook_input.transcript_path.as_deref().map(Path::new),
             &command_run.evidence,
@@ -378,14 +403,27 @@ fn resolve_root(cwd: Option<&str>) -> Result<PathBuf, String> {
     crate::hooks::root::resolve(cwd)
 }
 
-fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<Vec<String>, String> {
+fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, String> {
     let ledger = root.join(".lgtm/evidence/current-task.results.jsonl");
     let raw = crate::fsutil::read_optional_bounded(&ledger, MAX_LEDGER_BYTES);
     let mut paths = BTreeSet::new();
+    let mut had_edits = false;
     for line in raw.lines() {
         let record: EditRecord =
             serde_json::from_str(line).map_err(|error| format!("parse result ledger ({error})"))?;
         if record.session_id.as_deref() != session_id {
+            continue;
+        }
+        had_edits = true;
+        if let Some(path) = record
+            .edited_file
+            .as_deref()
+            .and_then(|file| canonical_contained_file(root, file))
+        {
+            paths.insert(path);
+            continue;
+        }
+        if record.result.rule_id != "no-committed-secrets" {
             continue;
         }
         for location in record.result.locations {
@@ -394,7 +432,10 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<Vec<String>, S
             }
         }
     }
-    Ok(paths.into_iter().collect())
+    Ok(TouchedPaths {
+        files: paths.into_iter().collect(),
+        had_edits,
+    })
 }
 
 fn check_paths(root: &Path) -> Result<Vec<String>, String> {
@@ -426,19 +467,22 @@ fn collect_check_paths(
         }
         if metadata.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if !matches!(
-                name.as_str(),
-                ".git"
-                    | ".lgtm"
-                    | ".claude"
-                    | "target"
-                    | "node_modules"
-                    | "dist"
-                    | "build"
-                    | "vendor"
-                    | ".venv"
-                    | "venv"
-            ) {
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            if relative != Path::new("tests/fixtures/semgrep-python")
+                && !matches!(
+                    name.as_str(),
+                    ".git"
+                        | ".lgtm"
+                        | ".claude"
+                        | "target"
+                        | "node_modules"
+                        | "dist"
+                        | "build"
+                        | "vendor"
+                        | ".venv"
+                        | "venv"
+                )
+            {
                 collect_check_paths(root, &path, depth + 1, paths)?;
             }
         } else if metadata.is_file()
@@ -684,25 +728,69 @@ fn write_summary(
     results: &[EnforcementResult],
 ) -> Result<(), String> {
     let counts = count_results(results);
-    let mut lines = vec![format!(
-        "lgtm Stop: passed={} warning={} unverified={} failed=0",
-        counts.passed, counts.warning, counts.unverified
-    )];
+    let clean = counts.failed == 0 && counts.warning == 0 && counts.unverified == 0;
+    let mut lines = if clean {
+        vec!["lgtm: passed".to_string()]
+    } else {
+        vec![format!(
+            "lgtm: action required (failed={} warning={} unverified={})",
+            counts.failed, counts.warning, counts.unverified
+        )]
+    };
+    for result in results
+        .iter()
+        .filter(|result| result.status == Status::Failed)
+    {
+        let label = if result.severity == Severity::Error {
+            "FAILED"
+        } else {
+            "REVIEW"
+        };
+        lines.push(format!(
+            "{label} {}: {}",
+            result.rule_id,
+            bounded_summary_message(&result.message)
+        ));
+    }
     for result in results
         .iter()
         .filter(|result| result.status == Status::Unverified)
     {
-        lines.push(format!("UNVERIFIED {}: {}", result.rule_id, result.message));
+        lines.push(format!(
+            "UNVERIFIED {}: {}",
+            result.rule_id,
+            bounded_summary_message(&result.message)
+        ));
     }
     for result in results
         .iter()
         .filter(|result| result.status == Status::Warning)
     {
-        lines.push(format!("REVIEW {}: {}", result.rule_id, result.message));
+        lines.push(format!(
+            "REVIEW {}: {}",
+            result.rule_id,
+            bounded_summary_message(&result.message)
+        ));
     }
     let encoded = adapter.encode_response(event, HookResponse::Summary(lines.join("\n")))?;
     crate::adapter::emit(output, &mut std::io::stderr(), &encoded)
         .map_err(|error| format!("write summary ({error})"))
+}
+
+fn bounded_summary_message(message: &str) -> String {
+    let sanitized: String = message
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\n')
+        .collect();
+    if sanitized.chars().count() <= MAX_SUMMARY_MESSAGE_CHARS {
+        return sanitized;
+    }
+    let mut bounded: String = sanitized
+        .chars()
+        .take(MAX_SUMMARY_MESSAGE_CHARS.saturating_sub(1))
+        .collect();
+    bounded.push('…');
+    bounded
 }
 
 fn write_block_decision(
@@ -722,4 +810,38 @@ fn write_block_decision(
     crate::adapter::emit(&mut std::io::stdout(), &mut std::io::stderr(), &encoded)
         .map_err(|error| format!("write block decision ({error})"))?;
     Ok(ExitCode::from(encoded.exit_code))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summary_messages_are_sanitized_and_bounded() {
+        let message = format!("{}\rsecret", "é".repeat(MAX_SUMMARY_MESSAGE_CHARS));
+        let bounded = bounded_summary_message(&message);
+        assert_eq!(bounded.chars().count(), MAX_SUMMARY_MESSAGE_CHARS);
+        assert!(bounded.ends_with('…'));
+        assert!(!bounded.contains('\r'));
+    }
+
+    #[test]
+    fn full_check_excludes_the_intentional_semgrep_violation_corpus() {
+        let root =
+            std::env::temp_dir().join(format!("lgtm-stop-check-paths-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("source directory");
+        std::fs::create_dir_all(root.join("tests/fixtures/semgrep-python"))
+            .expect("fixture directory");
+        std::fs::write(root.join("src/app.py"), "value = 1\n").expect("source file");
+        std::fs::write(
+            root.join("tests/fixtures/semgrep-python/violations.py"),
+            "eval(input())\n",
+        )
+        .expect("fixture file");
+
+        let paths = check_paths(&root).expect("check paths");
+        assert!(paths.iter().any(|path| path.ends_with("src/app.py")));
+        assert!(!paths.iter().any(|path| path.contains("semgrep-python")));
+        std::fs::remove_dir_all(root).ok();
+    }
 }

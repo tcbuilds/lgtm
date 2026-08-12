@@ -339,7 +339,11 @@ fn write_response(
     packet: &str,
 ) -> Result<(), String> {
     use crate::adapter::{HookEvent, HookResponse};
-    let context = format!("Detected task intent: {intent}.\n\n{packet}");
+    let context = if intent == "unknown" {
+        packet.to_string()
+    } else {
+        format!("Detected task intent: {intent}.\n\n{packet}")
+    };
     let encoded = adapter.encode_response(
         HookEvent::UserPromptSubmit,
         HookResponse::InjectContext(context),
@@ -353,6 +357,9 @@ fn write_intent_response(
     intent: &str,
 ) -> Result<(), String> {
     use crate::adapter::{HookEvent, HookResponse};
+    if intent == "unknown" {
+        return Ok(());
+    }
     let context = format!("Detected task intent: {intent}.");
     let encoded = adapter.encode_response(
         HookEvent::UserPromptSubmit,

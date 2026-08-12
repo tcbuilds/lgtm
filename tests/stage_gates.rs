@@ -147,20 +147,21 @@ fn missing_rust_test_reports_unverified_without_blocking_with_association_eviden
 }
 
 #[test]
-fn unsupported_language_is_unverified_instead_of_silently_passing() {
+fn unsupported_language_does_not_trigger_supported_source_association() {
     let repo = setup();
     repo.write("src/app.rb", "def value; 1; end\n");
     let post = hook(&repo, "post-tool-use", Some("src/app.rb"));
     assert!(post.status.success());
-    assert!(String::from_utf8_lossy(&post.stderr).contains("new-behavior-tests-required"));
-    assert!(String::from_utf8_lossy(&post.stderr).contains("unverified"));
+    assert!(!String::from_utf8_lossy(&post.stderr).contains("new-behavior-tests-required"));
 }
 
 #[test]
-fn mixed_association_failures_keep_missing_and_unclassifiable_reasons() {
+fn mixed_source_and_asset_changes_keep_association_output_actionable() {
     let repo = setup();
     repo.write("src/app.py", "value = 1\n");
-    repo.write("src/app.rb", "def value; 1; end\n");
+    for index in 0..20 {
+        repo.write(&format!("screenshots/cycle-{index}.png"), "image fixture\n");
+    }
     let post = hook(&repo, "post-tool-use", Some("src/app.py"));
     assert!(post.status.success());
 
@@ -189,11 +190,11 @@ fn mixed_association_failures_keep_missing_and_unclassifiable_reasons() {
         "message: {behavior_message}"
     );
     assert!(
-        behavior_message.contains("src/app.rb: no supported language pack"),
+        !behavior_message.contains("screenshots/"),
         "message: {behavior_message}"
     );
     assert!(
-        behavior_message.contains("Unclassifiable changes:"),
+        !behavior_message.contains("Unclassifiable changes:"),
         "message: {behavior_message}"
     );
     let stop_output = format!(
@@ -206,9 +207,7 @@ fn mixed_association_failures_keep_missing_and_unclassifiable_reasons() {
         "Stop output: {stop_output}"
     );
     assert!(
-        stop_output.contains("src/app.py")
-            && stop_output.contains("src/app.rb: no supported language pack")
-            && stop_output.contains("Unclassifiable changes:"),
+        stop_output.contains("src/app.py") && !stop_output.contains("screenshots/"),
         "Stop output: {stop_output}"
     );
 }

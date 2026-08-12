@@ -66,7 +66,7 @@ fn post_tool_native_language_check_reports_typescript_violation() {
     let temp = TempDir::new();
     let file = temp.path.join("App.tsx");
     std::fs::write(&file, "const value: any = input;\n").expect("fixture source");
-    let results = scan_target(&temp.path, &file.to_string_lossy());
+    let (_, results) = scan_target(&temp.path, &file.to_string_lossy());
     let finding = results
         .iter()
         .find(|result| result.rule_id == "typescript-no-any")
@@ -80,7 +80,7 @@ fn post_tool_native_language_check_reports_rust_violation() {
     let temp = TempDir::new();
     let file = temp.path.join("lib.rs");
     std::fs::write(&file, "fn value() { let _ = input.unwrap(); }\n").expect("fixture source");
-    let results = scan_target(&temp.path, &file.to_string_lossy());
+    let (_, results) = scan_target(&temp.path, &file.to_string_lossy());
     let finding = results
         .iter()
         .find(|result| result.rule_id == "rust-no-unwrap-expect")
@@ -94,7 +94,7 @@ fn post_tool_native_language_check_reports_go_violation() {
     let temp = TempDir::new();
     let file = temp.path.join("main.go");
     std::fs::write(&file, "package main\nfunc Run() { go func() {} }\n").expect("fixture source");
-    let results = scan_target(&temp.path, &file.to_string_lossy());
+    let (_, results) = scan_target(&temp.path, &file.to_string_lossy());
     let finding = results
         .iter()
         .find(|result| result.rule_id == "go-goroutine-cancellation")
@@ -141,7 +141,8 @@ fn evidence_record_is_appended_and_well_formed() {
             finding_descriptions: Vec::new(),
         },
     };
-    append_evidence(&temp.path, Some("sess-1"), &result).expect("append must succeed");
+    append_evidence(&temp.path, Some("sess-1"), Some("src/app.py"), &result)
+        .expect("append must succeed");
 
     let ledger = temp
         .path
@@ -152,6 +153,7 @@ fn evidence_record_is_appended_and_well_formed() {
     let line = contents.lines().next().expect("one record present");
     let value: Value = serde_json::from_str(line).expect("record must be valid JSON");
     assert_eq!(value["session_id"], json!("sess-1"));
+    assert_eq!(value["edited_file"], json!("src/app.py"));
     assert_eq!(value["result"]["rule_id"], json!("no-committed-secrets"));
     assert_eq!(value["result"]["status"], json!("passed"));
 }
@@ -185,7 +187,8 @@ fn oversized_ledger_rotates_to_stay_bounded() {
             finding_descriptions: Vec::new(),
         },
     };
-    append_evidence(&temp.path, Some("sess-2"), &result).expect("append must succeed");
+    append_evidence(&temp.path, Some("sess-2"), Some("src/app.py"), &result)
+        .expect("append must succeed");
 
     let size = std::fs::metadata(&path).expect("ledger present").len();
     assert!(
@@ -352,7 +355,7 @@ fn evidence_lock_deadline_skips_persistence_when_contended() {
     };
 
     let start = std::time::Instant::now();
-    let outcome = append_evidence(&temp.path, Some("sess-lock"), &result);
+    let outcome = append_evidence(&temp.path, Some("sess-lock"), Some("src/app.py"), &result);
     let elapsed = start.elapsed();
 
     // SAFETY: valid open fd, unlock; the holder is dropped right after.
@@ -511,7 +514,8 @@ fn append_after_rotation_keeps_failed_and_stays_bounded() {
             finding_descriptions: Vec::new(),
         },
     };
-    append_evidence(&temp.path, Some("sess-x"), &result).expect("append must succeed");
+    append_evidence(&temp.path, Some("sess-x"), Some("src/app.py"), &result)
+        .expect("append must succeed");
 
     let contents = std::fs::read_to_string(&path).expect("ledger readable");
     assert!(
