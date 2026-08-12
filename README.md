@@ -177,9 +177,10 @@ lgtm check --tier full
 See [the Codex adapter contract](doc/adapters/codex.md) for exit statuses and
 platform limits.
 
-Claude Stop hooks run fast, touched-workspace gates by default. Run
-`lgtm check --tier full` at a push/CI boundary to execute tests, builds, and
-coverage without paying that cost at every conversation stop.
+PostToolUse hooks run fast, touched-workspace gates. Stop hooks run the full
+tier by default, including applicable tests, builds, and coverage. Use
+`lgtm check --tier fast|targeted|full` when an explicit standalone tier is
+needed.
 
 To make pushes run the full gate locally, copy
 [`scripts/lgtm-pre-push`](scripts/lgtm-pre-push) into a versioned hooks directory

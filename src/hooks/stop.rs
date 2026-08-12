@@ -201,14 +201,11 @@ fn run_inner(
         results.extend(crate::checks::endpoints::scan(&paths));
         results.extend(crate::checks::auth::scan(&paths));
     }
-    let mut command_run = run_repository_commands(
-        &root,
-        hook_input.workspace.as_deref(),
-        hook_input.tier.as_deref().or(Some("fast")),
-        &paths,
-    );
+    let tier = effective_tier(hook_input.tier.as_deref());
+    let mut command_run =
+        run_repository_commands(&root, hook_input.workspace.as_deref(), Some(tier), &paths);
     bind_command_provenance(&root, &paths, &mut command_run.evidence);
-    let coverage = if hook_input.tier.as_deref() == Some("full") {
+    let coverage = if tier == "full" {
         commands::load(&root)
             .map(|settings| commands::run_coverage(&root, &settings.coverage))
             .unwrap_or_else(|_| commands::run_coverage(&root, &[]))
@@ -255,6 +252,14 @@ fn run_inner(
         return Ok(ExitCode::SUCCESS);
     }
     write_block_decision(adapter, event, &failures)
+}
+
+fn effective_tier(tier: Option<&str>) -> &str {
+    tier.unwrap_or_else(|| match tiers::for_hook(Hook::Stop) {
+        Tier::Fast => "fast",
+        Tier::Targeted => "targeted",
+        Tier::Full => "full",
+    })
 }
 
 // Executable names the repository configures as required commands. Claim matching

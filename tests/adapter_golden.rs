@@ -360,7 +360,6 @@ fn stop_fixture(claim: &str) -> (TempRepo, String) {
         "cwd": repo.path(),
         "session_id": "golden",
         "transcript_path": repo.path().join("transcript.jsonl"),
-        "tier": "full",
     })
     .to_string();
     (repo, stdin)
