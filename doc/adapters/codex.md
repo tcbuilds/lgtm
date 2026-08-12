@@ -60,9 +60,10 @@ bypass-resistant backstop.
 Codex's `notify`-style hooks are observation-only and cannot enforce a deny or
 Stop continuation. The current Codex runtime also has incomplete interception
 for `unified_exec` and equivalent shell paths, so native hooks are not a
-universal shell-security boundary. MCP tools cannot force a final verification
-call, so a native Codex Stop hook or `lgtm check --tier full` remains necessary
-for completion enforcement.
+universal shell-security boundary. For intercepted direct `git commit` calls,
+PreToolUse runs the full gate before allowing the command. MCP tools cannot
+force that commit boundary, so `lgtm check --tier full`, pre-push, and CI remain
+necessary backstops.
 
 ## Execution-path capability matrix
 

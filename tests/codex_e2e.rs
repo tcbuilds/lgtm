@@ -172,6 +172,62 @@ fn codex_chat_only_lifecycle_is_silent_and_omits_unknown_intent() {
 }
 
 #[test]
+fn codex_exec_command_commit_runs_full_gate() {
+    let repo = TempRepo::new();
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    repo.write("bin/full-check", "#!/bin/sh\nexit 9\n");
+    let executable = repo.path().join("bin/full-check");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "tests",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [executable.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let output = run_hook(
+        &repo,
+        "pre-tool-use",
+        json!({
+            "hookEventName": "PreToolUse",
+            "session_id": "codex-commit",
+            "cwd": repo.path(),
+            "tool_name": "exec_command",
+            "tool_input": {"cmd": "git commit -m test"},
+        }),
+    );
+
+    assert!(output.status.success(), "Codex deny uses a JSON response");
+    let response: Value = serde_json::from_slice(&output.stdout).expect("deny JSON");
+    assert_eq!(response["hookSpecificOutput"]["permissionDecision"], "deny");
+    let reason = response["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .expect("deny reason");
+    assert!(reason.contains("pre-commit full gate failed"));
+    assert!(reason.contains("exit status 9"));
+}
+
+#[test]
 fn codex_config_only_turn_has_no_test_association_noise() {
     let repo = TempRepo::new();
     repo.write("settings.json", "{}\n");

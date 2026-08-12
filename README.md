@@ -61,9 +61,11 @@ select relevant rules → guide the agent → check the change → allow or bloc
 At the start of a session, LGTM gives the agent a small permanent contract.
 When you submit a task, it selects only the relevant standards and sends a
 compact MUST/REVIEW packet before coding begins. Before an Edit or Write, it
-checks the target path and records a baseline. After edits, fast checks run;
-pushes and CI can run the full gate. You can also run the binary directly with
-`lgtm check --tier full`.
+checks the target path and records a baseline. After edits, fast checks run.
+When an agent attempts `git commit`, PreToolUse runs the full gate once and
+denies the commit if it fails. Stop runs targeted checks without repeating the
+full suite. Pushes and CI remain full-gate backstops. You can also run the
+binary directly with `lgtm check --tier full`.
 
 ### A concrete prompt
 
@@ -115,9 +117,12 @@ flowchart TD
     O --> P[Fast checks: secrets, diff, native rules]
     P --> Q[Warn or block; write evidence]
     Q --> D
-    D --> R[Agent tries to finish]
-    R --> S[Stop hook]
-    S --> T[Recheck touched files and configured commands]
+    D --> R{Agent invokes git commit?}
+    R -->|Yes| Z[PreToolUse full gate]
+    Z -->|Fail| L
+    Z -->|Pass| D
+    R -->|No; agent finishes| S[Stop hook]
+    S --> T[Targeted recheck of touched files]
     T --> U[Compare claims with evidence]
     U --> V{Unresolved MUST violation?}
     V -->|Yes| W[Block completion with repair text]
@@ -131,9 +136,9 @@ The five Claude events have different jobs:
 | --- | --- | --- |
 | `SessionStart` | Detect the repo and provide the permanent contract. | Context injection |
 | `UserPromptSubmit` | Classify intent and inject only relevant policy. | Context injection |
-| `PreToolUse` | Protect paths, prohibited files, and the pre-edit baseline. | Allow or deny |
+| `PreToolUse` | Protect paths and baselines; run the full gate before agent commits. | Allow or deny |
 | `PostToolUse` | Give quick feedback after each edit and record findings. | Warning or block |
-| `Stop` | Re-run final checks, inspect the diff, verify claims, and decide completion. | Allow or block |
+| `Stop` | Run targeted final checks, inspect the diff, verify claims, and decide completion. | Allow or block |
 
 Evidence is written locally under `.lgtm/evidence/`. It records what ran, its
 exit status, touched files, findings, and policy decisions. It is a ledger for
@@ -177,8 +182,11 @@ lgtm check --tier full
 See [the Codex adapter contract](doc/adapters/codex.md) for exit statuses and
 platform limits.
 
-PostToolUse hooks run fast, touched-workspace gates. Stop hooks run the full
-tier by default, including applicable tests, builds, and coverage. Use
+PostToolUse hooks run fast, touched-workspace gates. An agent's `git commit`
+attempt runs the full tier, including applicable tests, builds, and coverage;
+matching successful evidence is reused on an unchanged retry. Stop hooks run
+the targeted tier and reuse that full evidence when checking verification
+claims, so ordinary conversation completion does not rerun the full suite. Use
 `lgtm check --tier fast|targeted|full` when an explicit standalone tier is
 needed.
 

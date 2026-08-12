@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted
+Superseded by ADR-0014
+
+Tier placement is superseded by
+[ADR-0014](0014-full-gate-before-agent-commit.md). Root resolution and command
+scoping remain accepted.
 
 ## Decision
 

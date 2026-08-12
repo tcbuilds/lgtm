@@ -51,7 +51,7 @@ struct TouchedPaths {
     had_edits: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct RuleCounts {
     passed: usize,
     failed: usize,
@@ -83,6 +83,7 @@ struct TaskEvidence<'a> {
     finished_at_ms: u128,
     touched_files_digest: String,
     config_digest: String,
+    tier: &'a str,
 }
 
 struct EvidenceMeta<'a> {
@@ -92,11 +93,93 @@ struct EvidenceMeta<'a> {
     paths: &'a [String],
     started_at_ms: u128,
     finished_at_ms: u128,
+    tier: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredTaskEvidence {
+    task_id: String,
+    rules: RuleCounts,
+    commands: Vec<commands::CommandEvidence>,
+    policy_version: String,
+    binary_version: String,
+    touched_files_digest: String,
+    config_digest: String,
+    #[serde(default)]
+    tier: Option<String>,
+}
+
+struct InternalGateAdapter;
+
+impl HookAdapter for InternalGateAdapter {
+    fn parse_request(
+        &self,
+        _event: crate::adapter::HookEvent,
+        _stdin_json: &str,
+    ) -> Result<crate::adapter::HookRequest, String> {
+        Err("internal gate adapter does not parse harness input".to_string())
+    }
+
+    fn encode_response(
+        &self,
+        event: crate::adapter::HookEvent,
+        response: HookResponse,
+    ) -> Result<crate::adapter::EncodedResponse, String> {
+        if event != crate::adapter::HookEvent::Stop {
+            return Err("internal gate adapter only supports Stop".to_string());
+        }
+        let (body, exit_code) = match response {
+            HookResponse::Summary(_) => (String::new(), 0),
+            HookResponse::BlockStop { reason } => (reason, 2),
+            _ => return Err("internal gate adapter received an invalid response".to_string()),
+        };
+        Ok(crate::adapter::EncodedResponse {
+            body,
+            stream: crate::adapter::OutputStream::Stdout,
+            exit_code,
+        })
+    }
 }
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     let adapter = ClaudeAdapter;
     run_with_adapter(input, output, &adapter)
+}
+
+/// Run the complete gate immediately before an agent executes `git commit`.
+///
+/// A matching successful full-tier record is reused for the same session and
+/// exact file/config state, so a denied commit retry does not rerun unchanged
+/// tests. `Ok(None)` means the commit may proceed; `Ok(Some(reason))` means the
+/// full gate found a blocking failure.
+pub(crate) fn run_pre_commit_gate(
+    root: &Path,
+    session_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    let paths = check_paths(root)?;
+    if matching_full_evidence(root, session_id, &paths).is_some() {
+        return Ok(None);
+    }
+    let payload = serde_json::json!({
+        "cwd": root,
+        "session_id": session_id,
+        "check": true,
+        "tier": "full",
+    });
+    let mut input = std::io::Cursor::new(payload.to_string());
+    let mut output = Vec::new();
+    let code = run_inner(
+        &mut input,
+        &mut output,
+        &InternalGateAdapter,
+        crate::adapter::HookEvent::Stop,
+    )?;
+    if code == ExitCode::SUCCESS {
+        return Ok(None);
+    }
+    let reason = String::from_utf8(output)
+        .map_err(|_| "pre-commit gate produced non-UTF-8 output".to_string())?;
+    Ok(Some(reason.trim().to_string()))
 }
 
 /// Run Stop with an explicitly selected harness adapter.
@@ -146,7 +229,7 @@ fn run_inner(
     adapter: &dyn HookAdapter,
     event: crate::adapter::HookEvent,
 ) -> Result<ExitCode, String> {
-    debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Full);
+    debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Targeted);
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
@@ -214,9 +297,14 @@ fn run_inner(
     };
     results.extend(command_run.results);
     if !hook_input.check {
+        let mut claim_evidence = command_run.evidence.clone();
+        claim_evidence.extend(
+            matching_full_evidence(&root, hook_input.session_id.as_deref(), &paths)
+                .unwrap_or_default(),
+        );
         results.push(crate::checks::claims::evaluate(
             hook_input.transcript_path.as_deref().map(Path::new),
-            &command_run.evidence,
+            &claim_evidence,
             &configured,
         ));
     }
@@ -234,6 +322,7 @@ fn run_inner(
             paths: &paths,
             started_at_ms,
             finished_at_ms: unix_ms(),
+            tier,
         },
         &results,
         &command_run.evidence,
@@ -251,7 +340,7 @@ fn run_inner(
         write_summary(output, adapter, event, &results)?;
         return Ok(ExitCode::SUCCESS);
     }
-    write_block_decision(adapter, event, &failures)
+    write_block_decision(output, adapter, event, &failures)
 }
 
 fn effective_tier(tier: Option<&str>) -> &str {
@@ -354,6 +443,34 @@ fn bind_command_provenance(
         item.policy_version = Some(crate::policy::POLICY_BUNDLE_VERSION.to_string());
         item.binary_version = Some(env!("CARGO_PKG_VERSION").to_string());
     }
+}
+
+fn matching_full_evidence(
+    root: &Path,
+    session_id: Option<&str>,
+    paths: &[String],
+) -> Option<Vec<commands::CommandEvidence>> {
+    let session_id = session_id?;
+    let expected_config = digest_bytes(&crate::fsutil::read_optional_bounded(
+        &root.join(".lgtm/config.json"),
+        256 * 1024,
+    ));
+    let expected_files = digest_paths(root, paths);
+    let raw = crate::fsutil::read_optional_bounded(
+        &root.join(".lgtm/evidence/evidence.jsonl"),
+        MAX_TASK_EVIDENCE_BYTES,
+    );
+    raw.lines().rev().find_map(|line| {
+        let record: StoredTaskEvidence = serde_json::from_str(line).ok()?;
+        (record.task_id == session_id
+            && record.rules.failed == 0
+            && record.tier.as_deref() == Some("full")
+            && record.policy_version == crate::policy::POLICY_BUNDLE_VERSION
+            && record.binary_version == env!("CARGO_PKG_VERSION")
+            && record.config_digest == expected_config
+            && record.touched_files_digest == expected_files)
+            .then_some(record.commands)
+    })
 }
 
 fn read_diff_baseline(root: &Path, session_id: Option<&str>) -> Option<BTreeSet<String>> {
@@ -618,6 +735,7 @@ fn append_task_evidence(
             &root.join(".lgtm/config.json"),
             256 * 1024,
         )),
+        tier: metadata.tier,
     };
     let mut line =
         serde_json::to_string(&record).map_err(|error| format!("serialize evidence ({error})"))?;
@@ -799,6 +917,7 @@ fn bounded_summary_message(message: &str) -> String {
 }
 
 fn write_block_decision(
+    output: &mut impl Write,
     adapter: &dyn HookAdapter,
     event: crate::adapter::HookEvent,
     failures: &[&EnforcementResult],
@@ -812,7 +931,7 @@ fn write_block_decision(
         }
     }
     let encoded = adapter.encode_response(event, HookResponse::BlockStop { reason })?;
-    crate::adapter::emit(&mut std::io::stdout(), &mut std::io::stderr(), &encoded)
+    crate::adapter::emit(output, &mut std::io::stderr(), &encoded)
         .map_err(|error| format!("write block decision ({error})"))?;
     Ok(ExitCode::from(encoded.exit_code))
 }

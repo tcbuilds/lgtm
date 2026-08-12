@@ -15,6 +15,7 @@ pub(super) struct HookInput {
 pub(super) struct ToolInput {
     pub file_path: Option<String>,
     pub command: Option<String>,
+    pub cmd: Option<String>,
 }
 
 pub(super) fn edited_file(input: &HookInput) -> Option<&str> {
@@ -25,7 +26,13 @@ pub(super) fn edited_file(input: &HookInput) -> Option<&str> {
 
 pub(super) fn requested_command(input: &HookInput) -> Option<&str> {
     matches!(input.tool_name.as_deref(), Some("Bash"))
-        .then(|| input.tool_input.command.as_deref())
+        .then(|| {
+            input
+                .tool_input
+                .command
+                .as_deref()
+                .or(input.tool_input.cmd.as_deref())
+        })
         .flatten()
 }
 
@@ -42,6 +49,7 @@ mod tests {
             tool_input: ToolInput {
                 file_path: Some("src/lib.rs".to_string()),
                 command: None,
+                cmd: None,
             },
         };
         assert_eq!(edited_file(&input), Some("src/lib.rs"));
@@ -60,6 +68,7 @@ mod tests {
             tool_input: ToolInput {
                 file_path: None,
                 command: Some("cargo test".to_string()),
+                cmd: None,
             },
         };
         assert_eq!(requested_command(&input), Some("cargo test"));
@@ -67,5 +76,20 @@ mod tests {
         let mut write = input;
         write.tool_name = Some("Write".to_string());
         assert_eq!(requested_command(&write), None);
+    }
+
+    #[test]
+    fn codex_cmd_field_exposes_commands() {
+        let input = HookInput {
+            cwd: None,
+            session_id: None,
+            tool_name: Some("Bash".to_string()),
+            tool_input: ToolInput {
+                file_path: None,
+                command: None,
+                cmd: Some("git commit -m fix".to_string()),
+            },
+        };
+        assert_eq!(requested_command(&input), Some("git commit -m fix"));
     }
 }

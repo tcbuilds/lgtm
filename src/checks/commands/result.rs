@@ -1,11 +1,11 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::checks::{EnforcementResult, ResultEvidence, Status};
 use crate::policy::Severity;
 
 const RULE_ID: &str = "required-repository-commands";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommandEvidence {
     pub command: String,
     pub exit_code: Option<i32>,
