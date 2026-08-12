@@ -9,10 +9,10 @@ Accepted
 Resolve hook `cwd` upward to the nearest real repository marker (`.git/HEAD`,
 worktree `.git` file, or `.lgtm/config.json`). Accept absolute Edit/Write paths
 only after proving they resolve inside that root. Fresh init and legacy V1
-migration use detected workspace-scoped V2 commands. Stop hooks run `fast`
-commands by default; a Git `pre-push` hook or CI invokes
-`lgtm check --tier full` for the complete gate. Commands run only for
-workspaces touched by the current session.
+migration use detected workspace-scoped V2 commands. PostToolUse hooks run
+`fast` commands; Stop hooks resolve to the `full` tier by default. Explicit
+`lgtm check --tier fast|targeted|full` remains available for standalone gates.
+Commands run only for workspaces touched by the current session.
 
 ## Rationale
 
@@ -24,6 +24,7 @@ conversation stop.
 
 ## Trade-offs
 
-Fast Stop can defer full test/build failures; the pre-push hook and CI provide
-the final full gate. Existing hand-authored V2 configs remain authoritative;
-legacy V1 configs are replaced with detected workspace commands during init.
+Full Stop may run expensive test/build commands at conversation completion;
+bounded timeouts and touched-workspace filtering limit that cost. Existing
+hand-authored V2 configs remain authoritative; legacy V1 configs are replaced
+with detected workspace commands during init.
