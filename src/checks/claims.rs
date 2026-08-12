@@ -52,13 +52,13 @@ pub fn evaluate(
     if claims.iter().all(|claim| is_proven(claim, evidence)) {
         outcome(
             Status::Passed,
-            "Every repository quality-gate claim has matching current Stop command evidence.",
+            "Every repository quality-gate claim has matching current full-gate command evidence.",
             descriptors,
         )
     } else {
         outcome(
             Status::Failed,
-            "A verification claim lacks matching current Stop command evidence with exit status 0.",
+            "A verification claim lacks matching current full-gate command evidence with exit status 0.",
             descriptors,
         )
     }
@@ -286,7 +286,8 @@ fn outcome(status: Status, message: &str, descriptors: Vec<String>) -> Enforceme
         message: message.to_string(),
         locations: Vec::new(),
         remediation: (status == Status::Failed).then(|| {
-            "Run the claimed command successfully during Stop, or correct the claim.".to_string()
+            "Run the claimed command successfully through the full pre-commit gate, or correct the claim."
+                .to_string()
         }),
         evidence: ResultEvidence {
             check: "transcript.claims".to_string(),

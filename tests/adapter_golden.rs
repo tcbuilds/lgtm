@@ -366,15 +366,12 @@ fn stop_fixture(claim: &str) -> (TempRepo, String) {
 }
 
 #[test]
-fn stop_allows_with_plain_text_summary_on_stdout() {
-    let (_repo, stdin) = stop_fixture("`true` passed successfully");
+fn stop_without_edits_or_claims_is_silent() {
+    let (_repo, stdin) = stop_fixture("Implementation complete.");
 
     let (code, stdout, stderr) = run_hook("stop", &stdin);
     assert_eq!(code, 0, "a clean Stop must exit 0");
-    assert_eq!(
-        stdout, "lgtm: passed\n",
-        "a clean Stop must write the exact plain-text summary on stdout"
-    );
+    assert_eq!(stdout, "", "a no-op Stop must stay silent");
     assert_eq!(
         stderr, "",
         "a clean Stop must emit nothing on stderr: {stderr:?}"
@@ -395,8 +392,8 @@ fn stop_blocks_on_stderr_with_exit_two() {
         stderr,
         concat!(
             r#"{"decision":"block","reason":"lgtm Stop blocked: unresolved MUST violations:\n"#,
-            r#"- evidence-claims-honest: A verification claim lacks matching current Stop command evidence with exit status 0.\n"#,
-            r#"  Repair: Run the claimed command successfully during Stop, or correct the claim."}"#,
+            r#"- evidence-claims-honest: A verification claim lacks matching current full-gate command evidence with exit status 0.\n"#,
+            r#"  Repair: Run the claimed command successfully through the full pre-commit gate, or correct the claim."}"#,
             "\n"
         ),
         "the Stop block envelope must be byte-for-byte stable on stderr"

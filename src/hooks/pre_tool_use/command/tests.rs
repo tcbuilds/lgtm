@@ -445,3 +445,31 @@ fn documentation_scopes_destructive_command_blocking_claims() {
         }
     }
 }
+
+#[test]
+fn detects_direct_git_commit_segments_without_matching_prose() {
+    for command in [
+        "git commit -m fix",
+        "/usr/bin/git commit --amend",
+        "git -C /repo commit -m fix",
+        "git add src/lib.rs && git commit -m fix",
+        "env MODE=test git commit -m fix",
+    ] {
+        assert!(
+            invokes_git_commit(command),
+            "commit not detected: {command}"
+        );
+    }
+    for command in [
+        "git status",
+        "git commit-tree HEAD",
+        "echo git commit",
+        "echo 'git commit'",
+        "sh -c 'git commit -m nested'",
+    ] {
+        assert!(
+            !invokes_git_commit(command),
+            "non-commit matched: {command}"
+        );
+    }
+}

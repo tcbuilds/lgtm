@@ -33,7 +33,8 @@
     "started_at_ms": { "type": "integer", "minimum": 0 },
     "finished_at_ms": { "type": "integer", "minimum": 0 },
     "touched_files_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "config_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+    "config_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "tier": { "enum": ["fast", "targeted", "full"] }
   },
   "$defs": {
     "result": {

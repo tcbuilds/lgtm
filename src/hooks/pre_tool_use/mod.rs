@@ -74,6 +74,33 @@ fn run_for_event(
                 );
             }
         }
+        if command::invokes_git_commit(command) {
+            match crate::hooks::stop::run_pre_commit_gate(&root, parsed.session_id.as_deref()) {
+                Ok(None) => {}
+                Ok(Some(reason)) => {
+                    return deny(
+                        output,
+                        adapter,
+                        event,
+                        &format!(
+                            "pre-commit full gate failed; fix the failures before committing: {}",
+                            bounded_reason(&reason)
+                        ),
+                    );
+                }
+                Err(reason) => {
+                    return deny(
+                        output,
+                        adapter,
+                        event,
+                        &format!(
+                            "pre-commit full gate could not run: {}",
+                            bounded_reason(&reason)
+                        ),
+                    );
+                }
+            }
+        }
         return ExitCode::SUCCESS;
     }
     let Some(file) = input::edited_file(&parsed) else {
@@ -112,6 +139,20 @@ fn run_for_event(
         );
     }
     ExitCode::SUCCESS
+}
+
+fn bounded_reason(reason: &str) -> String {
+    const MAX_CHARS: usize = 2_048;
+    let sanitized: String = reason
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\n')
+        .collect();
+    if sanitized.chars().count() <= MAX_CHARS {
+        return sanitized;
+    }
+    let mut bounded: String = sanitized.chars().take(MAX_CHARS - 1).collect();
+    bounded.push('…');
+    bounded
 }
 
 fn read_input(input: &mut impl Read) -> Option<input::HookInput> {
@@ -197,5 +238,14 @@ mod tests {
 
         let oversized = format!("{prefix}{padding}{suffix} ");
         assert!(read_input(&mut std::io::Cursor::new(oversized)).is_none());
+    }
+
+    #[test]
+    fn gate_reasons_are_sanitized_and_bounded() {
+        let reason = format!("{}\rsecret", "x".repeat(2_048));
+        let bounded = bounded_reason(&reason);
+        assert_eq!(bounded.chars().count(), 2_048);
+        assert!(bounded.ends_with('…'));
+        assert!(!bounded.contains('\r'));
     }
 }

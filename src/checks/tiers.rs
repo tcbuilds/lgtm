@@ -56,7 +56,7 @@ pub fn checks(tier: Tier) -> &'static [Check] {
 pub fn for_hook(hook: Hook) -> Tier {
     match hook {
         Hook::PostToolUse => Tier::Fast,
-        Hook::Stop => Tier::Full,
+        Hook::Stop => Tier::Targeted,
     }
 }
 
@@ -101,9 +101,9 @@ mod tests {
     }
 
     #[test]
-    fn hooks_select_fast_and_full_tiers() {
+    fn hooks_select_fast_and_targeted_tiers() {
         assert_eq!(for_hook(Hook::PostToolUse), Tier::Fast);
-        assert_eq!(for_hook(Hook::Stop), Tier::Full);
+        assert_eq!(for_hook(Hook::Stop), Tier::Targeted);
     }
 
     #[test]

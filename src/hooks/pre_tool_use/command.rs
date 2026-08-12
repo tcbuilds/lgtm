@@ -196,6 +196,58 @@ pub(super) fn find_match(argv: &[String], rules: &[Vec<String>]) -> Option<Prohi
         })
 }
 
+/// True when a shell command contains a direct `git commit` invocation.
+///
+/// Agent shells commonly combine staging and committing with `&&`. Quoted text
+/// stays one shlex token, so prose such as `echo "git commit"` is not treated as
+/// a commit. Nested shell programs (`sh -c ...`) are intentionally not guessed.
+pub(super) fn invokes_git_commit(command: &str) -> bool {
+    let Some(argv) = shlex::split(command) else {
+        return false;
+    };
+    argv.split(|token| matches!(token.as_str(), "&&" | "||" | ";"))
+        .any(segment_invokes_git_commit)
+}
+
+fn segment_invokes_git_commit(argv: &[String]) -> bool {
+    let (_, argv) = split_wrappers(argv);
+    let Some((executable, arguments)) = argv.split_first() else {
+        return false;
+    };
+    if executable.rsplit('/').next() != Some("git") {
+        return false;
+    }
+    git_subcommand(arguments) == Some("commit")
+}
+
+fn git_subcommand(arguments: &[String]) -> Option<&str> {
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index).map(String::as_str) {
+        if argument == "--" {
+            return arguments.get(index + 1).map(String::as_str);
+        }
+        if matches!(
+            argument,
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
+        ) {
+            index += 2;
+            continue;
+        }
+        if argument.starts_with("--git-dir=")
+            || argument.starts_with("--work-tree=")
+            || argument.starts_with("--namespace=")
+            || (argument.starts_with("-c") && argument.len() > 2)
+            || (argument.starts_with("-C") && argument.len() > 2)
+            || argument.starts_with('-')
+        {
+            index += 1;
+            continue;
+        }
+        return Some(argument);
+    }
+    None
+}
+
 /// True when the policy entry `rule` blocks `command`.
 ///
 /// The executable must be identical, every flag the rule names must be present
