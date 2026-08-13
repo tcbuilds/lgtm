@@ -1218,6 +1218,56 @@ mod tests {
         assert!(!summary.contains("lgtm: passed"));
     }
 
+    #[test]
+    fn aggregate_cutoff_full_evidence_is_not_reused_for_pre_commit() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-full-evidence-reuse-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let evidence_path = root.join(".lgtm/evidence/evidence.jsonl");
+        std::fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
+            .expect("evidence directory");
+        let config_digest = digest_bytes("");
+        let touched_files_digest = digest_paths(&root, &[]);
+        let record = |unverified| {
+            serde_json::json!({
+                "task_id": "aggregate-budget",
+                "rules": {
+                    "passed": 0,
+                    "failed": 0,
+                    "warning": 0,
+                    "skipped": 0,
+                    "not_applicable": 0,
+                    "unverified": unverified,
+                    "overridden": 0,
+                    "waived": 0
+                },
+                "commands": [],
+                "policy_version": crate::policy::POLICY_BUNDLE_VERSION,
+                "binary_version": env!("CARGO_PKG_VERSION"),
+                "touched_files_digest": touched_files_digest,
+                "config_digest": config_digest,
+                "tier": "full"
+            })
+        };
+
+        for (unverified, reusable) in [(1, false), (0, true)] {
+            std::fs::write(&evidence_path, format!("{}\n", record(unverified)))
+                .expect("evidence record");
+            assert_eq!(
+                matching_full_evidence(&root, Some("aggregate-budget"), &[]).is_some(),
+                reusable,
+                "unverified count {unverified} reuse decision"
+            );
+        }
+
+        std::fs::remove_dir_all(root).expect("temporary evidence directory removal");
+    }
+
     #[cfg(unix)]
     #[test]
     fn full_stop_budget_records_cutoff_evidence_and_action_required_summary() {
