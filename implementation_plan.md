@@ -35,7 +35,7 @@
 
 ## Affected areas
 
-- `src/checks/commands/runner.rs::run_coverage` — retain threshold classification and evidence generation; expose the status projection needed by Stop without changing execution or parse semantics.
+- `src/checks/commands/runner.rs::run_coverage` — retain threshold classification and evidence generation; prevent one metric from borrowing another metric's value while preserving the existing execution and evidence contract.
 - `src/checks/commands/result.rs` / `src/checks/commands/mod.rs` — add the smallest result-construction/re-export seam needed to turn coverage statuses into `EnforcementResult` values under `required-repository-commands`.
 - `src/hooks/stop.rs::run_inner` — extend the main `results` collection with coverage results before policy resolution and failure selection; continue passing coverage evidence to `append_task_evidence`.
 - `src/checks/commands/tests.rs` — retain existing passing/no-config coverage tests and add boundary cases for below-line, below-branch, and unparsable output plus status projection as appropriate.
@@ -46,19 +46,19 @@
 
 ### M1 — Full-tier coverage enforcement
 
-- [ ] [High] Project coverage status into the existing enforcement-result contract.
+- [x] [High] Project coverage status into the existing enforcement-result contract.
   - What: map each configured coverage evidence status to the matching `Status` (`passed`, `failed`, or `unverified`) and construct a stable, sanitized `required-repository-commands` result; keep the no-coverage `not_applicable` sentinel non-enforcing, and only measured threshold misses may map to `Failed`.
   - Where: `src/checks/commands/result.rs` / `src/checks/commands/mod.rs`, with only the minimal `runner.rs` adjustment required by the chosen return seam.
   - Why: coverage currently has evidence-only status, so Stop has no failure object to inspect.
   - Dependencies: existing `CoverageEvidence` classification and `EnforcementResult`/`result` helper; no schema or config change.
 
-- [ ] [High] Feed projected coverage results through full-tier Stop enforcement.
+- [x] [High] Feed projected coverage results through full-tier Stop enforcement.
   - What: extend `results` from `src/hooks/stop.rs::run_inner` with the coverage results immediately after full-tier coverage execution and before profile severity resolution, overrides, waivers, evidence append, and failure filtering.
   - Where: `src/hooks/stop.rs::run_inner`; leave `append_task_evidence`’s separate coverage evidence field intact.
   - Why: the same result list drives policy adjustments, persisted rule counts, summary text, hook block response, and the exit code returned through `src/main.rs::run_check`.
   - Dependencies: coverage projection from the preceding step; existing full-tier selection and `required-repository-commands` policy.
 
-- [ ] [High] Add regression tests for aligned coverage outcomes.
+- [x] [High] Add regression tests for aligned coverage outcomes.
   - What: extend command-runner tests for above-threshold pass, line-threshold failure, branch-threshold failure, and no-parseable-metrics unverified behavior; add integration fixtures with a V2 coverage command that assert full Stop and `lgtm check --tier full` block/non-zero for a measured miss, while pass remains successful and unparsable output remains unverified/non-blocking. Assert both `results`/summary behavior and serialized `coverage` evidence.
   - Where: `src/checks/commands/tests.rs` and `tests/commands.rs`, following existing executable-script and `TempRepo` patterns.
   - Why: the issue’s false-success path is only proven fixed when threshold failure reaches both hook and CLI decisions, and the unverified guard prevents accidental hard failures for optional-tool degradation.
@@ -66,11 +66,12 @@
 
 ### M2 — Verification handoff
 
-- [ ] [High] Run repository-required validation and inspect the final scope.
+- [x] [High] Run repository-required validation and inspect the final scope.
   - What: run the targeted coverage tests, then `cargo fmt --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, `cargo test --locked --all-targets --all-features`, `cargo build --locked`, `cargo run --locked -- --help`, `cargo run --locked -- compile --validate`, `shellcheck scripts/install.sh scripts/test-install.sh`, `scripts/test-install.sh`, and the full `lgtm check --tier full`/CI-equivalent check; inspect `git diff` and confirm no unrelated files or `.codegraph` data are included.
   - Where: repository root; no additional configuration or workflow file.
   - Why: these are the repository’s documented gates, and issue #40 changes the gate’s enforcement decision.
   - Dependencies: all implementation and regression tests complete.
+  - Evidence: targeted checks, formatting, Clippy, 563 locked tests, build, CLI help, compile validation, ShellCheck, and installer tests passed. The full-tier policy check exits 2 on the same five Semgrep findings as untouched baseline `add64cf`; no changed Python or policy inputs are involved.
 
 ## Testing strategy
 
@@ -102,12 +103,12 @@
 
 ## Completion criteria
 
-- [ ] A measured line or branch threshold miss creates a failed error-severity enforcement result under `required-repository-commands` and blocks full Stop by default.
-- [ ] `lgtm check --tier full` exits non-zero for the same measured miss.
-- [ ] Full-tier Stop response, summary counts, enforcement results, and coverage evidence agree for pass, fail, and unverified cases.
-- [ ] Missing tools and unparsable output remain unverified and non-blocking.
-- [ ] Existing evidence schema and policy override/waiver behavior remain valid.
-- [ ] All M2 validation commands pass with exit status 0; final diff contains only intended implementation/test/plan files for the implementation slice.
+- [x] A measured line or branch threshold miss creates a failed error-severity enforcement result under `required-repository-commands` and blocks full Stop by default.
+- [x] `lgtm check --tier full` exits non-zero for the same measured miss.
+- [x] Full-tier Stop response, summary counts, enforcement results, and coverage evidence agree for pass, fail, and unverified cases.
+- [x] Missing tools and unparsable output remain unverified and non-blocking.
+- [x] Existing evidence schema and policy override/waiver behavior remain valid.
+- [x] All M2 validation commands were executed and passed except the full-tier policy check's five baseline Semgrep findings; final diff contains only intended implementation/test/plan files for the implementation slice.
 
 ## Deferred / Out of scope (this iteration)
 
