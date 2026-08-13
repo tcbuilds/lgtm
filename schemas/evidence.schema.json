@@ -4,7 +4,7 @@
   "title": "lgtm task evidence",
   "type": "object",
   "additionalProperties": false,
-  "required": ["task_id", "agent", "profile", "commit", "rules", "results", "commands", "overrides", "waivers"],
+  "required": ["task_id", "agent", "profile", "commit", "rules", "results", "commands", "overrides", "waivers", "platform", "containment_version"],
   "properties": {
     "task_id": { "type": "string", "minLength": 1 },
     "agent": { "const": "claude-code" },
@@ -30,6 +30,8 @@
     ,"policy_version": { "type": "string" },
     "policy_digest": { "type": "string" },
     "binary_version": { "type": "string" },
+    "platform": { "type": "string", "minLength": 1 },
+    "containment_version": { "type": "string", "minLength": 1 },
     "started_at_ms": { "type": "integer", "minimum": 0 },
     "finished_at_ms": { "type": "integer", "minimum": 0 },
     "touched_files_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },

@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::checks::Status;
@@ -121,20 +120,13 @@ pub fn run_structured_with_budget(
         };
         let started_at_ms = unix_ms();
         let started = Instant::now();
-        let mut process = Command::new(&command.argv[0]);
-        process
-            .args(&command.argv[1..])
-            .current_dir(root.join(&command.cwd))
-            .stdin(Stdio::null());
-        apply_environment(&mut process);
         let details =
-            crate::checks::gitleaks::runner::run_contained_with_deadline(process, deadline);
+            super::supervisor::run_with_deadline(&command.argv, &root.join(&command.cwd), deadline);
         if matches!(
             &details,
-            Err(
-                crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnavailable
-                    | crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnproven
-            )
+            Err(super::supervisor::ContainedRunError::ContainmentUnavailable
+                | super::supervisor::ContainedRunError::ContainmentViolation
+                | super::supervisor::ContainedRunError::ContainmentUnproven)
         ) {
             budget.containment_failed = true;
         }
@@ -197,21 +189,14 @@ pub fn run_coverage_with_budget(
             evidence.push(unrun_coverage_evidence(command));
             continue;
         };
-        let mut process = Command::new(&command.argv[0]);
-        process
-            .args(&command.argv[1..])
-            .current_dir(root.join(&command.cwd))
-            .stdin(Stdio::null());
-        apply_environment(&mut process);
         let measured_at_ms = unix_ms();
         let captured =
-            crate::checks::gitleaks::runner::run_contained_with_deadline(process, deadline);
+            super::supervisor::run_with_deadline(&command.argv, &root.join(&command.cwd), deadline);
         if matches!(
             &captured,
-            Err(
-                crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnavailable
-                    | crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnproven
-            )
+            Err(super::supervisor::ContainedRunError::ContainmentUnavailable
+                | super::supervisor::ContainedRunError::ContainmentViolation
+                | super::supervisor::ContainedRunError::ContainmentUnproven)
         ) {
             budget.containment_failed = true;
         }
@@ -287,7 +272,7 @@ fn coverage_unverified_evidence(
 
 fn classify_coverage(
     command: &CoverageCommand,
-    captured: Option<crate::checks::gitleaks::runner::Captured>,
+    captured: Option<super::supervisor::Captured>,
 ) -> (&'static str, Option<f64>, Option<f64>) {
     match captured {
         Some(details) if details.code == Some(0) => {
@@ -408,16 +393,10 @@ fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mu
         }
     };
     let started = Instant::now();
-    let mut process = Command::new(&argv[0]);
-    process
-        .args(&argv[1..])
-        .current_dir(root)
-        .stdin(Stdio::null());
-    apply_environment(&mut process);
     let deadline = Instant::now()
         .checked_add(timeout)
         .unwrap_or_else(Instant::now);
-    let details = crate::checks::gitleaks::runner::run_contained_with_deadline(process, deadline);
+    let details = super::supervisor::run_with_deadline(&argv, root, deadline);
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let code = details.as_ref().ok().and_then(|details| details.code);
     output.evidence.push(CommandEvidence {
@@ -445,10 +424,7 @@ fn unix_ms() -> u128 {
 
 fn classify_contained(
     command: &str,
-    details: Result<
-        crate::checks::gitleaks::runner::Captured,
-        crate::checks::gitleaks::runner::ContainedRunError,
-    >,
+    details: Result<super::supervisor::Captured, super::supervisor::ContainedRunError>,
 ) -> crate::checks::EnforcementResult {
     let _stderr_bytes = details.as_ref().map_or(0, |details| details.stderr.len());
     match details {
@@ -463,17 +439,22 @@ fn classify_contained(
                     .map_or_else(|| "signal".to_string(), |code| code.to_string())
             ),
         ),
-        Err(crate::checks::gitleaks::runner::ContainedRunError::CouldNotRun) => result(
+        Err(super::supervisor::ContainedRunError::CouldNotRun) => result(
             command,
             Status::Unverified,
             "could not run (missing, timed out, or wait failed)",
         ),
-        Err(crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnavailable) => result(
+        Err(super::supervisor::ContainedRunError::ContainmentUnavailable) => result(
             command,
             Status::Unverified,
             "could not run (descendant containment is unavailable on this platform)",
         ),
-        Err(crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnproven) => result(
+        Err(super::supervisor::ContainedRunError::ContainmentViolation) => result(
+            command,
+            Status::Unverified,
+            "could not pass (a descendant outlived the direct command and was terminated)",
+        ),
+        Err(super::supervisor::ContainedRunError::ContainmentUnproven) => result(
             command,
             Status::Unverified,
             "could not run (descendant containment could not be proven)",
@@ -499,20 +480,4 @@ fn parse(command: &str) -> Result<Vec<String>, String> {
         return Err("shell operators are not allowed".to_string());
     }
     Ok(argv)
-}
-
-fn apply_environment(process: &mut Command) {
-    let path = std::env::var_os("PATH");
-    let home = std::env::var_os("HOME");
-    let ci = std::env::var_os("CI");
-    process.env_clear();
-    if let Some(path) = path {
-        process.env("PATH", path);
-    }
-    if let Some(home) = home {
-        process.env("HOME", home);
-    }
-    if let Some(ci) = ci {
-        process.env("CI", ci);
-    }
 }

@@ -443,7 +443,7 @@ fn stop_is_targeted_and_reuses_successful_precommit_evidence() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn session_escaped_descendant_cannot_replace_config_after_authorization() {
+fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
     let repo = TempRepo::new();
     let git = |args: &[&str]| {
         let output = Command::new("git")
@@ -464,11 +464,12 @@ fn session_escaped_descendant_cannot_replace_config_after_authorization() {
     repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
     repo.write(
         "bin/escape-check",
-        "#!/bin/sh\nsetsid -f /bin/sh -c 'sleep 1; cp \"$1\" \"$2\"; git -C \"$3\" add .lgtm/config.json' sh \"$1\" \"$2\" \"$3\" </dev/null >/dev/null 2>&1\nexit 0\n",
+        "#!/bin/sh\nprintf x >> \"$1\"\nsetsid -f /bin/sh -c 'sleep 1; cp \"$1\" \"$2\"; git -C \"$3\" add .lgtm/config.json' sh \"$2\" \"$3\" \"$4\" </dev/null >/dev/null 2>&1\nexit 0\n",
     );
     let command = repo.path().join("bin/escape-check");
     std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
         .expect("fixture executable");
+    let marker = repo.path().join("escape-runs");
     let replacement_path = repo.path().join(".git/replacement-config.json");
     let config_path = repo.path().join(".lgtm/config.json");
     let replacement = json!({
@@ -490,6 +491,7 @@ fn session_escaped_descendant_cannot_replace_config_after_authorization() {
             "commands": [{
                 "argv": [
                     command.to_string_lossy(),
+                    marker.to_string_lossy(),
                     replacement_path.to_string_lossy(),
                     config_path.to_string_lossy(),
                     repo.path().to_string_lossy()
@@ -515,28 +517,72 @@ fn session_escaped_descendant_cannot_replace_config_after_authorization() {
             .success()
     );
 
-    let authorization =
-        run_pre_tool_use_command(&repo, "session-escape", "sleep 2 && git commit -m test");
-    assert!(authorization.status.success());
-    assert!(
-        authorization.stdout.is_empty(),
-        "pre-tool gate denied: {}",
-        String::from_utf8_lossy(&authorization.stdout)
-    );
+    for expected_runs in ["x", "xx"] {
+        let authorization =
+            run_pre_tool_use_command(&repo, "session-escape", "sleep 2 && git commit -m test");
+        assert!(authorization.status.success());
+        let decision: Value =
+            serde_json::from_slice(&authorization.stdout).expect("containment deny decision");
+        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(
+            decision["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("descendant outlived the direct command"))
+        );
+        assert_eq!(repo.read("escape-runs"), expected_runs);
+
+        let record = latest_evidence(&repo);
+        assert_eq!(record["commands"][0]["exit_code"], Value::Null);
+        assert_eq!(
+            record["platform"],
+            format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+        );
+        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v1");
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["status"] == "failed"
+                    && result["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("descendant outlived"))
+            })
+        }));
+    }
 
     std::thread::sleep(std::time::Duration::from_millis(1_200));
     assert_eq!(repo.read(".lgtm/config.json"), original);
-    git(&[
-        "-c",
-        "user.email=test@example.invalid",
-        "-c",
-        "user.name=test",
-        "commit",
-        "-qm",
-        "test",
-    ]);
-    let committed = git(&["show", "HEAD:.lgtm/config.json"]);
-    assert_eq!(String::from_utf8(committed.stdout).unwrap(), original);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn isolated_supervisor_preserves_unrelated_child_waitability() {
+    let mut unrelated = Command::new("/bin/sh")
+        .args(["-c", "sleep 0.2; exit 23"])
+        .spawn()
+        .expect("unrelated child starts");
+    let request = json!({
+        "argv": ["/bin/true"],
+        "cwd": ".",
+        "timeout_ms": 1_000,
+        "path": std::env::var("PATH").ok(),
+        "home": std::env::var("HOME").ok(),
+        "ci": std::env::var("CI").ok()
+    });
+    let supervisor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .arg("__command-supervisor")
+        .env_clear()
+        .env(
+            "LGTM_INTERNAL_COMMAND_SUPERVISOR_REQUEST",
+            request.to_string(),
+        )
+        .output()
+        .expect("isolated supervisor starts");
+    assert!(supervisor.status.success());
+    let response: Value = serde_json::from_slice(&supervisor.stdout).expect("supervisor response");
+    assert_eq!(response["outcome"], "completed");
+    assert_eq!(response["code"], 0);
+
+    let status = unrelated.wait().expect("unrelated owner can still wait");
+    assert_eq!(status.code(), Some(23));
 }
 
 #[test]

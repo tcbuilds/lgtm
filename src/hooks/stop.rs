@@ -79,6 +79,8 @@ struct TaskEvidence<'a> {
     policy_version: &'static str,
     policy_digest: String,
     binary_version: &'static str,
+    platform: String,
+    containment_version: &'static str,
     started_at_ms: u128,
     finished_at_ms: u128,
     touched_files_digest: String,
@@ -106,6 +108,10 @@ struct StoredTaskEvidence {
     coverage: Vec<commands::CoverageEvidence>,
     policy_version: String,
     binary_version: String,
+    #[serde(default)]
+    platform: Option<String>,
+    #[serde(default)]
+    containment_version: Option<String>,
     touched_files_digest: String,
     config_digest: String,
     #[serde(default)]
@@ -616,7 +622,9 @@ fn matching_full_evidence(
         (record.task_id == session_id
             && record.tier.as_deref() == Some("full")
             && record.policy_version == crate::policy::POLICY_BUNDLE_VERSION
-            && record.binary_version == env!("CARGO_PKG_VERSION"))
+            && record.binary_version == env!("CARGO_PKG_VERSION")
+            && record.platform.as_deref() == Some(commands::platform_id().as_str())
+            && record.containment_version.as_deref() == Some(commands::CONTAINMENT_VERSION))
         .then_some(record)
     })?;
     if record.config_digest != snapshot.digest || record.touched_files_digest != expected_files {
@@ -1027,6 +1035,8 @@ fn append_task_evidence(
         policy_version: crate::policy::POLICY_BUNDLE_VERSION,
         policy_digest: crate::policy::bundle_digest(),
         binary_version: env!("CARGO_PKG_VERSION"),
+        platform: commands::platform_id(),
+        containment_version: commands::CONTAINMENT_VERSION,
         started_at_ms: metadata.started_at_ms,
         finished_at_ms: metadata.finished_at_ms,
         touched_files_digest: digest_paths(metadata.paths),
@@ -1339,6 +1349,8 @@ mod tests {
             }],
             policy_version: crate::policy::POLICY_BUNDLE_VERSION.to_string(),
             binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            platform: Some(commands::platform_id()),
+            containment_version: Some(commands::CONTAINMENT_VERSION.to_string()),
             touched_files_digest: "files".to_string(),
             config_digest: "config".to_string(),
             tier: Some("full".to_string()),
@@ -1475,6 +1487,8 @@ mod tests {
                 }],
                 "policy_version": crate::policy::POLICY_BUNDLE_VERSION,
                 "binary_version": env!("CARGO_PKG_VERSION"),
+                "platform": commands::platform_id(),
+                "containment_version": commands::CONTAINMENT_VERSION,
                 "touched_files_digest": touched_files_digest,
                 "config_digest": config_digest,
                 "tier": "full"
@@ -1514,6 +1528,20 @@ mod tests {
                 matching_full_evidence(&root, Some("aggregate-budget"), &[]).is_some(),
                 reusable,
                 "cutoff-specific evidence reuse decision"
+            );
+        }
+
+        for (field, value) in [
+            ("platform", "different-platform"),
+            ("containment_version", "different-containment-version"),
+        ] {
+            let mut mismatched = record(Vec::new());
+            mismatched[field] = serde_json::json!(value);
+            std::fs::write(&evidence_path, format!("{mismatched}\n"))
+                .expect("mismatched evidence record");
+            assert!(
+                matching_full_evidence(&root, Some("aggregate-budget"), &[]).is_none(),
+                "{field} mismatch must prevent authorization reuse"
             );
         }
 
@@ -1810,7 +1838,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn delayed_last_command_config_replacement_cannot_outlive_gate() {
+    fn delayed_last_command_descendant_is_nonpassing_and_not_reusable() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1860,17 +1888,15 @@ mod tests {
             Some("delayed-config-replacement"),
             Duration::from_secs(1),
         )
-        .expect("pre-commit gate runs");
-        assert!(
-            decision.is_none(),
-            "the delayed mutation itself must be stopped"
-        );
+        .expect("pre-commit gate runs")
+        .expect("descendant containment violation denies pre-commit");
+        assert!(decision.contains("descendant outlived the direct command"));
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(
             std::fs::read_to_string(root.join(".lgtm/config.json")).expect("config remains"),
             original
         );
-        assert!(matching_full_evidence(&root, Some("delayed-config-replacement"), &[]).is_some());
+        assert!(matching_full_evidence(&root, Some("delayed-config-replacement"), &[]).is_none());
 
         std::fs::remove_dir_all(root).expect("temporary fixture removal");
     }
