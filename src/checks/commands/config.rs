@@ -135,9 +135,6 @@ pub fn load(root: &Path) -> Result<Settings, String> {
                 });
             }
         }
-        if commands.len() > MAX_COMMANDS {
-            return Err(format!("workspaces exceed {MAX_COMMANDS} commands"));
-        }
         return Ok(Settings {
             commands,
             structured,

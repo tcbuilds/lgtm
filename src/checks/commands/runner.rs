@@ -1,12 +1,66 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Instant;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::checks::Status;
 
 use super::config::{CoverageCommand, StructuredCommand};
 use super::result::{CommandEvidence, CoverageEvidence, RunResults, not_applicable, result};
+
+/// Fixed total wall-clock budget for one Stop-facing repository-command gate.
+pub const STOP_COMMAND_BUDGET_SECONDS: u64 = 3_600;
+pub const STOP_COMMAND_BUDGET: Duration = Duration::from_secs(STOP_COMMAND_BUDGET_SECONDS);
+
+#[derive(Debug)]
+pub struct ExecutionBudget {
+    deadline: Option<Instant>,
+    exhausted: bool,
+}
+
+impl ExecutionBudget {
+    pub fn new(limit: Duration) -> Self {
+        Self {
+            deadline: Some(Instant::now() + limit),
+            exhausted: false,
+        }
+    }
+
+    fn unlimited() -> Self {
+        Self {
+            deadline: None,
+            exhausted: false,
+        }
+    }
+
+    pub fn is_exhausted(&self) -> bool {
+        self.exhausted
+    }
+
+    fn timeout_for(&mut self, configured: Duration) -> Option<Duration> {
+        let Some(deadline) = self.deadline else {
+            return Some(configured);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            self.exhausted = true;
+            None
+        } else {
+            Some(configured.min(remaining))
+        }
+    }
+
+    fn expired(&mut self) -> bool {
+        let Some(deadline) = self.deadline else {
+            return false;
+        };
+        if Instant::now() >= deadline {
+            self.exhausted = true;
+            true
+        } else {
+            false
+        }
+    }
+}
 
 pub fn run(root: &Path, commands: &[String], timeout: std::time::Duration) -> RunResults {
     let mut output = RunResults {
@@ -24,6 +78,15 @@ pub fn run(root: &Path, commands: &[String], timeout: std::time::Duration) -> Ru
 }
 
 pub fn run_structured(root: &Path, commands: &[StructuredCommand]) -> RunResults {
+    let mut budget = ExecutionBudget::unlimited();
+    run_structured_with_budget(root, commands, &mut budget)
+}
+
+pub fn run_structured_with_budget(
+    root: &Path,
+    commands: &[StructuredCommand],
+    budget: &mut ExecutionBudget,
+) -> RunResults {
     let mut output = RunResults {
         results: Vec::new(),
         evidence: Vec::new(),
@@ -34,6 +97,13 @@ pub fn run_structured(root: &Path, commands: &[StructuredCommand]) -> RunResults
     }
     for command in commands {
         let display = command.argv.join(" ");
+        let Some(timeout) = budget.timeout_for(command.timeout) else {
+            output
+                .evidence
+                .push(unrun_structured_evidence(command, &display));
+            output.results.push(unverified_for_budget(&display));
+            continue;
+        };
         let started_at_ms = unix_ms();
         let started = Instant::now();
         let mut process = Command::new(&command.argv[0]);
@@ -42,8 +112,9 @@ pub fn run_structured(root: &Path, commands: &[StructuredCommand]) -> RunResults
             .current_dir(root.join(&command.cwd))
             .stdin(Stdio::null());
         apply_environment(&mut process);
-        let details =
-            crate::checks::gitleaks::runner::run_details_with_timeout(process, command.timeout);
+        let details = crate::checks::gitleaks::runner::run_details_with_timeout(process, timeout);
+        let budget_expired = budget.expired();
+        let details = if budget_expired { None } else { details };
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let code = details.as_ref().and_then(|details| details.code);
         output.evidence.push(CommandEvidence {
@@ -60,12 +131,25 @@ pub fn run_structured(root: &Path, commands: &[StructuredCommand]) -> RunResults
             started_at_ms: Some(started_at_ms),
             finished_at_ms: Some(unix_ms()),
         });
-        output.results.push(classify(&display, details));
+        output.results.push(if budget_expired {
+            unverified_for_budget(&display)
+        } else {
+            classify(&display, details)
+        });
     }
     output
 }
 
 pub fn run_coverage(root: &Path, commands: &[CoverageCommand]) -> Vec<CoverageEvidence> {
+    let mut budget = ExecutionBudget::unlimited();
+    run_coverage_with_budget(root, commands, &mut budget)
+}
+
+pub fn run_coverage_with_budget(
+    root: &Path,
+    commands: &[CoverageCommand],
+    budget: &mut ExecutionBudget,
+) -> Vec<CoverageEvidence> {
     if commands.is_empty() {
         return vec![CoverageEvidence {
             workspace_id: "repository".to_string(),
@@ -77,30 +161,80 @@ pub fn run_coverage(root: &Path, commands: &[CoverageCommand]) -> Vec<CoverageEv
             measured_at_ms: None,
         }];
     }
-    commands
-        .iter()
-        .map(|command| {
-            let mut process = Command::new(&command.argv[0]);
-            process
-                .args(&command.argv[1..])
-                .current_dir(root.join(&command.cwd))
-                .stdin(Stdio::null());
-            apply_environment(&mut process);
-            let measured_at_ms = unix_ms();
-            let captured =
-                crate::checks::gitleaks::runner::run_details_with_timeout(process, command.timeout);
-            let (status, line_percent, branch_percent) = classify_coverage(command, captured);
-            CoverageEvidence {
-                workspace_id: command.workspace_id.clone(),
-                status: status.to_string(),
-                tool: command.argv.first().cloned(),
-                scope: Some(command.scope.clone()),
-                line_percent,
-                branch_percent,
-                measured_at_ms: Some(measured_at_ms),
-            }
-        })
-        .collect()
+    let mut evidence = Vec::with_capacity(commands.len());
+    for command in commands {
+        let Some(timeout) = budget.timeout_for(command.timeout) else {
+            evidence.push(unrun_coverage_evidence(command));
+            continue;
+        };
+        let mut process = Command::new(&command.argv[0]);
+        process
+            .args(&command.argv[1..])
+            .current_dir(root.join(&command.cwd))
+            .stdin(Stdio::null());
+        apply_environment(&mut process);
+        let measured_at_ms = unix_ms();
+        let captured = crate::checks::gitleaks::runner::run_details_with_timeout(process, timeout);
+        if budget.expired() {
+            evidence.push(coverage_unverified_evidence(command, Some(measured_at_ms)));
+            continue;
+        }
+        let (status, line_percent, branch_percent) = classify_coverage(command, captured);
+        evidence.push(CoverageEvidence {
+            workspace_id: command.workspace_id.clone(),
+            status: status.to_string(),
+            tool: command.argv.first().cloned(),
+            scope: Some(command.scope.clone()),
+            line_percent,
+            branch_percent,
+            measured_at_ms: Some(measured_at_ms),
+        });
+    }
+    evidence
+}
+
+fn unverified_for_budget(command: &str) -> crate::checks::EnforcementResult {
+    result(
+        command,
+        Status::Unverified,
+        "was not completed before the aggregate execution budget expired",
+    )
+}
+
+fn unrun_structured_evidence(command: &StructuredCommand, display: &str) -> CommandEvidence {
+    CommandEvidence {
+        command: display.to_string(),
+        exit_code: None,
+        duration_ms: 0,
+        argv: command.argv.clone(),
+        cwd: Some(command.cwd.to_string_lossy().into_owned()),
+        workspace_id: Some(command.workspace_id.clone()),
+        config_digest: None,
+        touched_files_digest: None,
+        policy_version: None,
+        binary_version: None,
+        started_at_ms: None,
+        finished_at_ms: None,
+    }
+}
+
+fn unrun_coverage_evidence(command: &CoverageCommand) -> CoverageEvidence {
+    coverage_unverified_evidence(command, None)
+}
+
+fn coverage_unverified_evidence(
+    command: &CoverageCommand,
+    measured_at_ms: Option<u128>,
+) -> CoverageEvidence {
+    CoverageEvidence {
+        workspace_id: command.workspace_id.clone(),
+        status: "unverified".to_string(),
+        tool: command.argv.first().cloned(),
+        scope: Some(command.scope.clone()),
+        line_percent: None,
+        branch_percent: None,
+        measured_at_ms,
+    }
 }
 
 fn classify_coverage(

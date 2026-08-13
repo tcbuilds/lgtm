@@ -115,6 +115,14 @@ fn coverage_result(evidence: &CoverageEvidence) -> Option<EnforcementResult> {
     Some(projected)
 }
 
+pub fn budget_unverified() -> EnforcementResult {
+    result(
+        "aggregate repository-command gate",
+        Status::Unverified,
+        "was not fully run because the aggregate execution budget expired",
+    )
+}
+
 pub(super) fn not_applicable() -> EnforcementResult {
     result(
         "configuration",

@@ -2,12 +2,15 @@ mod config;
 mod result;
 mod runner;
 
-pub use config::{CoverageCommand, StructuredCommand, load};
+pub use config::{CoverageCommand, Settings, StructuredCommand, load};
 pub use result::CoverageEvidence;
-pub use result::config_unverified;
 pub use result::{CommandEvidence, RunResults};
+pub use result::{budget_unverified, config_unverified};
 pub(crate) use result::{coverage_results, invalid_workspace};
-pub use runner::{run, run_coverage, run_structured};
+pub use runner::{
+    ExecutionBudget, STOP_COMMAND_BUDGET, STOP_COMMAND_BUDGET_SECONDS, run, run_coverage,
+    run_coverage_with_budget, run_structured, run_structured_with_budget,
+};
 
 #[cfg(test)]
 mod tests;

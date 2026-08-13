@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -230,6 +230,16 @@ fn run_inner(
     adapter: &dyn HookAdapter,
     event: crate::adapter::HookEvent,
 ) -> Result<ExitCode, String> {
+    run_inner_with_budget(input, output, adapter, event, commands::STOP_COMMAND_BUDGET)
+}
+
+fn run_inner_with_budget(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    event: crate::adapter::HookEvent,
+    command_budget: Duration,
+) -> Result<ExitCode, String> {
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Targeted);
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
@@ -245,7 +255,8 @@ fn run_inner(
         let touched = touched_paths(&root, hook_input.session_id.as_deref())?;
         (touched.files, touched.had_edits)
     };
-    let configured = configured_executables(&root);
+    let settings = commands::load(&root);
+    let configured = configured_executables(settings.as_ref().ok());
     let claims_only = !hook_input.check
         && !had_edits
         && crate::checks::claims::has_verification_claims(
@@ -291,20 +302,19 @@ fn run_inner(
         results.extend(crate::checks::auth::scan(&paths));
     }
     let tier = effective_tier(hook_input.tier.as_deref());
-    let mut command_run =
-        run_repository_commands(&root, hook_input.workspace.as_deref(), Some(tier), &paths);
+    let mut budget = commands::ExecutionBudget::new(command_budget);
+    let (mut command_run, coverage) = run_repository_commands(
+        &root,
+        settings.as_ref(),
+        hook_input.workspace.as_deref(),
+        Some(tier),
+        &paths,
+        &mut budget,
+    );
+    if budget.is_exhausted() {
+        command_run.results.push(commands::budget_unverified());
+    }
     bind_command_provenance(&root, &paths, &mut command_run.evidence);
-    let coverage = if tier == "full" {
-        commands::load(&root)
-            .map(|settings| {
-                let selected =
-                    select_coverage_commands(&settings.coverage, hook_input.workspace.as_deref());
-                commands::run_coverage(&root, &selected)
-            })
-            .unwrap_or_else(|_| commands::run_coverage(&root, &[]))
-    } else {
-        commands::run_coverage(&root, &[])
-    };
     results.extend(command_run.results);
     results.extend(commands::coverage_results(&coverage));
     if !hook_input.check {
@@ -378,8 +388,8 @@ fn select_coverage_commands(
 
 // Executable names the repository configures as required commands. Claim matching
 // is limited to these so backticked prose cannot invent an unprovable command.
-fn configured_executables(root: &Path) -> Vec<String> {
-    let Ok(settings) = commands::load(root) else {
+fn configured_executables(settings: Option<&commands::Settings>) -> Vec<String> {
+    let Some(settings) = settings else {
         return Vec::new();
     };
     let structured = settings
@@ -412,11 +422,13 @@ fn legacy_version_result() -> EnforcementResult {
 
 fn run_repository_commands(
     root: &Path,
+    settings: Result<&commands::Settings, &String>,
     workspace: Option<&str>,
     tier: Option<&str>,
     touched_paths: &[String],
-) -> commands::RunResults {
-    match commands::load(root) {
+    budget: &mut commands::ExecutionBudget,
+) -> (commands::RunResults, Vec<commands::CoverageEvidence>) {
+    match settings {
         Ok(configured) if !configured.structured.is_empty() => {
             let selected: Vec<_> = configured
                 .structured
@@ -426,19 +438,41 @@ fn run_repository_commands(
                 .filter(|command| workspace_touched(root, &command.cwd, touched_paths))
                 .cloned()
                 .collect();
-            commands::run_structured(root, &selected)
+            let command_run = commands::run_structured_with_budget(root, &selected, budget);
+            let coverage = if tier == Some("full") {
+                let selected = select_coverage_commands(&configured.coverage, workspace);
+                commands::run_coverage_with_budget(root, &selected, budget)
+            } else {
+                commands::run_coverage(root, &[])
+            };
+            (command_run, coverage)
         }
-        Ok(configured) if !configured.commands.is_empty() => commands::RunResults {
-            results: vec![commands::config_unverified(
-                "legacy config requires `lgtm init --migrate-config`",
-            )],
-            evidence: Vec::new(),
-        },
-        Ok(_) => commands::run_structured(root, &[]),
-        Err(reason) => commands::RunResults {
-            results: vec![commands::config_unverified(&reason)],
-            evidence: Vec::new(),
-        },
+        Ok(configured) if !configured.commands.is_empty() => (
+            commands::RunResults {
+                results: vec![commands::config_unverified(
+                    "legacy config requires `lgtm init --migrate-config`",
+                )],
+                evidence: Vec::new(),
+            },
+            commands::run_coverage(root, &[]),
+        ),
+        Ok(configured) => {
+            let command_run = commands::run_structured_with_budget(root, &[], budget);
+            let coverage = if tier == Some("full") {
+                let selected = select_coverage_commands(&configured.coverage, workspace);
+                commands::run_coverage_with_budget(root, &selected, budget)
+            } else {
+                commands::run_coverage(root, &[])
+            };
+            (command_run, coverage)
+        }
+        Err(reason) => (
+            commands::RunResults {
+                results: vec![commands::config_unverified(reason)],
+                evidence: Vec::new(),
+            },
+            commands::run_coverage(root, &[]),
+        ),
     }
 }
 
@@ -1041,6 +1075,9 @@ fn write_block_decision(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     fn stored_record(
         severity: Severity,
         exit_code: Option<i32>,
@@ -1162,6 +1199,154 @@ mod tests {
         let paths = check_paths(&root).expect("check paths");
         assert!(paths.iter().any(|path| path.ends_with("src/app.py")));
         assert!(!paths.iter().any(|path| path.contains("semgrep-python")));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn aggregate_budget_unverified_result_cannot_report_passed() {
+        let mut output = Vec::new();
+        write_summary(
+            &mut output,
+            &ClaudeAdapter,
+            crate::adapter::HookEvent::Stop,
+            &[commands::budget_unverified()],
+        )
+        .expect("summary writes");
+        let summary = String::from_utf8(output).expect("summary is UTF-8");
+        assert!(summary.contains("lgtm: action required"));
+        assert!(summary.contains("UNVERIFIED"));
+        assert!(!summary.contains("lgtm: passed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_stop_budget_records_cutoff_evidence_and_action_required_summary() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-stop-budget-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join(".lgtm")).expect("config directory");
+        std::fs::create_dir_all(root.join("bin")).expect("binary directory");
+        let active_started = root.join("active-started");
+        let later_started = root.join("later-started");
+        let coverage_started = root.join("coverage-started");
+        let active = root.join("bin/active");
+        let later = root.join("bin/later");
+        let coverage = root.join("bin/coverage");
+        for (path, body) in [
+            (
+                &active,
+                format!("touch {}; sleep 1", active_started.display()),
+            ),
+            (&later, format!("touch {}; exit 0", later_started.display())),
+            (
+                &coverage,
+                format!(
+                    "touch {}; echo 'line coverage: 95% branch coverage: 95%'",
+                    coverage_started.display()
+                ),
+            ),
+        ] {
+            std::fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("script");
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .expect("script permissions");
+        }
+        std::fs::write(
+            root.join(".lgtm/config.json"),
+            serde_json::json!({
+                "version": "2",
+                "profile": "default",
+                "workspaces": [{
+                    "id": "root",
+                    "language": "shell",
+                    "root": ".",
+                    "commands": [
+                        {
+                            "argv": [active.to_string_lossy()],
+                            "cwd": ".",
+                            "timeout_seconds": 30,
+                            "tier": "full",
+                            "purpose": "test",
+                            "source": "fixture",
+                            "confidence": "high"
+                        },
+                        {
+                            "argv": [later.to_string_lossy()],
+                            "cwd": ".",
+                            "timeout_seconds": 30,
+                            "tier": "full",
+                            "purpose": "test",
+                            "source": "fixture",
+                            "confidence": "high"
+                        }
+                    ],
+                    "coverage": [{
+                        "argv": [coverage.to_string_lossy()],
+                        "cwd": ".",
+                        "timeout_seconds": 30,
+                        "scope": "unit",
+                        "line_threshold_percent": 80,
+                        "branch_threshold_percent": 80
+                    }]
+                }],
+                "disabled_rules": [],
+                "severity_overrides": {}
+            })
+            .to_string(),
+        )
+        .expect("config");
+
+        let payload = serde_json::json!({
+            "cwd": root,
+            "session_id": "aggregate-budget",
+            "check": true,
+            "tier": "full"
+        });
+        let mut input = std::io::Cursor::new(payload.to_string());
+        let mut output = Vec::new();
+        let code = run_inner_with_budget(
+            &mut input,
+            &mut output,
+            &ClaudeAdapter,
+            crate::adapter::HookEvent::Stop,
+            Duration::from_millis(100),
+        )
+        .expect("Stop runs");
+
+        assert_eq!(code, ExitCode::SUCCESS);
+        let summary = String::from_utf8(output).expect("summary UTF-8");
+        assert!(summary.contains("lgtm: action required"));
+        assert!(summary.contains("unverified"));
+        assert!(active_started.exists());
+        assert!(!later_started.exists());
+        assert!(!coverage_started.exists());
+        let evidence =
+            std::fs::read_to_string(root.join(".lgtm/evidence/evidence.jsonl")).expect("evidence");
+        let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("record");
+        assert_eq!(record["tier"], "full");
+        assert_eq!(record["commands"][0]["exit_code"], serde_json::Value::Null);
+        assert_eq!(record["commands"][1]["exit_code"], serde_json::Value::Null);
+        assert_eq!(
+            record["commands"][1]["started_at_ms"],
+            serde_json::Value::Null
+        );
+        assert_eq!(record["coverage"][0]["status"], "unverified");
+        assert_eq!(
+            record["coverage"][0]["line_percent"],
+            serde_json::Value::Null
+        );
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("aggregate execution budget expired"))
+            })
+        }));
+
         std::fs::remove_dir_all(root).ok();
     }
 }

@@ -10,6 +10,7 @@
     "profile": {"type": "string", "minLength": 1},
     "workspaces": {
       "type": "array",
+      "maxItems": 64,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -20,6 +21,7 @@
           "root": {"type": "string", "minLength": 1},
           "commands": {
             "type": "array",
+            "maxItems": 64,
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -37,6 +39,7 @@
           },
           "coverage": {
             "type": "array",
+            "maxItems": 64,
             "items": {
               "type": "object",
               "additionalProperties": false,
