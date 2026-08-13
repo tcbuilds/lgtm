@@ -130,6 +130,12 @@ fn parse_metric(output: &str, label: &str) -> Option<f64> {
         let lower = line.to_ascii_lowercase();
         let start = lower.find(label)?;
         let suffix = &lower[start + label.len()..];
+        let next_metric = ["line", "branch"]
+            .into_iter()
+            .filter(|metric| *metric != label)
+            .filter_map(|metric| suffix.find(metric))
+            .min();
+        let suffix = next_metric.map_or(suffix, |end| &suffix[..end]);
         if !suffix.contains('%') {
             return None;
         }

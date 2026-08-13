@@ -279,6 +279,23 @@ fn missing_configured_metric_is_unverified_and_non_blocking() {
 }
 
 #[test]
+fn unparseable_line_with_valid_branch_remains_unverified_and_non_blocking() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body(
+        "partial-coverage",
+        "echo 'line coverage: unavailable; branch coverage: 90%'",
+    );
+    let evidence = run_coverage(&fixture.root, &[coverage_command(tool, Some(80), Some(80))]);
+    let results = coverage_results(&evidence);
+
+    assert_eq!(evidence[0].status, "unverified");
+    assert_eq!(evidence[0].line_percent, None);
+    assert_eq!(evidence[0].branch_percent, Some(90.0));
+    assert_eq!(results[0].status, Status::Unverified);
+    assert!(!results[0].is_failure());
+}
+
+#[test]
 fn passing_coverage_projects_to_passed_required_repository_command() {
     let results = coverage_results(&[coverage_evidence("passed")]);
     assert_eq!(results.len(), 1);
