@@ -16,6 +16,7 @@ pub struct Settings {
     pub structured: Vec<StructuredCommand>,
     pub timeout: std::time::Duration,
     pub coverage: Vec<CoverageCommand>,
+    pub workspace_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,7 +87,9 @@ pub fn load(root: &Path) -> Result<Settings, String> {
         let mut commands = Vec::new();
         let mut structured = Vec::new();
         let mut coverage = Vec::new();
+        let mut workspace_ids = Vec::new();
         for workspace in config.workspaces {
+            workspace_ids.push(workspace.id.clone());
             for item in &workspace.coverage {
                 coverage.push(CoverageCommand {
                     workspace_id: workspace.id.clone(),
@@ -117,6 +120,7 @@ pub fn load(root: &Path) -> Result<Settings, String> {
             structured,
             timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
             coverage,
+            workspace_ids,
         });
     }
     let timeout = timeout(&value)?;
@@ -126,6 +130,7 @@ pub fn load(root: &Path) -> Result<Settings, String> {
             structured: Vec::new(),
             timeout,
             coverage: Vec::new(),
+            workspace_ids: Vec::new(),
         });
     };
     let map = required
@@ -151,6 +156,7 @@ pub fn load(root: &Path) -> Result<Settings, String> {
         structured: Vec::new(),
         timeout,
         coverage: Vec::new(),
+        workspace_ids: Vec::new(),
     })
 }
 
@@ -160,6 +166,7 @@ fn defaults() -> Settings {
         structured: Vec::new(),
         timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
         coverage: Vec::new(),
+        workspace_ids: Vec::new(),
     }
 }
 

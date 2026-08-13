@@ -156,6 +156,7 @@ fn run_full_stop(repo: &TempRepo, session_id: &str, stop_hook_active: bool) -> O
     let payload = json!({
         "cwd": repo.path(),
         "session_id": session_id,
+        "check": true,
         "tier": "full",
         "stop_hook_active": stop_hook_active
     });
@@ -544,6 +545,63 @@ fn workspace_scoped_full_check_ignores_other_workspace_coverage_failure() {
 }
 
 #[test]
+fn full_check_without_workspace_selector_runs_all_coverage() {
+    let repo = TempRepo::new();
+    write_workspace_coverage_fixture(&repo);
+
+    let output = run_full_check(&repo);
+
+    assert!(
+        !output.status.success(),
+        "failing workspace must block all-workspace check"
+    );
+    let record = latest_evidence(&repo);
+    let coverage = record["coverage"].as_array().expect("coverage evidence");
+    assert_eq!(coverage.len(), 2);
+    assert!(
+        coverage
+            .iter()
+            .any(|item| { item["workspace_id"] == "selected" && item["status"] == "passed" })
+    );
+    assert!(
+        coverage
+            .iter()
+            .any(|item| item["workspace_id"] == "other" && item["status"] == "failed")
+    );
+    let results = record["results"].as_array().expect("serialized results");
+    assert!(results.iter().any(|result| {
+        result["message"].as_str().is_some_and(|message| {
+            message.contains("workspace=selected")
+                && message.contains("scope=unit")
+                && message.contains("tool=")
+        })
+    }));
+    assert!(results.iter().any(|result| {
+        result["message"].as_str().is_some_and(|message| {
+            message.contains("workspace=other") && message.contains("failed configured thresholds")
+        })
+    }));
+}
+
+#[test]
+fn unknown_workspace_selector_fails_instead_of_skipping_coverage() {
+    let repo = TempRepo::new();
+    write_workspace_coverage_fixture(&repo);
+
+    let output = run_workspace_full_check(&repo, "typo");
+
+    assert!(!output.status.success(), "unknown workspace must fail");
+    let error = String::from_utf8(output.stderr).expect("check error is UTF-8");
+    assert!(error.contains("check failed: unknown workspace `typo`"));
+    assert!(error.contains("available workspaces: selected, other"));
+    assert!(error.contains("select a configured workspace id"));
+    assert!(
+        !repo.path().join(".lgtm/evidence/evidence.jsonl").exists(),
+        "invalid selector must fail before recording a misleading coverage skip"
+    );
+}
+
+#[test]
 fn below_threshold_coverage_blocks_stop_and_full_check() {
     let repo = TempRepo::new();
     write_coverage_fixture(&repo, "line coverage: 50% branch coverage: 50%", 80, 80);
@@ -631,6 +689,27 @@ fn missing_coverage_executable_is_unverified_and_does_not_fail_stop() {
         "unverified"
     );
     assert_eq!(record["rules"]["failed"], 0);
+}
+
+#[test]
+fn downgraded_coverage_failure_remains_actionable() {
+    let repo = TempRepo::new();
+    write_coverage_fixture(&repo, "line coverage: 50% branch coverage: 50%", 80, 80);
+    let mut config: Value =
+        serde_json::from_str(&repo.read(".lgtm/config.json")).expect("coverage config JSON");
+    config["profile"] = json!("prototype");
+    repo.write(".lgtm/config.json", &config.to_string());
+
+    let output = run_full_check(&repo);
+
+    assert!(
+        output.status.success(),
+        "warning-severity profile must not block"
+    );
+    let summary = String::from_utf8(output.stdout).expect("summary is UTF-8");
+    assert!(summary.contains("REVIEW required-repository-commands"));
+    assert!(summary.contains("workspace=coverage scope=unit tool="));
+    assert!(summary.contains("raise coverage and rerun"));
 }
 
 #[test]

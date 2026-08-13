@@ -138,6 +138,7 @@ fn config_v2_loads_structured_argv_and_workspace_cwd() {
     .expect("config");
     let settings = load(&fixture.root).expect("V2 config loads");
     assert_eq!(settings.structured.len(), 1);
+    assert_eq!(settings.workspace_ids, ["root"]);
     let output = run_structured(&fixture.root, &settings.structured);
     assert_eq!(output.results[0].status, Status::Passed);
     let evidence = serde_json::to_value(&output.evidence).expect("evidence JSON");
@@ -314,9 +315,10 @@ fn passing_coverage_projects_to_passed_required_repository_command() {
     assert_eq!(results[0].rule_id, "required-repository-commands");
     assert_eq!(results[0].status, Status::Passed);
     assert_eq!(results[0].severity, Severity::Error);
-    assert_eq!(
-        results[0].message,
-        "Required repository command `coverage` passed."
+    assert!(
+        results[0]
+            .message
+            .contains("coverage workspace=backend scope=unit tool=coverage")
     );
     assert_eq!(results[0].remediation, None);
 }
@@ -332,13 +334,17 @@ fn below_line_threshold_projects_to_failed_required_repository_command() {
     assert_eq!(results[0].rule_id, "required-repository-commands");
     assert_eq!(results[0].status, Status::Failed);
     assert_eq!(results[0].severity, Severity::Error);
-    assert_eq!(
-        results[0].message,
-        "Required repository command `coverage` failed."
+    assert!(
+        results[0]
+            .message
+            .contains("coverage workspace=backend scope=unit tool=")
     );
-    assert_eq!(
-        results[0].remediation.as_deref(),
-        Some("Fix the command or repository failure, then retry Stop.")
+    assert!(results[0].message.contains("failed configured thresholds"));
+    assert!(
+        results[0]
+            .remediation
+            .as_deref()
+            .is_some_and(|message| message.contains("workspace `backend` scope `unit`"))
     );
 }
 
@@ -353,10 +359,12 @@ fn below_branch_threshold_projects_to_failed_required_repository_command() {
     assert_eq!(results[0].rule_id, "required-repository-commands");
     assert_eq!(results[0].status, Status::Failed);
     assert_eq!(results[0].severity, Severity::Error);
-    assert_eq!(
-        results[0].message,
-        "Required repository command `coverage` failed."
+    assert!(
+        results[0]
+            .message
+            .contains("coverage workspace=backend scope=unit tool=")
     );
+    assert!(results[0].message.contains("failed configured thresholds"));
 }
 
 #[test]
@@ -384,10 +392,12 @@ fn unparseable_coverage_projects_to_unverified_without_failure() {
     assert_eq!(results[0].rule_id, "required-repository-commands");
     assert_eq!(results[0].status, Status::Unverified);
     assert!(!results[0].is_failure());
-    assert_eq!(
-        results[0].message,
-        "Required repository command `coverage` could not verify coverage."
+    assert!(
+        results[0]
+            .message
+            .contains("coverage workspace=backend scope=unit tool=")
     );
+    assert!(results[0].message.contains("could not verify coverage"));
 }
 
 #[test]
@@ -411,6 +421,55 @@ fn missing_coverage_executable_projects_to_unverified_without_failure() {
     assert_eq!(results[0].rule_id, "required-repository-commands");
     assert_eq!(results[0].status, Status::Unverified);
     assert!(!results[0].is_failure());
+}
+
+#[test]
+fn nonzero_coverage_process_projects_to_unverified_without_failure() {
+    let fixture = Fixture::create();
+    let tool = fixture.script("coverage-nonzero", 9);
+    let evidence = run_coverage(&fixture.root, &[coverage_command(tool, Some(80), Some(80))]);
+    let results = coverage_results(&evidence);
+
+    assert_eq!(evidence[0].status, "unverified");
+    assert_eq!(results[0].status, Status::Unverified);
+    assert!(!results[0].is_failure());
+}
+
+#[test]
+fn timed_out_coverage_process_projects_to_unverified_without_failure() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body("coverage-timeout", "sleep 1");
+    let mut command = coverage_command(tool, Some(80), Some(80));
+    command.timeout = std::time::Duration::from_millis(20);
+    let evidence = run_coverage(&fixture.root, &[command]);
+    let results = coverage_results(&evidence);
+
+    assert_eq!(evidence[0].status, "unverified");
+    assert_eq!(results[0].status, Status::Unverified);
+    assert!(!results[0].is_failure());
+}
+
+#[test]
+fn coverage_results_include_workspace_scope_and_tool_identity() {
+    let results = coverage_results(&[CoverageEvidence {
+        workspace_id: "api".to_string(),
+        status: "failed".to_string(),
+        tool: Some("cargo-llvm-cov".to_string()),
+        scope: Some("integration".to_string()),
+        line_percent: Some(72.0),
+        branch_percent: Some(68.0),
+        measured_at_ms: Some(0),
+    }]);
+
+    assert!(results[0].message.contains("workspace=api"));
+    assert!(results[0].message.contains("scope=integration"));
+    assert!(results[0].message.contains("tool=cargo-llvm-cov"));
+    assert!(
+        results[0]
+            .remediation
+            .as_deref()
+            .is_some_and(|message| message.contains("satisfy its configured thresholds"))
+    );
 }
 
 #[test]

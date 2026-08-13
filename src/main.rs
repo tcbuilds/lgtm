@@ -294,6 +294,10 @@ fn run_check(workspace: Option<&str>, tier: Option<CheckTier>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Err(reason) = validate_check_workspace(&root, workspace) {
+        eprintln!("check failed: {reason}");
+        return ExitCode::FAILURE;
+    }
     let payload = serde_json::json!({
         "cwd": root,
         "check": true,
@@ -305,6 +309,32 @@ fn run_check(workspace: Option<&str>, tier: Option<CheckTier>) -> ExitCode {
     let code = stop::run(&mut input, &mut output);
     print!("{}", String::from_utf8_lossy(&output));
     code
+}
+
+fn validate_check_workspace(root: &Path, workspace: Option<&str>) -> Result<(), String> {
+    let Some(workspace) = workspace else {
+        return Ok(());
+    };
+    let settings = lgtm::checks::commands::load(root)?;
+    if settings
+        .workspace_ids
+        .iter()
+        .any(|known| known == workspace)
+    {
+        return Ok(());
+    }
+    let workspace = workspace
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
+    let available = if settings.workspace_ids.is_empty() {
+        "none configured".to_string()
+    } else {
+        settings.workspace_ids.join(", ")
+    };
+    Err(format!(
+        "unknown workspace `{workspace}`; available workspaces: {available}; select a configured workspace id or omit `--workspace`"
+    ))
 }
 
 fn run_policy(command: PolicyCommand) -> ExitCode {

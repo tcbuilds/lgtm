@@ -81,12 +81,29 @@ pub(crate) fn coverage_results(evidence: &[CoverageEvidence]) -> Vec<Enforcement
 fn coverage_result(evidence: &CoverageEvidence) -> Option<EnforcementResult> {
     let (status, reason) = match evidence.status.as_str() {
         "passed" => (Status::Passed, "passed"),
-        "failed" => (Status::Failed, "failed"),
+        "failed" => (
+            Status::Failed,
+            "failed configured thresholds; raise coverage and rerun",
+        ),
         "unverified" => (Status::Unverified, "could not verify coverage"),
         "not_applicable" => return None,
         _ => (Status::Unverified, "could not verify coverage"),
     };
-    Some(result("coverage", status, reason))
+    let identity = format!(
+        "coverage workspace={} scope={} tool={}",
+        evidence.workspace_id,
+        evidence.scope.as_deref().unwrap_or("unspecified"),
+        evidence.tool.as_deref().unwrap_or("unknown")
+    );
+    let mut projected = result(&identity, status, reason);
+    if status != Status::Passed {
+        projected.remediation = Some(format!(
+            "Run the coverage tool for workspace `{}` scope `{}`, satisfy its configured thresholds, then retry Stop.",
+            sanitize(&evidence.workspace_id),
+            sanitize(evidence.scope.as_deref().unwrap_or("unspecified"))
+        ));
+    }
+    Some(projected)
 }
 
 pub(super) fn not_applicable() -> EnforcementResult {
