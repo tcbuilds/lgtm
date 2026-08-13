@@ -30,7 +30,7 @@ pub struct CommandEvidence {
     pub finished_at_ms: Option<u128>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CoverageEvidence {
     pub workspace_id: String,
     pub status: String,

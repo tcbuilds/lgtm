@@ -442,6 +442,79 @@ fn stop_is_targeted_and_reuses_successful_precommit_evidence() {
 }
 
 #[test]
+fn precommit_reuses_full_evidence_with_only_warning_severity_failures() {
+    let repo = TempRepo::new();
+    let oversized = format!(
+        "pub fn oversized() {{\n{} }}\n",
+        "    let value = 1;\n".repeat(51)
+    );
+    repo.write("src/app.rs", &oversized);
+    let marker = repo.path().join("warning-gate-runs");
+    repo.write(
+        "bin/required-check",
+        "#!/bin/sh\nprintf x >> \"$1\"\nexit 0\n",
+    );
+    let executable = repo.path().join("bin/required-check");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "prototype",
+            "workspaces": [{
+                "id": "tests",
+                "language": "rust",
+                "root": ".",
+                "commands": [{
+                    "argv": [executable.to_string_lossy(), marker.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {"function-size": "warning"}
+        })
+        .to_string(),
+    );
+
+    let first = run_pre_tool_use_command(&repo, "warning-reuse", "git commit -m first");
+    assert!(first.status.success());
+    assert!(
+        first.stdout.is_empty(),
+        "first precommit output: {}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+    let first_record = latest_evidence(&repo);
+    assert!(first_record["results"].as_array().is_some_and(|results| {
+        results.iter().any(|result| {
+            result["rule_id"] == "function-size"
+                && result["status"] == "failed"
+                && result["severity"] == "warning"
+        })
+    }));
+    assert_eq!(repo.read("warning-gate-runs"), "x");
+
+    let second = run_pre_tool_use_command(&repo, "warning-reuse", "git commit -m second");
+    assert!(second.status.success());
+    assert!(
+        second.stdout.is_empty(),
+        "second precommit output: {}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    assert_eq!(
+        repo.read("warning-gate-runs"),
+        "x",
+        "reusable warning-only evidence must avoid rerunning the full gate"
+    );
+}
+
+#[test]
 fn explicit_cli_tier_runs_only_requested_commands() {
     let repo = TempRepo::new();
     let marker = repo.path().join("executed");
@@ -542,6 +615,32 @@ fn passing_line_and_branch_coverage_passes_stop_and_persists_result() {
         "passed"
     );
     assert_eq!(record["rules"]["failed"], 0);
+}
+
+#[test]
+fn evidence_append_recovers_from_a_truncated_final_jsonl_record() {
+    let repo = TempRepo::new();
+    write_coverage_fixture(&repo, "line coverage: 100% branch coverage: 100%", 80, 80);
+    assert!(
+        run_full_stop(&repo, "before-truncation", false)
+            .status
+            .success()
+    );
+    let evidence_path = repo.path().join(".lgtm/evidence/evidence.jsonl");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&evidence_path)
+        .and_then(|mut file| file.write_all(b"{\"task_id\":"))
+        .expect("append truncated evidence tail");
+
+    let output = run_full_stop(&repo, "after-truncation", false);
+
+    assert!(output.status.success());
+    let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
+    let latest: Value = serde_json::from_str(evidence.lines().last().expect("latest evidence"))
+        .expect("latest evidence remains parseable JSON");
+    assert_eq!(latest["task_id"], "after-truncation");
+    assert!(!evidence.contains("{\"task_id\":{\"task_id\""));
 }
 
 #[test]
@@ -736,6 +835,25 @@ fn below_threshold_coverage_blocks_stop_and_full_check() {
         .expect("full check reason");
     assert!(check_reason.contains(COVERAGE_RULE_ID));
     assert!(check_reason.contains("coverage"));
+}
+
+#[test]
+fn semantic_coverage_labels_ignore_baseline_substrings_end_to_end() {
+    let repo = TempRepo::new();
+    write_coverage_fixture(
+        &repo,
+        "Baseline coverage: 100%\nLine coverage: 50%\nBranch coverage: 90%",
+        80,
+        80,
+    );
+
+    let stop = run_full_stop(&repo, "coverage-label-boundary", false);
+
+    assert_eq!(stop.status.code(), Some(2));
+    let record = latest_evidence(&repo);
+    assert_eq!(record["coverage"][0]["status"], "failed");
+    assert_eq!(record["coverage"][0]["line_percent"], 50.0);
+    assert_eq!(record["coverage"][0]["branch_percent"], 90.0);
 }
 
 #[test]

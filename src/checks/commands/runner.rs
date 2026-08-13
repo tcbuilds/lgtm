@@ -152,16 +152,30 @@ fn classify_coverage_status(
 pub(super) fn parse_metric(output: &str, label: &str) -> Option<f64> {
     output.lines().find_map(|line| {
         let lower = line.to_ascii_lowercase();
-        let start = lower.find(label)?;
+        let start = find_metric_label(&lower, label)?;
         let suffix = &lower[start + label.len()..];
         let next_metric = ["line", "branch"]
             .into_iter()
             .filter(|metric| *metric != label)
-            .filter_map(|metric| suffix.find(metric))
+            .filter_map(|metric| find_metric_label(suffix, metric))
             .min();
         let suffix = next_metric.map_or(suffix, |end| &suffix[..end]);
         parse_percent(suffix)
     })
+}
+
+fn find_metric_label(text: &str, label: &str) -> Option<usize> {
+    text.match_indices(label).find_map(|(start, _)| {
+        let before = text[..start].chars().next_back();
+        let end = start + label.len();
+        let after = text[end..].chars().next();
+        (before.is_none_or(is_metric_boundary) && after.is_none_or(is_metric_boundary))
+            .then_some(start)
+    })
+}
+
+fn is_metric_boundary(character: char) -> bool {
+    !character.is_alphanumeric() && character != '_'
 }
 
 fn parse_percent(metric: &str) -> Option<f64> {

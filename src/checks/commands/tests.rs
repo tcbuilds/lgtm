@@ -280,6 +280,17 @@ fn coverage_parser_uses_value_immediately_before_percent() {
 }
 
 #[test]
+fn coverage_parser_matches_case_insensitive_semantic_labels_in_any_order() {
+    let report = "Baseline coverage: 100%\nBRANCH coverage: 90%; LINE coverage: 50%";
+    assert_eq!(super::runner::parse_metric(report, "line"), Some(50.0));
+    assert_eq!(super::runner::parse_metric(report, "branch"), Some(90.0));
+    assert_eq!(
+        super::runner::parse_metric("lineage coverage: 100%\nline coverage: 50%", "line"),
+        Some(50.0)
+    );
+}
+
+#[test]
 fn coverage_parser_rejects_malformed_and_out_of_range_percentages() {
     for report in [
         "line coverage: unavailable%",
