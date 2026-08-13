@@ -441,6 +441,104 @@ fn stop_is_targeted_and_reuses_successful_precommit_evidence() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn session_escaped_descendant_cannot_replace_config_after_authorization() {
+    let repo = TempRepo::new();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .expect("git starts");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    git(&["init", "-q"]);
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    repo.write(
+        "bin/escape-check",
+        "#!/bin/sh\nsetsid -f /bin/sh -c 'sleep 1; cp \"$1\" \"$2\"; git -C \"$3\" add .lgtm/config.json' sh \"$1\" \"$2\" \"$3\" </dev/null >/dev/null 2>&1\nexit 0\n",
+    );
+    let command = repo.path().join("bin/escape-check");
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    let replacement_path = repo.path().join(".git/replacement-config.json");
+    let config_path = repo.path().join(".lgtm/config.json");
+    let replacement = json!({
+        "version": "2",
+        "profile": "default",
+        "workspaces": [],
+        "disabled_rules": [],
+        "severity_overrides": {}
+    })
+    .to_string();
+    std::fs::write(&replacement_path, &replacement).expect("replacement config");
+    let original = json!({
+        "version": "2",
+        "profile": "default",
+        "workspaces": [{
+            "id": "tests",
+            "language": "shell",
+            "root": ".",
+            "commands": [{
+                "argv": [
+                    command.to_string_lossy(),
+                    replacement_path.to_string_lossy(),
+                    config_path.to_string_lossy(),
+                    repo.path().to_string_lossy()
+                ],
+                "cwd": ".",
+                "timeout_seconds": 30,
+                "tier": "full",
+                "purpose": "test",
+                "source": "fixture",
+                "confidence": "high"
+            }],
+            "coverage": []
+        }],
+        "disabled_rules": [],
+        "severity_overrides": {}
+    })
+    .to_string();
+    repo.write(".lgtm/config.json", &original);
+    git(&["add", "src/app.rs", "bin/escape-check", ".lgtm/config.json"]);
+    assert!(
+        run_post_tool_use(&repo, "session-escape", "src/app.rs")
+            .status
+            .success()
+    );
+
+    let authorization =
+        run_pre_tool_use_command(&repo, "session-escape", "sleep 2 && git commit -m test");
+    assert!(authorization.status.success());
+    assert!(
+        authorization.stdout.is_empty(),
+        "pre-tool gate denied: {}",
+        String::from_utf8_lossy(&authorization.stdout)
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(1_200));
+    assert_eq!(repo.read(".lgtm/config.json"), original);
+    git(&[
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "user.name=test",
+        "commit",
+        "-qm",
+        "test",
+    ]);
+    let committed = git(&["show", "HEAD:.lgtm/config.json"]);
+    assert_eq!(String::from_utf8(committed.stdout).unwrap(), original);
+}
+
 #[test]
 fn precommit_reuses_full_evidence_with_only_warning_severity_failures() {
     let repo = TempRepo::new();

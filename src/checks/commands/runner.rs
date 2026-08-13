@@ -15,6 +15,7 @@ pub const STOP_COMMAND_BUDGET: Duration = Duration::from_secs(STOP_COMMAND_BUDGE
 pub struct ExecutionBudget {
     deadline: Option<Instant>,
     exhausted: bool,
+    containment_failed: bool,
 }
 
 impl ExecutionBudget {
@@ -22,6 +23,7 @@ impl ExecutionBudget {
         Self {
             deadline: Some(Instant::now() + limit),
             exhausted: false,
+            containment_failed: false,
         }
     }
 
@@ -29,11 +31,16 @@ impl ExecutionBudget {
         Self {
             deadline: None,
             exhausted: false,
+            containment_failed: false,
         }
     }
 
     pub fn is_exhausted(&self) -> bool {
         self.exhausted
+    }
+
+    pub fn containment_failed(&self) -> bool {
+        self.containment_failed
     }
 
     fn deadline_for(&mut self, configured: Duration) -> Option<Instant> {
@@ -98,6 +105,13 @@ pub fn run_structured_with_budget(
     }
     for command in commands {
         let display = command.argv.join(" ");
+        if budget.containment_failed {
+            output
+                .evidence
+                .push(unrun_structured_evidence(command, &display));
+            output.results.push(unverified_for_containment(&display));
+            continue;
+        }
         let Some(deadline) = budget.deadline_for(command.timeout) else {
             output
                 .evidence
@@ -113,11 +127,22 @@ pub fn run_structured_with_budget(
             .current_dir(root.join(&command.cwd))
             .stdin(Stdio::null());
         apply_environment(&mut process);
-        let details = crate::checks::gitleaks::runner::run_details_with_deadline(process, deadline);
+        let details =
+            crate::checks::gitleaks::runner::run_contained_with_deadline(process, deadline);
+        if matches!(
+            &details,
+            Err(
+                crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnavailable
+                    | crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnproven
+            )
+        ) {
+            budget.containment_failed = true;
+        }
         let budget_expired = budget.expired();
-        let details = if budget_expired { None } else { details };
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        let code = details.as_ref().and_then(|details| details.code);
+        let code = (!budget_expired)
+            .then(|| details.as_ref().ok().and_then(|details| details.code))
+            .flatten();
         output.evidence.push(CommandEvidence {
             command: display.clone(),
             exit_code: code,
@@ -135,7 +160,7 @@ pub fn run_structured_with_budget(
         output.results.push(if budget_expired {
             unverified_for_budget(&display)
         } else {
-            classify(&display, details)
+            classify_contained(&display, details)
         });
     }
     output
@@ -164,6 +189,10 @@ pub fn run_coverage_with_budget(
     }
     let mut evidence = Vec::with_capacity(commands.len());
     for command in commands {
+        if budget.containment_failed {
+            evidence.push(unrun_coverage_evidence(command));
+            continue;
+        }
         let Some(deadline) = budget.deadline_for(command.timeout) else {
             evidence.push(unrun_coverage_evidence(command));
             continue;
@@ -176,12 +205,21 @@ pub fn run_coverage_with_budget(
         apply_environment(&mut process);
         let measured_at_ms = unix_ms();
         let captured =
-            crate::checks::gitleaks::runner::run_details_with_deadline(process, deadline);
+            crate::checks::gitleaks::runner::run_contained_with_deadline(process, deadline);
+        if matches!(
+            &captured,
+            Err(
+                crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnavailable
+                    | crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnproven
+            )
+        ) {
+            budget.containment_failed = true;
+        }
         if budget.expired() {
             evidence.push(coverage_unverified_evidence(command, Some(measured_at_ms)));
             continue;
         }
-        let (status, line_percent, branch_percent) = classify_coverage(command, captured);
+        let (status, line_percent, branch_percent) = classify_coverage(command, captured.ok());
         evidence.push(CoverageEvidence {
             workspace_id: command.workspace_id.clone(),
             status: status.to_string(),
@@ -200,6 +238,14 @@ fn unverified_for_budget(command: &str) -> crate::checks::EnforcementResult {
         command,
         Status::Unverified,
         "was not completed before the aggregate execution budget expired",
+    )
+}
+
+fn unverified_for_containment(command: &str) -> crate::checks::EnforcementResult {
+    result(
+        command,
+        Status::Unverified,
+        "was not started after descendant containment failed",
     )
 }
 
@@ -368,9 +414,12 @@ fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mu
         .current_dir(root)
         .stdin(Stdio::null());
     apply_environment(&mut process);
-    let details = crate::checks::gitleaks::runner::run_details_with_timeout(process, timeout);
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    let details = crate::checks::gitleaks::runner::run_contained_with_deadline(process, deadline);
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    let code = details.as_ref().and_then(|details| details.code);
+    let code = details.as_ref().ok().and_then(|details| details.code);
     output.evidence.push(CommandEvidence {
         command: command.to_string(),
         exit_code: code,
@@ -385,7 +434,7 @@ fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mu
         started_at_ms: None,
         finished_at_ms: None,
     });
-    output.results.push(classify(command, details));
+    output.results.push(classify_contained(command, details));
 }
 
 fn unix_ms() -> u128 {
@@ -394,14 +443,17 @@ fn unix_ms() -> u128 {
         .map_or(0, |duration| duration.as_millis())
 }
 
-fn classify(
+fn classify_contained(
     command: &str,
-    details: Option<crate::checks::gitleaks::runner::Captured>,
+    details: Result<
+        crate::checks::gitleaks::runner::Captured,
+        crate::checks::gitleaks::runner::ContainedRunError,
+    >,
 ) -> crate::checks::EnforcementResult {
     let _stderr_bytes = details.as_ref().map_or(0, |details| details.stderr.len());
     match details {
-        Some(details) if details.code == Some(0) => result(command, Status::Passed, "passed"),
-        Some(details) => result(
+        Ok(details) if details.code == Some(0) => result(command, Status::Passed, "passed"),
+        Ok(details) => result(
             command,
             Status::Failed,
             &format!(
@@ -411,10 +463,20 @@ fn classify(
                     .map_or_else(|| "signal".to_string(), |code| code.to_string())
             ),
         ),
-        None => result(
+        Err(crate::checks::gitleaks::runner::ContainedRunError::CouldNotRun) => result(
             command,
             Status::Unverified,
             "could not run (missing, timed out, or wait failed)",
+        ),
+        Err(crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnavailable) => result(
+            command,
+            Status::Unverified,
+            "could not run (descendant containment is unavailable on this platform)",
+        ),
+        Err(crate::checks::gitleaks::runner::ContainedRunError::ContainmentUnproven) => result(
+            command,
+            Status::Unverified,
+            "could not run (descendant containment could not be proven)",
         ),
     }
 }

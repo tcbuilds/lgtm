@@ -394,7 +394,7 @@ fn configured_coverage_requires_each_configured_metric() {
         branch_threshold_percent: Some(80),
     };
     let evidence = run_coverage(&fixture.root, &[command]);
-    assert_eq!(evidence[0].status, "failed");
+    assert_eq!(evidence[0].status, "unverified");
     assert_eq!(evidence[0].line_percent, Some(95.0));
     assert_eq!(evidence[0].branch_percent, None);
 }

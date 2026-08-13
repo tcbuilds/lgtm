@@ -127,7 +127,7 @@ fn coverage_result(evidence: &CoverageEvidence) -> Option<EnforcementResult> {
         evidence.scope.as_deref().unwrap_or("unspecified"),
         evidence.tool.as_deref().unwrap_or("unknown")
     );
-    let mut projected = result(&identity, status, reason);
+    let mut projected = result_with_check(&identity, status, reason, COVERAGE_CHECK);
     if status != Status::Passed {
         projected.remediation = Some(format!(
             "Run the coverage tool for workspace `{}` scope `{}`, satisfy its configured thresholds, then retry Stop.",
@@ -144,6 +144,14 @@ pub fn budget_unverified() -> EnforcementResult {
         Status::Unverified,
         "was not fully run because the aggregate execution budget expired",
         AGGREGATE_BUDGET_CHECK,
+    )
+}
+
+pub fn containment_unverified() -> EnforcementResult {
+    result(
+        "configured-command descendant containment",
+        Status::Unverified,
+        "could not be established or proven complete",
     )
 }
 

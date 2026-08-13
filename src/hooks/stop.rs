@@ -337,6 +337,9 @@ fn run_inner_with_options(
     if budget.is_exhausted() {
         command_run.results.push(commands::budget_unverified());
     }
+    if budget.containment_failed() {
+        command_run.results.push(commands::containment_unverified());
+    }
     if trusted_config_changed(&root, &config_snapshot) {
         command_run
             .results
@@ -743,7 +746,9 @@ fn is_non_reusable_command_gate_result(result: &EnforcementResult) -> bool {
         || (commands::is_required_command_result(result)
             && result.status != Status::Passed
             && result.status != Status::NotApplicable)
-        || result.evidence.check == "command.coverage"
+        || (result.evidence.check == "command.coverage"
+            && result.status != Status::Passed
+            && result.status != Status::NotApplicable)
 }
 
 fn take_post_policy_command_gate_results(

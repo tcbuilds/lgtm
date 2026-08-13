@@ -8,6 +8,12 @@ use super::report::{MAX_CAPTURE_BYTES, ScanOutcome, classify_exit};
 
 const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+#[cfg(all(target_os = "linux", not(test)))]
+const CONTAINMENT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(all(target_os = "linux", not(test)))]
+const CONTAINMENT_QUIESCENCE: Duration = Duration::from_millis(100);
+#[cfg(all(target_os = "linux", not(test)))]
+static PROCESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn run_captured(command: Command) -> Option<(Option<i32>, Vec<u8>)> {
     run_details(command).map(|details| (details.code, details.stdout))
@@ -19,6 +25,14 @@ pub(crate) struct Captured {
     pub(crate) stderr: Vec<u8>,
 }
 
+#[cfg_attr(test, allow(dead_code))]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ContainedRunError {
+    CouldNotRun,
+    ContainmentUnavailable,
+    ContainmentUnproven,
+}
+
 pub(crate) fn run_details(command: Command) -> Option<Captured> {
     run_details_with_timeout(command, SUBPROCESS_TIMEOUT)
 }
@@ -27,13 +41,44 @@ pub(crate) fn run_details_with_timeout(command: Command, timeout: Duration) -> O
     run_details_with_deadline(command, deadline_after(timeout))
 }
 
+pub(crate) fn run_contained_with_deadline(
+    command: Command,
+    deadline: Instant,
+) -> Result<Captured, ContainedRunError> {
+    #[cfg(all(target_os = "linux", not(test)))]
+    {
+        let guard =
+            lock_process_until(deadline).ok_or(ContainedRunError::ContainmentUnavailable)?;
+        let containment = DescendantContainment::acquire(guard)?;
+        let result = run_details_with_deadline_inner(command, deadline);
+        if !containment.terminate_descendants() {
+            return Err(ContainedRunError::ContainmentUnproven);
+        }
+        result.ok_or(ContainedRunError::CouldNotRun)
+    }
+    // The Rust unit-test harness runs unrelated subprocess tests concurrently
+    // in one process. Enabling a process-wide subreaper there would adopt those
+    // unrelated children; production containment is exercised end to end by
+    // tests/commands.rs through the real lgtm binary instead.
+    #[cfg(all(target_os = "linux", test))]
+    {
+        run_details_with_deadline(command, deadline).ok_or(ContainedRunError::CouldNotRun)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (command, deadline);
+        Err(ContainedRunError::ContainmentUnavailable)
+    }
+}
+
 /// Run a command with one absolute deadline covering child wait and pipe drain.
 /// A successful parent that leaves descendants holding its pipes open is not a
 /// success: the process group is killed and the result remains unverified.
-pub(crate) fn run_details_with_deadline(
-    mut command: Command,
-    deadline: Instant,
-) -> Option<Captured> {
+pub(crate) fn run_details_with_deadline(command: Command, deadline: Instant) -> Option<Captured> {
+    run_details_with_deadline_inner(command, deadline)
+}
+
+fn run_details_with_deadline_inner(mut command: Command, deadline: Instant) -> Option<Captured> {
     prepare_command(&mut command);
     let mut child = command.spawn().ok()?;
     let pid = child.id();
@@ -166,6 +211,158 @@ fn drain_bounded<R: Read + Send + 'static>(
             captured
         })
     })
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProcessIdentity {
+    pid: libc::pid_t,
+    start_time: u64,
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+struct DescendantContainment {
+    baseline: Vec<ProcessIdentity>,
+    original_subreaper: libc::c_int,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+impl DescendantContainment {
+    fn acquire(guard: std::sync::MutexGuard<'static, ()>) -> Result<Self, ContainedRunError> {
+        let mut original_subreaper = 0;
+        // SAFETY: prctl writes one integer to the supplied valid pointer.
+        let inspected = unsafe {
+            libc::prctl(
+                libc::PR_GET_CHILD_SUBREAPER,
+                &mut original_subreaper as *mut libc::c_int,
+                0,
+                0,
+                0,
+            )
+        } == 0;
+        // SAFETY: prctl only changes this process's child-reparenting behavior.
+        let enabled =
+            inspected && unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } == 0;
+        if !enabled {
+            return Err(ContainedRunError::ContainmentUnavailable);
+        }
+        let baseline = match direct_children() {
+            Ok(baseline) => baseline,
+            Err(()) => {
+                // SAFETY: restore the state changed immediately above before failing closed.
+                unsafe {
+                    let _ = libc::prctl(libc::PR_SET_CHILD_SUBREAPER, original_subreaper, 0, 0, 0);
+                }
+                return Err(ContainedRunError::ContainmentUnavailable);
+            }
+        };
+        Ok(Self {
+            baseline,
+            original_subreaper,
+            _guard: guard,
+        })
+    }
+
+    fn terminate_descendants(&self) -> bool {
+        let deadline = deadline_after(CONTAINMENT_CLEANUP_TIMEOUT);
+        let mut quiet_since = None;
+        loop {
+            let children = match direct_children() {
+                Ok(children) => children,
+                Err(()) => return false,
+            };
+            let spawned: Vec<_> = children
+                .into_iter()
+                .filter(|child| !self.baseline.contains(child))
+                .collect();
+            if spawned.is_empty() {
+                let quiet_since = quiet_since.get_or_insert_with(Instant::now);
+                if quiet_since.elapsed() >= CONTAINMENT_QUIESCENCE {
+                    return true;
+                }
+            } else {
+                quiet_since = None;
+                for child in &spawned {
+                    // SAFETY: these PIDs are current direct children identified by PID and start time.
+                    unsafe {
+                        let _ = libc::kill(child.pid, libc::SIGKILL);
+                        let _ = libc::waitpid(child.pid, std::ptr::null_mut(), libc::WNOHANG);
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+impl Drop for DescendantContainment {
+    fn drop(&mut self) {
+        // SAFETY: restore the process-wide state observed while holding the same lock.
+        unsafe {
+            let _ = libc::prctl(
+                libc::PR_SET_CHILD_SUBREAPER,
+                self.original_subreaper,
+                0,
+                0,
+                0,
+            );
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn lock_process_until(deadline: Instant) -> Option<std::sync::MutexGuard<'static, ()>> {
+    loop {
+        match PROCESS_LOCK.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(std::sync::TryLockError::Poisoned(_)) => return None,
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        thread::sleep(POLL_INTERVAL.min(remaining));
+    }
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn direct_children() -> Result<Vec<ProcessIdentity>, ()> {
+    let path = format!("/proc/self/task/{}/children", std::process::id());
+    let raw = std::fs::read_to_string(path).map_err(|_| ())?;
+    raw.split_whitespace()
+        .map(|pid| pid.parse::<libc::pid_t>().map_err(|_| ()))
+        .filter_map(|pid| match pid {
+            Ok(pid) => match process_identity(pid) {
+                Ok(Some(identity)) => Some(Ok(identity)),
+                Ok(None) => None,
+                Err(()) => Some(Err(())),
+            },
+            Err(()) => Some(Err(())),
+        })
+        .collect()
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn process_identity(pid: libc::pid_t) -> Result<Option<ProcessIdentity>, ()> {
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let fields = stat.rsplit_once(") ").ok_or(())?.1;
+    let start_time = fields
+        .split_whitespace()
+        .nth(19)
+        .ok_or(())?
+        .parse()
+        .map_err(|_| ())?;
+    Ok(Some(ProcessIdentity { pid, start_time }))
 }
 
 #[cfg(unix)]
