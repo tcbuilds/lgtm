@@ -290,7 +290,11 @@ fn run_inner(
     bind_command_provenance(&root, &paths, &mut command_run.evidence);
     let coverage = if tier == "full" {
         commands::load(&root)
-            .map(|settings| commands::run_coverage(&root, &settings.coverage))
+            .map(|settings| {
+                let selected =
+                    select_coverage_commands(&settings.coverage, hook_input.workspace.as_deref());
+                commands::run_coverage(&root, &selected)
+            })
             .unwrap_or_else(|_| commands::run_coverage(&root, &[]))
     } else {
         commands::run_coverage(&root, &[])
@@ -350,6 +354,17 @@ fn effective_tier(tier: Option<&str>) -> &str {
         Tier::Targeted => "targeted",
         Tier::Full => "full",
     })
+}
+
+fn select_coverage_commands(
+    coverage: &[commands::CoverageCommand],
+    workspace: Option<&str>,
+) -> Vec<commands::CoverageCommand> {
+    coverage
+        .iter()
+        .filter(|command| workspace.is_none_or(|id| command.workspace_id == id))
+        .cloned()
+        .collect()
 }
 
 // Executable names the repository configures as required commands. Claim matching

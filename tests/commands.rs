@@ -91,6 +91,67 @@ fn write_coverage_fixture(repo: &TempRepo, report: &str, line_threshold: u8, bra
     );
 }
 
+fn write_coverage_executable(repo: &TempRepo, relative: &str, report: &str) -> String {
+    repo.write(relative, &format!("#!/bin/sh\nprintf '%s\\n' '{report}'\n"));
+    let executable = repo.path().join(relative);
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("coverage fixture executable");
+    executable.to_string_lossy().into_owned()
+}
+
+fn write_workspace_coverage_fixture(repo: &TempRepo) {
+    let selected = write_coverage_executable(
+        repo,
+        "bin/selected-coverage",
+        "line coverage: 100% branch coverage: 100%",
+    );
+    let other = write_coverage_executable(
+        repo,
+        "bin/other-coverage",
+        "line coverage: 0% branch coverage: 0%",
+    );
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [
+                {
+                    "id": "selected",
+                    "language": "shell",
+                    "root": ".",
+                    "commands": [],
+                    "coverage": [{
+                        "argv": [selected],
+                        "cwd": ".",
+                        "timeout_seconds": 30,
+                        "scope": "unit",
+                        "line_threshold_percent": 80,
+                        "branch_threshold_percent": 80
+                    }]
+                },
+                {
+                    "id": "other",
+                    "language": "shell",
+                    "root": ".",
+                    "commands": [],
+                    "coverage": [{
+                        "argv": [other],
+                        "cwd": ".",
+                        "timeout_seconds": 30,
+                        "scope": "unit",
+                        "line_threshold_percent": 80,
+                        "branch_threshold_percent": 80
+                    }]
+                }
+            ],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+}
+
 fn run_full_stop(repo: &TempRepo, session_id: &str, stop_hook_active: bool) -> Output {
     let payload = json!({
         "cwd": repo.path(),
@@ -118,6 +179,17 @@ fn run_full_check(repo: &TempRepo) -> Output {
         .stderr(Stdio::piped())
         .output()
         .expect("full check starts")
+}
+
+fn run_workspace_full_check(repo: &TempRepo, workspace: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["check", "--workspace", workspace, "--tier", "full"])
+        .current_dir(repo.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("workspace full check starts")
 }
 
 fn latest_evidence(repo: &TempRepo) -> Value {
@@ -448,6 +520,25 @@ fn passing_line_and_branch_coverage_passes_stop_and_persists_result() {
     assert_eq!(
         projected_coverage_result(&record, "passed")["status"],
         "passed"
+    );
+    assert_eq!(record["rules"]["failed"], 0);
+}
+
+#[test]
+fn workspace_scoped_full_check_ignores_other_workspace_coverage_failure() {
+    let repo = TempRepo::new();
+    write_workspace_coverage_fixture(&repo);
+
+    let output = run_workspace_full_check(&repo, "selected");
+
+    let record = latest_evidence(&repo);
+    let coverage = record["coverage"].as_array().expect("coverage evidence");
+    assert_eq!(coverage.len(), 1);
+    assert_eq!(coverage[0]["workspace_id"], "selected");
+    assert_eq!(coverage[0]["status"], "passed");
+    assert!(
+        output.status.success(),
+        "selected workspace full check passes"
     );
     assert_eq!(record["rules"]["failed"], 0);
 }
