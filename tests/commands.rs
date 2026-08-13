@@ -1,11 +1,13 @@
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
 
 mod common;
 use common::TempRepo;
+
+const COVERAGE_RULE_ID: &str = "required-repository-commands";
 
 fn run_post_tool_use(repo: &TempRepo, session_id: &str, file: &str) -> std::process::Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
@@ -53,6 +55,86 @@ fn run_pre_tool_use_command(
     )
     .expect("payload writes");
     child.wait_with_output().expect("PreToolUse hook exits")
+}
+
+fn write_coverage_fixture(repo: &TempRepo, report: &str, line_threshold: u8, branch_threshold: u8) {
+    repo.write(
+        "bin/coverage",
+        &format!("#!/bin/sh\nprintf '%s\n' '{report}'\n"),
+    );
+    let executable = repo.path().join("bin/coverage");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("coverage fixture executable");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "coverage",
+                "language": "shell",
+                "root": ".",
+                "commands": [],
+                "coverage": [{
+                    "argv": [executable.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "scope": "unit",
+                    "line_threshold_percent": line_threshold,
+                    "branch_threshold_percent": branch_threshold
+                }]
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+}
+
+fn run_full_stop(repo: &TempRepo, session_id: &str, stop_hook_active: bool) -> Output {
+    let payload = json!({
+        "cwd": repo.path(),
+        "session_id": session_id,
+        "tier": "full",
+        "stop_hook_active": stop_hook_active
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["hook", "stop"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Stop hook starts");
+    write!(child.stdin.take().expect("stdin available"), "{payload}").expect("payload writes");
+    child.wait_with_output().expect("Stop hook exits")
+}
+
+fn run_full_check(repo: &TempRepo) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["check", "--tier", "full"])
+        .current_dir(repo.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("full check starts")
+}
+
+fn latest_evidence(repo: &TempRepo) -> Value {
+    let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
+    serde_json::from_str(evidence.lines().last().expect("evidence record")).expect("evidence JSON")
+}
+
+fn projected_coverage_result<'a>(record: &'a Value, status: &str) -> &'a Value {
+    record["results"]
+        .as_array()
+        .expect("serialized results")
+        .iter()
+        .find(|result| {
+            result["rule_id"].as_str() == Some(COVERAGE_RULE_ID)
+                && result["status"].as_str() == Some(status)
+        })
+        .expect("projected coverage result")
 }
 
 #[test]
@@ -349,4 +431,112 @@ fn invalid_command_timeout_is_surfaced_as_unverified() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("UNVERIFIED required-repository-commands"));
     assert!(stdout.contains("between 1 and 3600"));
+}
+
+#[test]
+fn passing_line_and_branch_coverage_passes_stop_and_persists_result() {
+    let repo = TempRepo::new();
+    write_coverage_fixture(&repo, "line coverage: 85% branch coverage: 90%", 80, 90);
+
+    let output = run_full_stop(&repo, "coverage-pass", false);
+
+    assert!(output.status.success(), "passing coverage must allow Stop");
+    let stdout = String::from_utf8(output.stdout).expect("Stop stdout is UTF-8");
+    assert!(stdout.contains("failed=0"), "summary must report failed=0");
+    let record = latest_evidence(&repo);
+    assert_eq!(record["coverage"][0]["status"], "passed");
+    assert_eq!(
+        projected_coverage_result(&record, "passed")["status"],
+        "passed"
+    );
+    assert_eq!(record["rules"]["failed"], 0);
+}
+
+#[test]
+fn below_threshold_coverage_blocks_stop_and_full_check() {
+    let repo = TempRepo::new();
+    write_coverage_fixture(&repo, "line coverage: 50% branch coverage: 50%", 80, 80);
+
+    let stop = run_full_stop(&repo, "coverage-fail", false);
+
+    assert_eq!(stop.status.code(), Some(2));
+    let decision: Value = serde_json::from_slice(&stop.stderr).expect("block decision JSON");
+    assert_eq!(decision["decision"], "block");
+    let reason = decision["reason"].as_str().expect("block reason");
+    assert!(reason.contains(COVERAGE_RULE_ID));
+    assert!(reason.contains("coverage"));
+    let record = latest_evidence(&repo);
+    assert_eq!(record["coverage"][0]["status"], "failed");
+    assert_eq!(
+        projected_coverage_result(&record, "failed")["status"],
+        "failed"
+    );
+    assert!(
+        record["rules"]["failed"]
+            .as_u64()
+            .is_some_and(|count| count >= 1)
+    );
+
+    let check = run_full_check(&repo);
+
+    assert!(
+        !check.status.success(),
+        "full check must fail below threshold"
+    );
+    let check_decision: Value =
+        serde_json::from_slice(&check.stderr).expect("full check block decision JSON");
+    assert_eq!(check_decision["decision"], "block");
+    let check_reason = check_decision["reason"]
+        .as_str()
+        .expect("full check reason");
+    assert!(check_reason.contains(COVERAGE_RULE_ID));
+    assert!(check_reason.contains("coverage"));
+}
+
+#[test]
+fn unparseable_coverage_is_unverified_and_does_not_fail_stop() {
+    let repo = TempRepo::new();
+    write_coverage_fixture(&repo, "coverage report unavailable", 80, 80);
+
+    let output = run_full_stop(&repo, "coverage-unverified", false);
+
+    assert!(
+        output.status.success(),
+        "unverified coverage must allow Stop"
+    );
+    let stdout = String::from_utf8(output.stdout).expect("Stop stdout is UTF-8");
+    assert!(stdout.contains("UNVERIFIED required-repository-commands"));
+    let record = latest_evidence(&repo);
+    assert_eq!(record["coverage"][0]["status"], "unverified");
+    assert_eq!(
+        projected_coverage_result(&record, "unverified")["status"],
+        "unverified"
+    );
+    assert_eq!(record["rules"]["failed"], 0);
+}
+
+#[test]
+fn active_stop_hook_summarizes_failed_coverage_instead_of_blocking() {
+    let repo = TempRepo::new();
+    write_coverage_fixture(&repo, "line coverage: 50% branch coverage: 50%", 80, 80);
+
+    let output = run_full_stop(&repo, "coverage-active", true);
+
+    assert!(
+        output.status.success(),
+        "active Stop hook must return a summary"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "summary path must not emit a block"
+    );
+    let stdout = String::from_utf8(output.stdout).expect("Stop stdout is UTF-8");
+    assert!(
+        stdout
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("failed=1"))
+    );
+    let record = latest_evidence(&repo);
+    assert_eq!(record["coverage"][0]["status"], "failed");
 }
