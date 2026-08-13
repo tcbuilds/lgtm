@@ -31,6 +31,16 @@ fn v2_config(profile: &str, disabled_rules: &[&str], severity_overrides: &[(&str
     })
 }
 
+fn v1_config(v2: &Value) -> Value {
+    let mut config = v2.clone();
+    let Some(object) = config.as_object_mut() else {
+        panic!("V2 fixture must be a JSON object");
+    };
+    object.remove("version");
+    object.insert("required_commands".to_string(), json!({"verify": ["true"]}));
+    config
+}
+
 fn write_config(repo: &TempRepo, config: &Value) {
     repo.write(".lgtm/config.json", &config.to_string());
 }
@@ -45,6 +55,42 @@ fn run_validate(repo: &TempRepo) -> Output {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn assert_policy_rejected_by_cli_and_loader(
+    repo: &TempRepo,
+    case: &InvalidCase,
+    diagnostic_marker: &str,
+) {
+    let runtime_error = match lgtm::policy::load_profiled_registry(repo.path()) {
+        Ok(_) => panic!("{} must fail runtime loading", case.name),
+        Err(error) => error,
+    };
+    assert!(
+        runtime_error.contains(case.runtime_marker),
+        "{} runtime error should contain {}: {runtime_error}",
+        case.name,
+        case.runtime_marker
+    );
+
+    let output = run_validate(repo);
+    let diagnostic = stderr(&output);
+    assert!(
+        !output.status.success(),
+        "{} must make config validate fail; stderr: {diagnostic}",
+        case.name
+    );
+    assert!(
+        diagnostic.contains(diagnostic_marker),
+        "{} diagnostic should contain {}: {diagnostic}",
+        case.name,
+        diagnostic_marker
+    );
+    assert!(
+        !diagnostic.contains(UNRELATED_MARKER),
+        "{} diagnostic must not echo unrelated fixture content: {diagnostic}",
+        case.name
+    );
 }
 
 fn invalid_cases() -> [InvalidCase; 5] {
@@ -115,17 +161,6 @@ fn invalid_runtime_policy_classes_are_rejected_by_cli_and_loader() {
         let repo = TempRepo::new();
         write_config(&repo, &case.config);
 
-        let runtime_error = match lgtm::policy::load_profiled_registry(repo.path()) {
-            Ok(_) => panic!("{} must fail runtime loading", case.name),
-            Err(error) => error,
-        };
-        assert!(
-            runtime_error.contains(case.runtime_marker),
-            "{} runtime error should contain {}: {runtime_error}",
-            case.name,
-            case.runtime_marker
-        );
-
         if case.rejects_structurally {
             let parse_error = lgtm::config_v2::parse(&case.config);
             assert!(
@@ -133,26 +168,35 @@ fn invalid_runtime_policy_classes_are_rejected_by_cli_and_loader() {
                 "{} must fail V2 structural parsing",
                 case.name
             );
+        } else {
+            let parse_result = lgtm::config_v2::parse(&case.config);
+            assert!(
+                parse_result.is_ok(),
+                "{} must pass V2 structural parsing before runtime rejection",
+                case.name
+            );
         }
 
-        let output = run_validate(&repo);
-        let diagnostic = stderr(&output);
-        assert!(
-            !output.status.success(),
-            "{} must make config validate fail; stderr: {diagnostic}",
+        assert_policy_rejected_by_cli_and_loader(&repo, &case, case.cli_marker);
+    }
+}
+
+#[test]
+fn v1_runtime_policy_classes_are_rejected_by_cli_and_loader() {
+    for case in invalid_cases() {
+        let repo = TempRepo::new();
+        write_config(&repo, &v1_config(&case.config));
+
+        let settings = lgtm::checks::commands::load(repo.path())
+            .unwrap_or_else(|error| panic!("{} V1 command config must load: {error}", case.name));
+        assert_eq!(
+            settings.commands,
+            vec!["true".to_string()],
+            "{} V1 command config must load the valid required command",
             case.name
         );
-        assert!(
-            diagnostic.contains(case.cli_marker),
-            "{} diagnostic should contain {}: {diagnostic}",
-            case.name,
-            case.cli_marker
-        );
-        assert!(
-            !diagnostic.contains(UNRELATED_MARKER),
-            "{} diagnostic must not echo unrelated fixture content: {diagnostic}",
-            case.name
-        );
+
+        assert_policy_rejected_by_cli_and_loader(&repo, &case, case.runtime_marker);
     }
 }
 
