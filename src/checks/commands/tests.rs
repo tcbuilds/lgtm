@@ -279,6 +279,18 @@ fn missing_configured_metric_is_unverified_and_non_blocking() {
 }
 
 #[test]
+fn below_line_threshold_with_missing_branch_remains_failed() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body("line-fail-missing-branch", "echo 'line coverage: 50%'");
+    let evidence = run_coverage(&fixture.root, &[coverage_command(tool, Some(80), Some(80))]);
+    let results = coverage_results(&evidence);
+
+    assert_eq!(evidence[0].status, "failed");
+    assert_eq!(results[0].status, Status::Failed);
+    assert!(results[0].is_failure());
+}
+
+#[test]
 fn unparseable_line_with_valid_branch_remains_unverified_and_non_blocking() {
     let fixture = Fixture::create();
     let tool = fixture.script_body(

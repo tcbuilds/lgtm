@@ -99,10 +99,20 @@ pub fn run_coverage(root: &Path, commands: &[CoverageCommand]) -> Vec<CoverageEv
                     }) && command.branch_threshold_percent.is_none_or(|threshold| {
                         branch.is_some_and(|value| value >= f64::from(threshold))
                     });
+                    let line_below_threshold =
+                        command.line_threshold_percent.is_some_and(|threshold| {
+                            line.is_some_and(|value| value < f64::from(threshold))
+                        });
+                    let branch_below_threshold =
+                        command.branch_threshold_percent.is_some_and(|threshold| {
+                            branch.is_some_and(|value| value < f64::from(threshold))
+                        });
                     let missing_configured_metric = (command.line_threshold_percent.is_some()
                         && line.is_none())
                         || (command.branch_threshold_percent.is_some() && branch.is_none());
-                    if (line.is_none() && branch.is_none()) || missing_configured_metric {
+                    if line_below_threshold || branch_below_threshold {
+                        ("failed", line, branch)
+                    } else if (line.is_none() && branch.is_none()) || missing_configured_metric {
                         ("unverified", line, branch)
                     } else if passed {
                         ("passed", line, branch)
