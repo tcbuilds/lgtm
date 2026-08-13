@@ -149,7 +149,7 @@ fn classify_coverage_status(
     }
 }
 
-fn parse_metric(output: &str, label: &str) -> Option<f64> {
+pub(super) fn parse_metric(output: &str, label: &str) -> Option<f64> {
     output.lines().find_map(|line| {
         let lower = line.to_ascii_lowercase();
         let start = lower.find(label)?;
@@ -160,16 +160,29 @@ fn parse_metric(output: &str, label: &str) -> Option<f64> {
             .filter_map(|metric| suffix.find(metric))
             .min();
         let suffix = next_metric.map_or(suffix, |end| &suffix[..end]);
-        if !suffix.contains('%') {
-            return None;
-        }
-        let percent = suffix
-            .chars()
-            .skip_while(|character| !character.is_ascii_digit())
-            .take_while(char::is_ascii_digit)
-            .collect::<String>();
-        percent.parse().ok()
+        parse_percent(suffix)
     })
+}
+
+fn parse_percent(metric: &str) -> Option<f64> {
+    let percent = metric.find('%')?;
+    let prefix = metric[..percent].trim_end();
+    let number_start = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, character)| !character.is_ascii_digit() && !matches!(character, '.' | '+' | '-'))
+        .map_or(0, |(index, character)| index + character.len_utf8());
+    let token = &prefix[number_start..];
+    if token.is_empty()
+        || prefix[..number_start]
+            .chars()
+            .next_back()
+            .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        return None;
+    }
+    let value = token.parse::<f64>().ok()?;
+    (value.is_finite() && (0.0..=100.0).contains(&value)).then_some(value)
 }
 
 fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mut RunResults) {

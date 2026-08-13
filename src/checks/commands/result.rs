@@ -74,6 +74,15 @@ pub fn config_unverified(reason: &str) -> EnforcementResult {
     )
 }
 
+pub(crate) fn invalid_workspace(reason: &str) -> EnforcementResult {
+    let mut invalid = result("workspace selector", Status::Failed, reason);
+    invalid.remediation = Some(
+        "Select a configured workspace id or omit the workspace selector, then retry Stop."
+            .to_string(),
+    );
+    invalid
+}
+
 pub(crate) fn coverage_results(evidence: &[CoverageEvidence]) -> Vec<EnforcementResult> {
     evidence.iter().filter_map(coverage_result).collect()
 }

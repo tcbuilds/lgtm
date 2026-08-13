@@ -19,6 +19,29 @@ pub struct Settings {
     pub workspace_ids: Vec<String>,
 }
 
+impl Settings {
+    pub fn validate_workspace(&self, workspace: Option<&str>) -> Result<(), String> {
+        let Some(workspace) = workspace else {
+            return Ok(());
+        };
+        if self.workspace_ids.iter().any(|known| known == workspace) {
+            return Ok(());
+        }
+        let workspace = workspace
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect::<String>();
+        let available = if self.workspace_ids.is_empty() {
+            "none configured".to_string()
+        } else {
+            self.workspace_ids.join(", ")
+        };
+        Err(format!(
+            "unknown workspace `{workspace}`; available workspaces: {available}; select a configured workspace id or omit the workspace selector"
+        ))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StructuredCommand {
     pub argv: Vec<String>,

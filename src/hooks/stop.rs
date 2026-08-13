@@ -233,6 +233,11 @@ fn run_inner(
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
+    let workspace_error = commands::load(&root).ok().and_then(|settings| {
+        settings
+            .validate_workspace(hook_input.workspace.as_deref())
+            .err()
+    });
     let (paths, had_edits) = if hook_input.check {
         (check_paths(&root)?, false)
     } else {
@@ -246,7 +251,7 @@ fn run_inner(
             hook_input.transcript_path.as_deref().map(Path::new),
             &configured,
         );
-    if !hook_input.check && !had_edits && !claims_only {
+    if !hook_input.check && !had_edits && !claims_only && workspace_error.is_none() {
         return Ok(ExitCode::SUCCESS);
     }
     let (profile, registry, overrides, waivers, compatibility, policy_sources) =
@@ -319,6 +324,9 @@ fn run_inner(
     crate::policy::profile::apply_resolved_results(&registry, &mut results);
     crate::policy::overrides::apply_results(&overrides, &mut results);
     crate::policy::waivers::apply(&waivers, &mut results);
+    if let Some(reason) = workspace_error {
+        results.push(commands::invalid_workspace(&reason));
+    }
     append_task_evidence(
         EvidenceMeta {
             root: &root,

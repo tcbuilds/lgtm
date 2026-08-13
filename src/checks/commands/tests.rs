@@ -268,6 +268,65 @@ fn configured_coverage_records_metrics_and_threshold_status() {
 }
 
 #[test]
+fn coverage_parser_uses_value_immediately_before_percent() {
+    assert_eq!(
+        super::runner::parse_metric("line coverage: 120/120 100%", "line"),
+        Some(100.0)
+    );
+    assert_eq!(
+        super::runner::parse_metric("line coverage: 98/120 81.67%", "line"),
+        Some(81.67)
+    );
+}
+
+#[test]
+fn coverage_parser_rejects_malformed_and_out_of_range_percentages() {
+    for report in [
+        "line coverage: unavailable%",
+        "line coverage: -1%",
+        "line coverage: 100.1%",
+        "line coverage: 1e2%",
+        "line coverage: 1..0%",
+    ] {
+        assert_eq!(
+            super::runner::parse_metric(report, "line"),
+            None,
+            "must reject {report}"
+        );
+    }
+}
+
+#[test]
+fn decimal_coverage_is_compared_without_truncation() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body(
+        "decimal-coverage",
+        "echo 'line coverage: 79/100 79.9% branch coverage: 81.25%'",
+    );
+    let evidence = run_coverage(&fixture.root, &[coverage_command(tool, Some(80), Some(81))]);
+
+    assert_eq!(evidence[0].line_percent, Some(79.9));
+    assert_eq!(evidence[0].branch_percent, Some(81.25));
+    assert_eq!(evidence[0].status, "failed");
+}
+
+#[test]
+fn out_of_range_metric_is_unverified_and_not_serialized() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body(
+        "invalid-coverage",
+        "echo 'line coverage: 120% branch coverage: 90%'",
+    );
+    let evidence = run_coverage(&fixture.root, &[coverage_command(tool, Some(80), Some(80))]);
+    let serialized = serde_json::to_value(&evidence).expect("coverage evidence serializes");
+
+    assert_eq!(evidence[0].status, "unverified");
+    assert_eq!(evidence[0].line_percent, None);
+    assert_eq!(evidence[0].branch_percent, Some(90.0));
+    assert_eq!(serialized[0]["line_percent"], serde_json::Value::Null);
+}
+
+#[test]
 fn missing_configured_metric_is_unverified_and_non_blocking() {
     let fixture = Fixture::create();
     let tool = fixture.script_body("partial-coverage", "echo 'branch coverage: 90%'");

@@ -171,6 +171,25 @@ fn run_full_stop(repo: &TempRepo, session_id: &str, stop_hook_active: bool) -> O
     child.wait_with_output().expect("Stop hook exits")
 }
 
+fn run_stop_with_workspace(repo: &TempRepo, session_id: &str, workspace: &str) -> Output {
+    let payload = json!({
+        "cwd": repo.path(),
+        "session_id": session_id,
+        "workspace": workspace,
+        "tier": "full",
+        "stop_hook_active": false
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["hook", "stop"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("workspace Stop hook starts");
+    write!(child.stdin.take().expect("stdin available"), "{payload}").expect("payload writes");
+    child.wait_with_output().expect("Stop hook exits")
+}
+
 fn run_full_check(repo: &TempRepo) -> Output {
     Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["check", "--tier", "full"])
@@ -526,6 +545,53 @@ fn passing_line_and_branch_coverage_passes_stop_and_persists_result() {
 }
 
 #[test]
+fn ratio_and_decimal_coverage_uses_the_percentage_value() {
+    let repo = TempRepo::new();
+    write_coverage_fixture(
+        &repo,
+        "line coverage: 120/120 100% branch coverage: 119/120 99.17%",
+        100,
+        99,
+    );
+
+    let output = run_full_stop(&repo, "coverage-ratio", false);
+
+    assert!(
+        output.status.success(),
+        "ratio totals must not be parsed as percentages"
+    );
+    let record = latest_evidence(&repo);
+    assert_eq!(record["coverage"][0]["status"], "passed");
+    assert_eq!(record["coverage"][0]["line_percent"], 100.0);
+    assert_eq!(record["coverage"][0]["branch_percent"], 99.17);
+}
+
+#[test]
+fn out_of_range_coverage_is_unverified_and_persists_valid_evidence() {
+    let repo = TempRepo::new();
+    write_coverage_fixture(
+        &repo,
+        "line coverage: 120/120 120% branch coverage: 100%",
+        80,
+        80,
+    );
+
+    let output = run_full_stop(&repo, "coverage-out-of-range", false);
+
+    assert!(
+        output.status.success(),
+        "invalid tool output must be unverified rather than fail open after an evidence error"
+    );
+    let stdout = String::from_utf8(output.stdout).expect("Stop stdout is UTF-8");
+    assert!(stdout.contains("UNVERIFIED required-repository-commands"));
+    let record = latest_evidence(&repo);
+    assert_eq!(record["coverage"][0]["status"], "unverified");
+    assert_eq!(record["coverage"][0]["line_percent"], Value::Null);
+    assert_eq!(record["coverage"][0]["branch_percent"], 100.0);
+    assert_eq!(record["rules"]["failed"], 0);
+}
+
+#[test]
 fn workspace_scoped_full_check_ignores_other_workspace_coverage_failure() {
     let repo = TempRepo::new();
     write_workspace_coverage_fixture(&repo);
@@ -584,21 +650,51 @@ fn full_check_without_workspace_selector_runs_all_coverage() {
 }
 
 #[test]
-fn unknown_workspace_selector_fails_instead_of_skipping_coverage() {
+fn unknown_workspace_selector_fails_in_central_check_execution() {
     let repo = TempRepo::new();
     write_workspace_coverage_fixture(&repo);
 
     let output = run_workspace_full_check(&repo, "typo");
 
     assert!(!output.status.success(), "unknown workspace must fail");
-    let error = String::from_utf8(output.stderr).expect("check error is UTF-8");
-    assert!(error.contains("check failed: unknown workspace `typo`"));
-    assert!(error.contains("available workspaces: selected, other"));
-    assert!(error.contains("select a configured workspace id"));
+    let decision: Value =
+        serde_json::from_slice(&output.stderr).expect("check block decision JSON");
+    assert_eq!(decision["decision"], "block");
+    let reason = decision["reason"].as_str().expect("block reason");
+    assert!(reason.contains("unknown workspace `typo`"));
+    assert!(reason.contains("available workspaces: selected, other"));
+    assert!(reason.contains("select a configured workspace id"));
+    let record = latest_evidence(&repo);
+    assert!(record["results"].as_array().is_some_and(|results| {
+        results.iter().any(|result| {
+            result["status"] == "failed"
+                && result["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("unknown workspace `typo`"))
+        })
+    }));
+}
+
+#[test]
+fn unknown_workspace_selector_in_direct_hook_payload_is_denied() {
+    let repo = TempRepo::new();
+    write_workspace_coverage_fixture(&repo);
+
+    let output = run_stop_with_workspace(&repo, "workspace-typo", "typo");
+
+    assert_eq!(output.status.code(), Some(2));
+    let decision: Value = serde_json::from_slice(&output.stderr).expect("Stop block decision JSON");
+    assert_eq!(decision["decision"], "block");
+    let reason = decision["reason"].as_str().expect("block reason");
+    assert!(reason.contains("unknown workspace `typo`"));
+    assert!(reason.contains("available workspaces: selected, other"));
+    let record = latest_evidence(&repo);
     assert!(
-        !repo.path().join(".lgtm/evidence/evidence.jsonl").exists(),
-        "invalid selector must fail before recording a misleading coverage skip"
+        record["rules"]["failed"]
+            .as_u64()
+            .is_some_and(|count| count >= 1)
     );
+    assert_eq!(record["coverage"][0]["status"], "not_applicable");
 }
 
 #[test]
