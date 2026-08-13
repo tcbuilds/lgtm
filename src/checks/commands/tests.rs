@@ -1,6 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use crate::checks::Status;
+use crate::policy::Severity;
 
 use super::*;
 
@@ -263,4 +264,125 @@ fn configured_coverage_records_metrics_and_threshold_status() {
     assert_eq!(evidence[0].status, "passed");
     assert_eq!(evidence[0].line_percent, Some(85.0));
     assert_eq!(evidence[0].branch_percent, Some(90.0));
+}
+
+#[test]
+fn passing_coverage_projects_to_passed_required_repository_command() {
+    let results = coverage_results(&[coverage_evidence("passed")]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].rule_id, "required-repository-commands");
+    assert_eq!(results[0].status, Status::Passed);
+    assert_eq!(results[0].severity, Severity::Error);
+    assert_eq!(
+        results[0].message,
+        "Required repository command `coverage` passed."
+    );
+    assert_eq!(results[0].remediation, None);
+}
+
+#[test]
+fn below_line_threshold_projects_to_failed_required_repository_command() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body("line-fail", "echo 'line coverage: 79%'");
+    let evidence = run_coverage(&fixture.root, &[coverage_command(tool, Some(80), None)]);
+    let results = coverage_results(&evidence);
+
+    assert_eq!(evidence[0].status, "failed");
+    assert_eq!(results[0].rule_id, "required-repository-commands");
+    assert_eq!(results[0].status, Status::Failed);
+    assert_eq!(results[0].severity, Severity::Error);
+    assert_eq!(
+        results[0].message,
+        "Required repository command `coverage` failed."
+    );
+    assert_eq!(
+        results[0].remediation.as_deref(),
+        Some("Fix the command or repository failure, then retry Stop.")
+    );
+}
+
+#[test]
+fn below_branch_threshold_projects_to_failed_required_repository_command() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body("branch-fail", "echo 'branch coverage: 79%'");
+    let evidence = run_coverage(&fixture.root, &[coverage_command(tool, None, Some(80))]);
+    let results = coverage_results(&evidence);
+
+    assert_eq!(evidence[0].status, "failed");
+    assert_eq!(results[0].rule_id, "required-repository-commands");
+    assert_eq!(results[0].status, Status::Failed);
+    assert_eq!(results[0].severity, Severity::Error);
+    assert_eq!(
+        results[0].message,
+        "Required repository command `coverage` failed."
+    );
+}
+
+#[test]
+fn unparseable_coverage_projects_to_unverified_without_failure() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body("unverified", "echo 'coverage report unavailable'");
+    let evidence = run_coverage(&fixture.root, &[coverage_command(tool, Some(80), Some(80))]);
+    let results = coverage_results(&evidence);
+
+    assert_eq!(evidence[0].status, "unverified");
+    assert_eq!(evidence[0].line_percent, None);
+    assert_eq!(evidence[0].branch_percent, None);
+    assert_eq!(results[0].rule_id, "required-repository-commands");
+    assert_eq!(results[0].status, Status::Unverified);
+    assert!(!results[0].is_failure());
+    assert_eq!(
+        results[0].message,
+        "Required repository command `coverage` could not verify coverage."
+    );
+}
+
+#[test]
+fn no_coverage_not_applicable_remains_evidence_only() {
+    let fixture = Fixture::create();
+    let evidence = run_coverage(&fixture.root, &[]);
+
+    assert_eq!(evidence[0].status, "not_applicable");
+    assert!(coverage_results(&evidence).is_empty());
+}
+
+#[test]
+fn exact_coverage_threshold_boundary_remains_passing() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body("boundary", "echo 'line coverage: 80% branch coverage: 90%'");
+    let evidence = run_coverage(&fixture.root, &[coverage_command(tool, Some(80), Some(90))]);
+    let results = coverage_results(&evidence);
+
+    assert_eq!(evidence[0].status, "passed");
+    assert_eq!(results[0].rule_id, "required-repository-commands");
+    assert_eq!(results[0].status, Status::Passed);
+    assert!(!results[0].is_failure());
+}
+
+fn coverage_evidence(status: &str) -> CoverageEvidence {
+    CoverageEvidence {
+        workspace_id: "backend".to_string(),
+        status: status.to_string(),
+        tool: Some("coverage".to_string()),
+        scope: Some("unit".to_string()),
+        line_percent: None,
+        branch_percent: None,
+        measured_at_ms: Some(0),
+    }
+}
+
+fn coverage_command(
+    tool: String,
+    line_threshold_percent: Option<u8>,
+    branch_threshold_percent: Option<u8>,
+) -> CoverageCommand {
+    CoverageCommand {
+        workspace_id: "backend".to_string(),
+        argv: vec![tool],
+        cwd: ".".into(),
+        timeout: std::time::Duration::from_secs(30),
+        scope: "unit".to_string(),
+        line_threshold_percent,
+        branch_threshold_percent,
+    }
 }

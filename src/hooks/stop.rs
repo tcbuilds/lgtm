@@ -296,6 +296,7 @@ fn run_inner(
         commands::run_coverage(&root, &[])
     };
     results.extend(command_run.results);
+    results.extend(commands::coverage_results(&coverage));
     if !hook_input.check {
         let mut claim_evidence = command_run.evidence.clone();
         claim_evidence.extend(

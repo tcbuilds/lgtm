@@ -74,6 +74,21 @@ pub fn config_unverified(reason: &str) -> EnforcementResult {
     )
 }
 
+pub(crate) fn coverage_results(evidence: &[CoverageEvidence]) -> Vec<EnforcementResult> {
+    evidence.iter().filter_map(coverage_result).collect()
+}
+
+fn coverage_result(evidence: &CoverageEvidence) -> Option<EnforcementResult> {
+    let (status, reason) = match evidence.status.as_str() {
+        "passed" => (Status::Passed, "passed"),
+        "failed" => (Status::Failed, "failed"),
+        "unverified" => (Status::Unverified, "could not verify coverage"),
+        "not_applicable" => return None,
+        _ => (Status::Unverified, "could not verify coverage"),
+    };
+    Some(result("coverage", status, reason))
+}
+
 pub(super) fn not_applicable() -> EnforcementResult {
     result(
         "configuration",
