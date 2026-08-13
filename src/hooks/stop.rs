@@ -157,6 +157,14 @@ pub(crate) fn run_pre_commit_gate(
     root: &Path,
     session_id: Option<&str>,
 ) -> Result<Option<String>, String> {
+    run_pre_commit_gate_with_budget(root, session_id, commands::STOP_COMMAND_BUDGET)
+}
+
+fn run_pre_commit_gate_with_budget(
+    root: &Path,
+    session_id: Option<&str>,
+    command_budget: Duration,
+) -> Result<Option<String>, String> {
     let paths = check_paths(root)?;
     if matching_full_evidence(root, session_id, &paths).is_some() {
         return Ok(None);
@@ -169,11 +177,13 @@ pub(crate) fn run_pre_commit_gate(
     });
     let mut input = std::io::Cursor::new(payload.to_string());
     let mut output = Vec::new();
-    let code = run_inner(
+    let code = run_inner_with_options(
         &mut input,
         &mut output,
         &InternalGateAdapter,
         crate::adapter::HookEvent::Stop,
+        command_budget,
+        true,
     )?;
     if code == ExitCode::SUCCESS {
         return Ok(None);
@@ -239,6 +249,17 @@ fn run_inner_with_budget(
     adapter: &dyn HookAdapter,
     event: crate::adapter::HookEvent,
     command_budget: Duration,
+) -> Result<ExitCode, String> {
+    run_inner_with_options(input, output, adapter, event, command_budget, false)
+}
+
+fn run_inner_with_options(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    event: crate::adapter::HookEvent,
+    command_budget: Duration,
+    pre_commit: bool,
 ) -> Result<ExitCode, String> {
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Targeted);
     let started_at_ms = unix_ms();
@@ -312,7 +333,15 @@ fn run_inner_with_budget(
         &mut budget,
     );
     if budget.is_exhausted() {
-        command_run.results.push(commands::budget_unverified());
+        let result = commands::budget_unverified();
+        command_run.results.push(if pre_commit {
+            EnforcementResult {
+                status: Status::Failed,
+                ..result
+            }
+        } else {
+            result
+        });
     }
     bind_command_provenance(&root, &paths, &mut command_run.evidence);
     results.extend(command_run.results);
@@ -550,6 +579,10 @@ fn stored_gate_passed(record: &StoredTaskEvidence) -> bool {
         .iter()
         .all(|coverage| matches!(coverage.status.as_str(), "passed" | "not_applicable"));
     !has_blocking_failure && command_results_verified && commands_verified && coverage_verified
+}
+
+fn is_aggregate_budget_result(result: &EnforcementResult) -> bool {
+    result.evidence.check == commands::budget_unverified().evidence.check
 }
 
 fn read_diff_baseline(root: &Path, session_id: Option<&str>) -> Option<BTreeSet<String>> {
@@ -1219,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_cutoff_full_evidence_is_not_reused_for_pre_commit() {
+    fn aggregate_cutoff_full_evidence_is_not_reused_but_other_unverified_is() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1233,7 +1266,7 @@ mod tests {
             .expect("evidence directory");
         let config_digest = digest_bytes("");
         let touched_files_digest = digest_paths(&root, &[]);
-        let record = |unverified| {
+        let record = |results: Vec<serde_json::Value>| {
             serde_json::json!({
                 "task_id": "aggregate-budget",
                 "rules": {
@@ -1242,10 +1275,11 @@ mod tests {
                     "warning": 0,
                     "skipped": 0,
                     "not_applicable": 0,
-                    "unverified": unverified,
+                    "unverified": results.iter().filter(|result| result["status"] == "unverified").count(),
                     "overridden": 0,
                     "waived": 0
                 },
+                "results": results,
                 "commands": [],
                 "policy_version": crate::policy::POLICY_BUNDLE_VERSION,
                 "binary_version": env!("CARGO_PKG_VERSION"),
@@ -1254,18 +1288,97 @@ mod tests {
                 "tier": "full"
             })
         };
+        let cases = [
+            (
+                vec![serde_json::to_value(commands::budget_unverified()).expect("cutoff result")],
+                false,
+            ),
+            (
+                vec![
+                    serde_json::to_value(commands::config_unverified("unrelated check"))
+                        .expect("unrelated result"),
+                ],
+                true,
+            ),
+            (Vec::new(), true),
+        ];
 
-        for (unverified, reusable) in [(1, false), (0, true)] {
-            std::fs::write(&evidence_path, format!("{}\n", record(unverified)))
+        for (results, reusable) in cases {
+            std::fs::write(&evidence_path, format!("{}\n", record(results)))
                 .expect("evidence record");
             assert_eq!(
                 matching_full_evidence(&root, Some("aggregate-budget"), &[]).is_some(),
                 reusable,
-                "unverified count {unverified} reuse decision"
+                "cutoff-specific evidence reuse decision"
             );
         }
 
         std::fs::remove_dir_all(root).expect("temporary evidence directory removal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pre_commit_gate_denies_aggregate_budget_exhaustion() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-pre-commit-budget-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
+        let command = root.join(".lgtm/bin/slow");
+        std::fs::write(&command, "#!/bin/sh\nsleep 1\n").expect("fixture command");
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture permissions");
+        std::fs::write(
+            root.join(".lgtm/config.json"),
+            serde_json::json!({
+                "version": "2",
+                "profile": "default",
+                "workspaces": [{
+                    "id": "root",
+                    "language": "shell",
+                    "root": ".",
+                    "commands": [{
+                        "argv": [command.to_string_lossy()],
+                        "cwd": ".",
+                        "timeout_seconds": 30,
+                        "tier": "full",
+                        "purpose": "test",
+                        "source": "fixture",
+                        "confidence": "high"
+                    }],
+                    "coverage": []
+                }],
+                "disabled_rules": [],
+                "severity_overrides": {}
+            })
+            .to_string(),
+        )
+        .expect("fixture config");
+
+        let reason = run_pre_commit_gate_with_budget(
+            &root,
+            Some("pre-commit-budget"),
+            Duration::from_millis(50),
+        )
+        .expect("pre-commit gate runs")
+        .expect("aggregate cutoff denies commit");
+
+        assert!(reason.contains("aggregate execution budget expired"));
+        let evidence =
+            std::fs::read_to_string(root.join(".lgtm/evidence/evidence.jsonl")).expect("evidence");
+        let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("record");
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["status"] == "failed"
+                    && result["evidence"]["check"] == commands::budget_unverified().evidence.check
+            })
+        }));
+
+        std::fs::remove_dir_all(root).expect("temporary fixture removal");
     }
 
     #[cfg(unix)]
@@ -1395,6 +1508,12 @@ mod tests {
                     .as_str()
                     .is_some_and(|message| message.contains("aggregate execution budget expired"))
             })
+        }));
+        let results: Vec<EnforcementResult> =
+            serde_json::from_value(record["results"].clone()).expect("typed results");
+        assert!(results.iter().any(is_aggregate_budget_result));
+        assert!(results.iter().any(|result| {
+            is_aggregate_budget_result(result) && result.status == Status::Unverified
         }));
 
         std::fs::remove_dir_all(root).ok();

@@ -4,6 +4,8 @@ use crate::checks::{EnforcementResult, ResultEvidence, Status};
 use crate::policy::Severity;
 
 const RULE_ID: &str = "required-repository-commands";
+const REQUIRED_COMMAND_CHECK: &str = "command.required";
+const AGGREGATE_BUDGET_CHECK: &str = "command.aggregate_budget";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommandEvidence {
@@ -47,6 +49,15 @@ pub struct RunResults {
 }
 
 pub(super) fn result(command: &str, status: Status, reason: &str) -> EnforcementResult {
+    result_with_check(command, status, reason, REQUIRED_COMMAND_CHECK)
+}
+
+fn result_with_check(
+    command: &str,
+    status: Status,
+    reason: &str,
+    check: &str,
+) -> EnforcementResult {
     EnforcementResult {
         rule_id: RULE_ID.to_string(),
         status,
@@ -59,7 +70,7 @@ pub(super) fn result(command: &str, status: Status, reason: &str) -> Enforcement
         remediation: (status != Status::Passed)
             .then(|| "Fix the command or repository failure, then retry Stop.".to_string()),
         evidence: ResultEvidence {
-            check: "command.required".to_string(),
+            check: check.to_string(),
             tool_version: None,
             finding_descriptions: Vec::new(),
         },
@@ -116,10 +127,11 @@ fn coverage_result(evidence: &CoverageEvidence) -> Option<EnforcementResult> {
 }
 
 pub fn budget_unverified() -> EnforcementResult {
-    result(
+    result_with_check(
         "aggregate repository-command gate",
         Status::Unverified,
         "was not fully run because the aggregate execution budget expired",
+        AGGREGATE_BUDGET_CHECK,
     )
 }
 
