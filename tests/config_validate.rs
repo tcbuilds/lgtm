@@ -53,6 +53,14 @@ fn run_validate(repo: &TempRepo) -> Output {
         .unwrap_or_else(|error| panic!("config validate should execute: {error}"))
 }
 
+fn run_migrate(repo: &TempRepo) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["init", "--migrate-config"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap_or_else(|error| panic!("config migration should execute: {error}"))
+}
+
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -201,6 +209,107 @@ fn v1_runtime_policy_classes_are_rejected_by_cli_and_loader() {
 }
 
 #[test]
+fn runtime_loader_rejects_representative_v2_preflight_failures() {
+    let mut unknown_field = v2_config("default", &[], &[]);
+    unknown_field["unexpected"] = json!(true);
+
+    let mut missing_required_field = v2_config("default", &[], &[]);
+    missing_required_field
+        .as_object_mut()
+        .expect("fixture is an object")
+        .remove("workspaces");
+
+    let mut invalid_timeout = v2_config("default", &[], &[]);
+    invalid_timeout["workspaces"] = json!([{
+        "id": "rust",
+        "language": "rust",
+        "root": ".",
+        "commands": [{
+            "argv": ["cargo", "test"],
+            "cwd": ".",
+            "timeout_seconds": 3601,
+            "tier": "full",
+            "purpose": "test",
+            "source": "fixture",
+            "confidence": "high"
+        }]
+    }]);
+
+    let mut parent_path = v2_config("default", &[], &[]);
+    parent_path["workspaces"] = json!([{
+        "id": "rust",
+        "language": "rust",
+        "root": "../outside",
+        "commands": []
+    }]);
+
+    for (name, config) in [
+        ("unknown field", unknown_field),
+        ("missing required field", missing_required_field),
+        ("timeout above schema limit", invalid_timeout),
+        ("repository-relative path violation", parent_path),
+    ] {
+        let parse_error = match lgtm::config_v2::parse(&config) {
+            Ok(_) => panic!("{name} must fail config_v2::parse"),
+            Err(error) => error,
+        };
+        let repo = TempRepo::new();
+        write_config(&repo, &config);
+        let runtime_error = lgtm::policy::load_profiled_registry(repo.path())
+            .expect_err("runtime loader must run the same V2 preflight");
+        assert!(
+            runtime_error.starts_with("config V2 is invalid:"),
+            "{name} runtime error should come from V2 preflight: {runtime_error}; parse: {parse_error}"
+        );
+    }
+}
+
+#[test]
+fn v1_migration_refuses_unsupported_severity_without_writing() {
+    let repo = TempRepo::new();
+    let raw = r#"{
+  "profile": "default",
+  "required_commands": {"rust": ["cargo test"]},
+  "severity_overrides": {"regression-test-required": "critical"}
+}
+"#;
+    repo.write(".lgtm/config.json", raw);
+
+    let output = run_migrate(&repo);
+    let diagnostic = stderr(&output);
+    assert!(
+        !output.status.success(),
+        "migration must fail: {diagnostic}"
+    );
+    assert!(diagnostic.contains("severity_overrides values must be one of: error, warning, info"));
+    assert_eq!(repo.read(".lgtm/config.json"), raw);
+    assert!(!repo.exists(".lgtm/config.v1.bak.json"));
+}
+
+#[test]
+fn valid_v1_config_keeps_compatibility_mode_and_exact_success_text() {
+    let repo = TempRepo::new();
+    let config = v1_config(&v2_config(
+        "default",
+        &[],
+        &[("regression-test-required", "info")],
+    ));
+    write_config(&repo, &config);
+
+    assert!(lgtm::policy::load_profiled_registry(repo.path()).is_ok());
+    let output = run_validate(&repo);
+    assert!(
+        output.status.success(),
+        "valid V1 config must pass: {}",
+        stderr(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "config valid: V1 compatibility\n"
+    );
+}
+
+#[test]
 fn embedded_profiles_are_accepted_by_cli_and_loader() {
     for profile in ["default", "strict", "prototype", "infrastructure"] {
         let repo = TempRepo::new();
@@ -290,6 +399,42 @@ fn bounds_and_sanitizes_schema_field_path_diagnostic() {
     assert!(!diagnostic.trim_end().chars().any(char::is_control));
     assert!(!diagnostic.contains(UNRELATED_MARKER));
     assert!(diagnostic.len() <= 2200);
+}
+
+#[test]
+fn malformed_json_keeps_the_existing_cli_prefix_and_uses_safe_reporting() {
+    let repo = TempRepo::new();
+    let raw = format!(
+        "{{\"version\":\"2\",\"profile\":\"default\",\"payload\":\"\u{0007}{}\"}}",
+        "not-echoed".repeat(4096)
+    );
+    repo.write(".lgtm/config.json", &raw);
+
+    let output = run_validate(&repo);
+    let diagnostic = stderr(&output);
+    assert!(!output.status.success());
+    assert!(diagnostic.starts_with("config failed: invalid JSON ("));
+    assert!(!diagnostic.trim_end().chars().any(char::is_control));
+    assert!(!diagnostic.contains("not-echoed"));
+    assert!(diagnostic.len() <= 2200);
+}
+
+#[test]
+fn many_schema_errors_are_formatted_incrementally_within_the_budget() {
+    let mut config = v2_config("default", &[], &[]);
+    config["workspaces"] = Value::Array(
+        (0..256)
+            .map(|index| json!({"id": format!("workspace-{index}")}))
+            .collect(),
+    );
+
+    let diagnostic = lgtm::config_v2::parse(&config)
+        .expect_err("incomplete workspaces must fail")
+        .to_string();
+    assert!(diagnostic.starts_with("config V2 is invalid:"));
+    assert!(diagnostic.len() <= 2100);
+    assert!(diagnostic.ends_with('…'));
+    assert!(!diagnostic.chars().any(char::is_control));
 }
 
 #[test]

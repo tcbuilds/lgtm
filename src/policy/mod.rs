@@ -576,7 +576,16 @@ pub type ResolvedRegistry = (
 
 pub fn load_profiled_registry(root: &std::path::Path) -> Result<ResolvedRegistry, String> {
     let rules = load_embedded_registry().map_err(|error| error.to_string())?;
-    let (name, compatibility) = profile::load_name(root)?;
+    let config = profile::load_repo_config(root)?;
+    if config.compatibility == config_version::Compatibility::CurrentV2 {
+        let value = config
+            .value
+            .as_ref()
+            .ok_or_else(|| "config V2 is missing after profile validation".to_string())?;
+        crate::config_v2::parse(value).map_err(|error| error.to_string())?;
+    }
+    let name = config.name;
+    let compatibility = config.compatibility;
     let mut resolved = profile::resolve(&name, &rules)?;
     let mut sources = vec![format!("embedded:{}", bundle_digest())];
     if let Some(source) = org_bundle::apply(root, &mut resolved)? {

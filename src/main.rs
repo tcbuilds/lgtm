@@ -626,7 +626,7 @@ fn run_config(command: ConfigCommand) -> ExitCode {
     let value: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("config failed: invalid JSON ({error})");
+            report_config_diagnostic("config failed", format_args!("invalid JSON ({error})"));
             return ExitCode::FAILURE;
         }
     };
@@ -704,8 +704,12 @@ fn run_config(command: ConfigCommand) -> ExitCode {
 }
 
 fn report_config_invalid(error: impl std::fmt::Display) {
-    let diagnostic = lgtm::config_v2::sanitize_config_diagnostic(&error.to_string());
-    eprintln!("config invalid: {diagnostic}");
+    report_config_diagnostic("config invalid", error);
+}
+
+fn report_config_diagnostic(prefix: &str, error: impl std::fmt::Display) {
+    let diagnostic = lgtm::config_v2::sanitize_config_diagnostic(error);
+    eprintln!("{prefix}: {diagnostic}");
 }
 
 fn command_available(command: &str, cwd: &Path) -> bool {
