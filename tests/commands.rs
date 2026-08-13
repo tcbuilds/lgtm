@@ -515,6 +515,174 @@ fn precommit_reuses_full_evidence_with_only_warning_severity_failures() {
 }
 
 #[test]
+fn timed_out_required_command_denies_each_retry_and_is_never_reused() {
+    let repo = TempRepo::new();
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    let marker = repo.path().join("timeout-runs");
+    repo.write(
+        "bin/timeout-check",
+        "#!/bin/sh\nprintf x >> \"$1\"\nsleep 2\n",
+    );
+    let command = repo.path().join("bin/timeout-check");
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "tests",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [command.to_string_lossy(), marker.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 1,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "timeout-retry", "src/app.rs")
+            .status
+            .success()
+    );
+
+    for expected_runs in ["x", "xx"] {
+        let output = run_pre_tool_use_command(&repo, "timeout-retry", "git commit -m test");
+        let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision JSON");
+        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(
+            decision["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("missing, timed out, or wait failed"))
+        );
+        assert_eq!(repo.read("timeout-runs"), expected_runs);
+    }
+}
+
+#[test]
+fn failed_coverage_threshold_denies_each_retry_and_is_never_reused() {
+    let repo = TempRepo::new();
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    let marker = repo.path().join("coverage-failure-runs");
+    repo.write(
+        "bin/coverage-check",
+        "#!/bin/sh\nprintf x >> \"$1\"\necho 'line coverage: 50%'\n",
+    );
+    let coverage = repo.path().join("bin/coverage-check");
+    std::fs::set_permissions(&coverage, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "tests",
+                "language": "shell",
+                "root": ".",
+                "commands": [],
+                "coverage": [{
+                    "argv": [coverage.to_string_lossy(), marker.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "scope": "unit",
+                    "line_threshold_percent": 80
+                }]
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "coverage-retry", "src/app.rs")
+            .status
+            .success()
+    );
+
+    for expected_runs in ["x", "xx"] {
+        let output = run_pre_tool_use_command(&repo, "coverage-retry", "git commit -m test");
+        let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision JSON");
+        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(
+            decision["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("coverage for workspace tests"))
+        );
+        assert_eq!(repo.read("coverage-failure-runs"), expected_runs);
+    }
+}
+
+#[test]
+fn config_trust_is_revalidated_before_successful_evidence_reuse() {
+    let repo = TempRepo::new();
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    let marker = repo.path().join("trusted-config-runs");
+    repo.write("bin/required-check", "#!/bin/sh\nprintf x >> \"$1\"\n");
+    let command = repo.path().join("bin/required-check");
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    let config_path = repo.path().join(".lgtm/config.json");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "tests",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [command.to_string_lossy(), marker.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "config-trust", "src/app.rs")
+            .status
+            .success()
+    );
+    let first = run_pre_tool_use_command(&repo, "config-trust", "git commit -m test");
+    assert!(first.stdout.is_empty());
+    assert_eq!(repo.read("trusted-config-runs"), "x");
+
+    std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o666))
+        .expect("world-writable config");
+    let denied = run_pre_tool_use_command(&repo, "config-trust", "git commit -m test");
+    let decision: Value = serde_json::from_slice(&denied.stdout).expect("deny decision JSON");
+    assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(repo.read("trusted-config-runs"), "x");
+
+    std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
+        .expect("trusted config restored");
+    let rerun = run_pre_tool_use_command(&repo, "config-trust", "git commit -m test");
+    assert!(rerun.stdout.is_empty());
+    assert_eq!(repo.read("trusted-config-runs"), "xx");
+}
+
+#[test]
 fn explicit_cli_tier_runs_only_requested_commands() {
     let repo = TempRepo::new();
     let marker = repo.path().join("executed");

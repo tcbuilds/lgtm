@@ -5,6 +5,7 @@ use crate::policy::Severity;
 
 const RULE_ID: &str = "required-repository-commands";
 const REQUIRED_COMMAND_CHECK: &str = "command.required";
+const COVERAGE_CHECK: &str = "command.coverage";
 const CONFIG_CHECK: &str = "command.config";
 const AGGREGATE_BUDGET_CHECK: &str = "command.aggregate_budget";
 
@@ -144,6 +145,19 @@ pub fn budget_unverified() -> EnforcementResult {
         "was not fully run because the aggregate execution budget expired",
         AGGREGATE_BUDGET_CHECK,
     )
+}
+
+pub fn coverage_failure(workspace_id: &str, status: &str) -> EnforcementResult {
+    result_with_check(
+        &format!("coverage for workspace {workspace_id}"),
+        Status::Failed,
+        &format!("did not pass ({status})"),
+        COVERAGE_CHECK,
+    )
+}
+
+pub fn is_required_command_result(result: &EnforcementResult) -> bool {
+    result.evidence.check == REQUIRED_COMMAND_CHECK
 }
 
 pub(super) fn not_applicable() -> EnforcementResult {

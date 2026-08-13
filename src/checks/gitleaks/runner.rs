@@ -52,6 +52,10 @@ pub(crate) fn run_details_with_deadline(
         kill_process_group(pid);
         return None;
     }
+    // Required checks are synchronous gates. Do not let a successful parent
+    // leave delayed descendants alive to mutate configuration after the exact
+    // snapshot has been checked but before authorization is returned.
+    kill_process_group(pid);
     status.map(|status| Captured {
         code: status.code(),
         stdout: captured.unwrap_or_default(),

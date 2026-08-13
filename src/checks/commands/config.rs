@@ -90,35 +90,37 @@ pub fn load_snapshot(root: &Path) -> ConfigSnapshot {
 
 fn read_config(root: &Path) -> Result<String, String> {
     let path = root.join(".lgtm/config.json");
-    match std::fs::symlink_metadata(&path) {
-        Ok(metadata) if !metadata.is_file() => {
-            return Err("config is not a regular file".to_string());
-        }
-        Ok(metadata) if metadata.len() > MAX_CONFIG_BYTES => {
-            return Err(format!("config exceeds {MAX_CONFIG_BYTES} bytes"));
-        }
-        Ok(metadata) => {
-            #[cfg(unix)]
-            {
-                // The process owner check uses the kernel effective UID; no
-                // memory or pointer is passed, so this libc call is safe.
-                let foreign_owner = metadata.uid() != unsafe { libc::geteuid() };
-                let world_writable = metadata.permissions().mode() & 0o002 != 0;
-                if foreign_owner || world_writable {
-                    return Err(
-                        "config must be owned by the runner and not world writable".to_string()
-                    );
-                }
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
-        Err(error) => return Err(format!("inspect config ({error})")),
-    }
-    let Some(file) = crate::fsutil::open_regular_file(&path)
+    let file = match crate::fsutil::open_regular_file(&path)
         .map_err(|error| format!("open config ({error})"))?
-    else {
-        return Err("config could not be opened as a regular file".to_string());
+    {
+        Some(file) => file,
+        None => match std::fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(String::new());
+            }
+            Ok(_) => return Err("config is not a regular file".to_string()),
+            Err(error) => return Err(format!("inspect config ({error})")),
+        },
     };
+    // Validate the metadata of the exact descriptor that will be parsed. On
+    // Unix open_regular_file uses O_NOFOLLOW and fstat, so a path replacement
+    // cannot split trust validation from snapshot bytes.
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("inspect open config ({error})"))?;
+    if metadata.len() > MAX_CONFIG_BYTES {
+        return Err(format!("config exceeds {MAX_CONFIG_BYTES} bytes"));
+    }
+    #[cfg(unix)]
+    {
+        // The process owner check uses the kernel effective UID; no memory or
+        // pointer is passed, so this libc call is safe.
+        let foreign_owner = metadata.uid() != unsafe { libc::geteuid() };
+        let world_writable = metadata.permissions().mode() & 0o002 != 0;
+        if foreign_owner || world_writable {
+            return Err("config must be owned by the runner and not world writable".to_string());
+        }
+    }
     let mut raw = String::new();
     file.take(MAX_CONFIG_BYTES + 1)
         .read_to_string(&mut raw)

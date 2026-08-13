@@ -102,6 +102,7 @@ struct StoredTaskEvidence {
     task_id: String,
     results: Vec<EnforcementResult>,
     commands: Vec<commands::CommandEvidence>,
+    #[serde(default)]
     coverage: Vec<commands::CoverageEvidence>,
     policy_version: String,
     binary_version: String,
@@ -336,7 +337,7 @@ fn run_inner_with_options(
     if budget.is_exhausted() {
         command_run.results.push(commands::budget_unverified());
     }
-    if commands::load_snapshot(&root).digest != config_snapshot.digest {
+    if trusted_config_changed(&root, &config_snapshot) {
         command_run
             .results
             .push(commands::config_mutation_unverified());
@@ -344,6 +345,14 @@ fn run_inner_with_options(
     bind_command_provenance(&config_snapshot.digest, &paths, &mut command_run.evidence);
     let mut post_policy_command_gate_results =
         take_post_policy_command_gate_results(&mut command_run.results, pre_commit);
+    if pre_commit {
+        post_policy_command_gate_results.extend(
+            coverage
+                .iter()
+                .filter(|item| item.status != "passed" && item.status != "not_applicable")
+                .map(|item| commands::coverage_failure(&item.workspace_id, &item.status)),
+        );
+    }
     results.extend(command_run.results);
     results.extend(commands::coverage_results(&coverage));
     if !hook_input.check {
@@ -364,7 +373,7 @@ fn run_inner_with_options(
     crate::policy::profile::apply_resolved_results(&registry, &mut results);
     crate::policy::overrides::apply_results(&overrides, &mut results);
     crate::policy::waivers::apply(&waivers, &mut results);
-    if commands::load_snapshot(&root).digest != config_snapshot.digest
+    if trusted_config_changed(&root, &config_snapshot)
         && !results
             .iter()
             .chain(&post_policy_command_gate_results)
@@ -399,6 +408,36 @@ fn run_inner_with_options(
         &overrides,
         &waivers,
     )?;
+
+    // Evidence persistence is part of the authorization transaction. If the
+    // trusted config path changed while the first record was being made
+    // durable, append a non-reusable denial record before deciding the gate.
+    if trusted_config_changed(&root, &config_snapshot) && !results.iter().any(is_config_result) {
+        let mut mutation = commands::config_mutation_unverified();
+        if pre_commit {
+            mutation.status = Status::Failed;
+            mutation.severity = Severity::Error;
+        }
+        results.push(mutation);
+        append_task_evidence(
+            EvidenceMeta {
+                root: &root,
+                session_id: hook_input.session_id.as_deref(),
+                profile: &profile,
+                paths: &paths,
+                config_digest: &config_snapshot.digest,
+                started_at_ms,
+                finished_at_ms: unix_ms(),
+                tier,
+            },
+            &results,
+            &command_run.evidence,
+            &coverage,
+            &policy_sources,
+            &overrides,
+            &waivers,
+        )?;
+    }
 
     let failures: Vec<&EnforcementResult> = results
         .iter()
@@ -550,28 +589,126 @@ fn matching_full_evidence(
     paths: &[String],
 ) -> Option<Vec<commands::CommandEvidence>> {
     let session_id = session_id?;
-    let expected_config = digest_bytes(&crate::fsutil::read_optional_bounded(
-        &root.join(".lgtm/config.json"),
-        256 * 1024,
-    ));
+    // Reuse is authorization, not just a digest lookup: revalidate that the
+    // current path is a trusted regular file (or an absent default config) and
+    // parse the exact bytes whose digest is compared with durable evidence.
+    let snapshot = commands::load_snapshot(root);
+    let settings = snapshot.settings.as_ref().ok()?;
+    if !settings.commands.is_empty() && settings.structured.is_empty() {
+        return None;
+    }
+    let selected_commands = settings
+        .structured
+        .iter()
+        .filter(|command| command.tier == "full")
+        .filter(|command| workspace_touched(root, &command.cwd, paths))
+        .collect::<Vec<_>>();
     let expected_files = digest_paths(paths);
     let raw = crate::fsutil::read_optional_bounded(
         &root.join(".lgtm/evidence/evidence.jsonl"),
         MAX_TASK_EVIDENCE_BYTES,
     );
-    raw.lines().rev().find_map(|line| {
+    let record = raw.lines().rev().find_map(|line| {
         let record: StoredTaskEvidence = serde_json::from_str(line).ok()?;
         (record.task_id == session_id
-            && stored_gate_passed(&record)
             && record.tier.as_deref() == Some("full")
             && record.policy_version == crate::policy::POLICY_BUNDLE_VERSION
-            && record.binary_version == env!("CARGO_PKG_VERSION")
-            && record.config_digest == expected_config
-            && record.touched_files_digest == expected_files)
-            .then_some(record.commands)
-    })
+            && record.binary_version == env!("CARGO_PKG_VERSION"))
+        .then_some(record)
+    })?;
+    if record.config_digest != snapshot.digest || record.touched_files_digest != expected_files {
+        return None;
+    }
+
+    full_record_passed(&record, &selected_commands, &settings.coverage).then_some(record.commands)
 }
 
+fn full_record_passed(
+    record: &StoredTaskEvidence,
+    selected_commands: &[&commands::StructuredCommand],
+    expected_coverage: &[commands::CoverageCommand],
+) -> bool {
+    if record
+        .results
+        .iter()
+        .any(is_non_reusable_command_gate_result)
+        || record
+            .results
+            .iter()
+            .any(|result| result.is_failure() && result.severity == Severity::Error)
+    {
+        return false;
+    }
+
+    let passed_required_results = record
+        .results
+        .iter()
+        .filter(|result| {
+            commands::is_required_command_result(result) && result.status == Status::Passed
+        })
+        .count();
+    if passed_required_results != selected_commands.len()
+        || record.commands.len() != selected_commands.len()
+    {
+        return false;
+    }
+    if !record
+        .commands
+        .iter()
+        .zip(selected_commands)
+        .all(|(evidence, expected)| {
+            evidence.exit_code == Some(0)
+                && evidence.started_at_ms.is_some()
+                && evidence.finished_at_ms.is_some()
+                && evidence.argv == expected.argv
+                && evidence.cwd.as_deref() == Some(expected.cwd.to_string_lossy().as_ref())
+                && evidence.workspace_id.as_deref() == Some(expected.workspace_id.as_str())
+        })
+    {
+        return false;
+    }
+
+    if expected_coverage.is_empty() {
+        return record.coverage.len() == 1 && record.coverage[0].status == "not_applicable";
+    }
+    record.coverage.len() == expected_coverage.len()
+        && record
+            .coverage
+            .iter()
+            .zip(expected_coverage)
+            .all(|(evidence, expected)| coverage_obligation_passed(evidence, expected))
+}
+
+fn coverage_obligation_passed(
+    evidence: &commands::CoverageEvidence,
+    expected: &commands::CoverageCommand,
+) -> bool {
+    evidence.status == "passed"
+        && evidence.measured_at_ms.is_some()
+        && evidence.workspace_id == expected.workspace_id
+        && evidence.tool.as_deref() == expected.argv.first().map(String::as_str)
+        && evidence.scope.as_deref() == Some(expected.scope.as_str())
+        && expected.line_threshold_percent.is_none_or(|threshold| {
+            evidence
+                .line_percent
+                .is_some_and(|value| value >= f64::from(threshold))
+        })
+        && expected.branch_threshold_percent.is_none_or(|threshold| {
+            evidence
+                .branch_percent
+                .is_some_and(|value| value >= f64::from(threshold))
+        })
+}
+
+fn trusted_config_changed(root: &Path, original: &commands::ConfigSnapshot) -> bool {
+    if original.settings.is_err() {
+        return false;
+    }
+    let current = commands::load_snapshot(root);
+    current.settings.is_err() || current.digest != original.digest
+}
+
+#[cfg(test)]
 fn stored_gate_passed(record: &StoredTaskEvidence) -> bool {
     let has_blocking_failure = record
         .results
@@ -601,7 +738,12 @@ fn is_config_result(result: &EnforcementResult) -> bool {
 }
 
 fn is_non_reusable_command_gate_result(result: &EnforcementResult) -> bool {
-    is_aggregate_budget_result(result) || is_config_result(result)
+    is_aggregate_budget_result(result)
+        || is_config_result(result)
+        || (commands::is_required_command_result(result)
+            && result.status != Status::Passed
+            && result.status != Status::NotApplicable)
+        || result.evidence.check == "command.coverage"
 }
 
 fn take_post_policy_command_gate_results(
@@ -1288,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_and_config_gate_evidence_are_not_reused_but_other_unverified_is() {
+    fn incomplete_command_gate_evidence_is_not_reused_but_unrelated_unverified_is() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1317,6 +1459,15 @@ mod tests {
                 },
                 "results": results,
                 "commands": [],
+                "coverage": [{
+                    "workspace_id": "repository",
+                    "status": "not_applicable",
+                    "tool": null,
+                    "scope": null,
+                    "line_percent": null,
+                    "branch_percent": null,
+                    "measured_at_ms": null
+                }],
                 "policy_version": crate::policy::POLICY_BUNDLE_VERSION,
                 "binary_version": env!("CARGO_PKG_VERSION"),
                 "touched_files_digest": touched_files_digest,
@@ -1324,8 +1475,10 @@ mod tests {
                 "tier": "full"
             })
         };
-        let mut ordinary_unverified = commands::config_unverified("ordinary command");
-        ordinary_unverified.evidence.check = "command.required".to_string();
+        let mut incomplete_command = commands::config_unverified("ordinary command");
+        incomplete_command.evidence.check = "command.required".to_string();
+        let mut unrelated_unverified = commands::config_unverified("unrelated check");
+        unrelated_unverified.evidence.check = "native.unrelated".to_string();
         let cases = [
             (
                 vec![serde_json::to_value(commands::budget_unverified()).expect("cutoff result")],
@@ -1339,7 +1492,11 @@ mod tests {
                 false,
             ),
             (
-                vec![serde_json::to_value(ordinary_unverified).expect("ordinary result")],
+                vec![serde_json::to_value(incomplete_command).expect("command result")],
+                false,
+            ),
+            (
+                vec![serde_json::to_value(unrelated_unverified).expect("unrelated result")],
                 true,
             ),
             (Vec::new(), true),
@@ -1504,7 +1661,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_v2_command_count_stays_unverified_for_check_and_denies_pre_commit() {
+    fn invalid_v2_command_count_is_rejected_by_profile_validation() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1554,41 +1711,21 @@ mod tests {
         });
         let mut input = std::io::Cursor::new(payload.to_string());
         let mut output = Vec::new();
-        let code = run_inner_with_budget(
+        let check_error = run_inner_with_budget(
             &mut input,
             &mut output,
             &ClaudeAdapter,
             crate::adapter::HookEvent::Stop,
             Duration::from_secs(1),
         )
-        .expect("ordinary check runs");
-        assert_eq!(code, ExitCode::SUCCESS);
-        let summary = String::from_utf8(output).expect("summary UTF-8");
-        assert!(summary.contains("UNVERIFIED required-repository-commands"));
+        .expect_err("profile validation rejects the invalid V2 config");
+        assert!(check_error.contains("config V2 is invalid"));
 
-        let reason =
+        let pre_commit_error =
             run_pre_commit_gate_with_budget(&root, Some("invalid-v2"), Duration::from_secs(1))
-                .expect("pre-commit gate runs")
-                .expect("invalid config denies commit");
-        assert!(reason.contains("config V2 is invalid"));
-
-        let evidence =
-            std::fs::read_to_string(root.join(".lgtm/evidence/evidence.jsonl")).expect("evidence");
-        let records = evidence
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("record"))
-            .collect::<Vec<_>>();
-        assert_eq!(records.len(), 2, "unverified check evidence was not reused");
-        assert!(records[0]["results"].as_array().is_some_and(|results| {
-            results.iter().any(|result| {
-                result["status"] == "unverified" && result["evidence"]["check"] == "command.config"
-            })
-        }));
-        assert!(records[1]["results"].as_array().is_some_and(|results| {
-            results.iter().any(|result| {
-                result["status"] == "failed" && result["evidence"]["check"] == "command.config"
-            })
-        }));
+                .expect_err("pre-commit fails closed on invalid profile config");
+        assert!(pre_commit_error.contains("config V2 is invalid"));
+        assert!(!root.join(".lgtm/evidence/evidence.jsonl").exists());
 
         std::fs::remove_dir_all(root).expect("temporary fixture removal");
     }
@@ -1662,6 +1799,73 @@ mod tests {
             })
         }));
         assert!(matching_full_evidence(&root, Some("config-replacement"), &[]).is_none());
+
+        std::fs::remove_dir_all(root).expect("temporary fixture removal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delayed_last_command_config_replacement_cannot_outlive_gate() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-delayed-config-replacement-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
+        let command = root.join(".lgtm/bin/delayed-replace-config");
+        std::fs::write(
+            &command,
+            format!(
+                "#!/bin/sh\n( sleep 0.1; printf '{{}}\\n' > {} ) >/dev/null 2>&1 &\nexit 0\n",
+                root.join(".lgtm/config.json").display()
+            ),
+        )
+        .expect("delayed replacement command");
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture permissions");
+        let original = serde_json::json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "root",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [command.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string();
+        std::fs::write(root.join(".lgtm/config.json"), &original).expect("fixture config");
+
+        let decision = run_pre_commit_gate_with_budget(
+            &root,
+            Some("delayed-config-replacement"),
+            Duration::from_secs(1),
+        )
+        .expect("pre-commit gate runs");
+        assert!(
+            decision.is_none(),
+            "the delayed mutation itself must be stopped"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            std::fs::read_to_string(root.join(".lgtm/config.json")).expect("config remains"),
+            original
+        );
+        assert!(matching_full_evidence(&root, Some("delayed-config-replacement"), &[]).is_some());
 
         std::fs::remove_dir_all(root).expect("temporary fixture removal");
     }
