@@ -260,3 +260,34 @@ fn valid_override_is_applied_before_cli_acceptance() {
         "config valid: V2\n"
     );
 }
+
+#[test]
+fn bounds_and_sanitizes_schema_field_path_diagnostic() {
+    let long_rule_id = "r".repeat(4096);
+    let long_rule_key = format!("\u{0007}{long_rule_id}");
+    let config = v2_config(
+        "default",
+        &[],
+        &[
+            (long_rule_key.as_str(), "critical"),
+            (UNRELATED_MARKER, "warning"),
+        ],
+    );
+
+    let parse_error = lgtm::config_v2::parse(&config).expect_err("invalid severity must fail");
+    let parse_diagnostic = parse_error.to_string();
+    assert!(parse_diagnostic.contains("severity_overrides"));
+    assert!(!parse_diagnostic.chars().any(char::is_control));
+    assert!(!parse_diagnostic.contains(long_rule_id.as_str()));
+    assert!(parse_diagnostic.len() <= 2100);
+
+    let repo = TempRepo::new();
+    write_config(&repo, &config);
+    let output = run_validate(&repo);
+    let diagnostic = stderr(&output);
+    assert!(!output.status.success());
+    assert!(diagnostic.contains("severity_overrides"));
+    assert!(!diagnostic.trim_end().chars().any(char::is_control));
+    assert!(!diagnostic.contains(UNRELATED_MARKER));
+    assert!(diagnostic.len() <= 2200);
+}

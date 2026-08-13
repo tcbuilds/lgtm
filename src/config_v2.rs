@@ -11,6 +11,9 @@ use crate::discovery::{CommandSpec, Workspace};
 
 pub const VERSION: &str = "2";
 pub const SCHEMA_JSON: &str = include_str!("../policy/config-v2.schema.json");
+const SCHEMA_ERROR_PATH_MAX_BYTES: usize = 128;
+const SCHEMA_ERROR_MESSAGE_MAX_BYTES: usize = 256;
+const SCHEMA_DIAGNOSTIC_MAX_BYTES: usize = 2048;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -40,8 +43,9 @@ pub fn parse(value: &Value) -> Result<ConfigV2, ConfigV2Error> {
     let errors: Vec<_> = validator
         .iter_errors(value)
         .map(|error| {
-            let message = error.to_string();
-            let path = error.instance_path().as_str();
+            let message = sanitize_and_truncate(&error.to_string(), SCHEMA_ERROR_MESSAGE_MAX_BYTES);
+            let path =
+                sanitize_and_truncate(error.instance_path().as_str(), SCHEMA_ERROR_PATH_MAX_BYTES);
             if path.is_empty() {
                 message
             } else {
@@ -50,7 +54,10 @@ pub fn parse(value: &Value) -> Result<ConfigV2, ConfigV2Error> {
         })
         .collect();
     if !errors.is_empty() {
-        return Err(ConfigV2Error::Invalid(errors.join("; ")));
+        return Err(ConfigV2Error::Invalid(truncate_with_ellipsis(
+            &errors.join("; "),
+            SCHEMA_DIAGNOSTIC_MAX_BYTES,
+        )));
     }
     let config: ConfigV2 = serde_json::from_value(value.clone())?;
     validate(&config)?;
@@ -273,6 +280,31 @@ fn contains_shell_operator(character: &str) -> bool {
             '|' | '&' | ';' | '<' | '>' | '$' | '`' | '(' | ')' | '\n' | '\r'
         )
     })
+}
+
+fn sanitize_and_truncate(value: &str, max_bytes: usize) -> String {
+    let sanitized = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
+    truncate_with_ellipsis(&sanitized, max_bytes)
+}
+
+fn truncate_with_ellipsis(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+
+    let ellipsis = "…";
+    let content_limit = max_bytes.saturating_sub(ellipsis.len());
+    let mut end = content_limit.min(value.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = String::with_capacity(end + ellipsis.len());
+    truncated.push_str(&value[..end]);
+    truncated.push_str(ellipsis);
+    truncated
 }
 
 fn validate_relative_path(path: &Path, label: &str) -> Result<(), ConfigV2Error> {
