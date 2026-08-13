@@ -39,7 +39,15 @@ pub fn parse(value: &Value) -> Result<ConfigV2, ConfigV2Error> {
         .map_err(|error| ConfigV2Error::Schema(error.to_string()))?;
     let errors: Vec<_> = validator
         .iter_errors(value)
-        .map(|error| error.to_string())
+        .map(|error| {
+            let message = error.to_string();
+            let path = error.instance_path().as_str();
+            if path.is_empty() {
+                message
+            } else {
+                format!("{path}: {message}")
+            }
+        })
         .collect();
     if !errors.is_empty() {
         return Err(ConfigV2Error::Invalid(errors.join("; ")));

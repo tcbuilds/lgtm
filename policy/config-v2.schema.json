@@ -55,6 +55,6 @@
       }
     },
     "disabled_rules": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
-    "severity_overrides": {"type": "object", "additionalProperties": {"type": "string"}}
+    "severity_overrides": {"type": "object", "additionalProperties": {"type": "string", "enum": ["error", "warning", "info"]}}
   }
 }
