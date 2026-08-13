@@ -1,6 +1,7 @@
 //! Structured, shell-free repository configuration (V2).
 
 use std::collections::BTreeMap;
+use std::fmt::{self, Write as _};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,9 @@ use crate::discovery::{CommandSpec, Workspace};
 
 pub const VERSION: &str = "2";
 pub const SCHEMA_JSON: &str = include_str!("../policy/config-v2.schema.json");
+const SCHEMA_ERROR_PATH_MAX_BYTES: usize = 128;
+const SCHEMA_ERROR_MESSAGE_MAX_BYTES: usize = 256;
+const CONFIG_DIAGNOSTIC_MAX_BYTES: usize = 2048;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -37,12 +41,26 @@ pub fn parse(value: &Value) -> Result<ConfigV2, ConfigV2Error> {
         .map_err(|error| ConfigV2Error::Schema(error.to_string()))?;
     let validator = jsonschema::validator_for(&schema)
         .map_err(|error| ConfigV2Error::Schema(error.to_string()))?;
-    let errors: Vec<_> = validator
-        .iter_errors(value)
-        .map(|error| error.to_string())
-        .collect();
-    if !errors.is_empty() {
-        return Err(ConfigV2Error::Invalid(errors.join("; ")));
+    let mut diagnostic = SanitizedBoundedString::new(CONFIG_DIAGNOSTIC_MAX_BYTES);
+    let mut has_errors = false;
+    for error in validator.iter_errors(value) {
+        if has_errors && write!(diagnostic, "; ").is_err() {
+            break;
+        }
+        has_errors = true;
+
+        let path =
+            sanitize_and_truncate(error.instance_path().as_str(), SCHEMA_ERROR_PATH_MAX_BYTES);
+        if !path.is_empty() && write!(diagnostic, "{path}: ").is_err() {
+            break;
+        }
+        let message = format_bounded(&error, SCHEMA_ERROR_MESSAGE_MAX_BYTES);
+        if write!(diagnostic, "{message}").is_err() {
+            break;
+        }
+    }
+    if has_errors {
+        return Err(ConfigV2Error::Invalid(diagnostic.finish()));
     }
     let config: ConfigV2 = serde_json::from_value(value.clone())?;
     validate(&config)?;
@@ -55,6 +73,15 @@ pub fn validate(config: &ConfigV2) -> Result<(), ConfigV2Error> {
             "expected version {VERSION}, found {}",
             config.version
         )));
+    }
+    if config
+        .severity_overrides
+        .values()
+        .any(|severity| !matches!(severity.as_str(), "error" | "warning" | "info"))
+    {
+        return Err(ConfigV2Error::Invalid(
+            "severity_overrides values must be one of: error, warning, info".to_string(),
+        ));
     }
     for workspace in &config.workspaces {
         validate_relative_path(&workspace.root, "workspace root")?;
@@ -267,6 +294,69 @@ fn contains_shell_operator(character: &str) -> bool {
     })
 }
 
+pub fn sanitize_config_diagnostic(value: impl fmt::Display) -> String {
+    format_bounded(&value, CONFIG_DIAGNOSTIC_MAX_BYTES)
+}
+
+fn sanitize_and_truncate(value: &str, max_bytes: usize) -> String {
+    format_bounded(&value, max_bytes)
+}
+
+fn format_bounded(value: &impl fmt::Display, max_bytes: usize) -> String {
+    let mut rendered = SanitizedBoundedString::new(max_bytes);
+    let _ = write!(rendered, "{value}");
+    rendered.finish()
+}
+
+struct SanitizedBoundedString {
+    value: String,
+    max_bytes: usize,
+    truncated: bool,
+}
+
+impl SanitizedBoundedString {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            value: String::with_capacity(max_bytes),
+            max_bytes,
+            truncated: false,
+        }
+    }
+
+    fn finish(mut self) -> String {
+        if !self.truncated {
+            return self.value;
+        }
+
+        let ellipsis = "…";
+        if self.max_bytes < ellipsis.len() {
+            self.value.clear();
+            return self.value;
+        }
+        let content_limit = self.max_bytes - ellipsis.len();
+        let mut end = content_limit.min(self.value.len());
+        while !self.value.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.value.truncate(end);
+        self.value.push_str(ellipsis);
+        self.value
+    }
+}
+
+impl fmt::Write for SanitizedBoundedString {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        for character in value.chars().filter(|character| !character.is_control()) {
+            if self.value.len() + character.len_utf8() > self.max_bytes {
+                self.truncated = true;
+                return Err(fmt::Error);
+            }
+            self.value.push(character);
+        }
+        Ok(())
+    }
+}
+
 fn validate_relative_path(path: &Path, label: &str) -> Result<(), ConfigV2Error> {
     if path.is_absolute()
         || path
@@ -311,5 +401,38 @@ mod tests {
                 .to_string()
                 .contains("without interpreting shell syntax")
         );
+    }
+
+    #[test]
+    fn refuses_unsupported_v1_severity_during_migration() {
+        let value = json!({
+            "severity_overrides": {"regression-test-required": "critical"},
+            "required_commands": {"rust": ["cargo test"]}
+        });
+        let error = migrate_v1(&value).expect_err("unsupported severity must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("severity_overrides values must be one of: error, warning, info")
+        );
+    }
+
+    #[test]
+    fn diagnostic_sanitizer_streams_into_a_fixed_budget() {
+        struct HostileDiagnostic;
+
+        impl fmt::Display for HostileDiagnostic {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                for _ in 0..CONFIG_DIAGNOSTIC_MAX_BYTES {
+                    formatter.write_str("payload\u{0007}—")?;
+                }
+                Ok(())
+            }
+        }
+
+        let diagnostic = sanitize_config_diagnostic(HostileDiagnostic);
+        assert!(diagnostic.len() <= CONFIG_DIAGNOSTIC_MAX_BYTES);
+        assert!(!diagnostic.chars().any(char::is_control));
+        assert!(diagnostic.ends_with('…'));
     }
 }

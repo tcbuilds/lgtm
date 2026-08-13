@@ -1,13 +1,33 @@
-# Handoff — main @ 6bcb12d
+# Handoff — issue #41 @ 39b56b4
 
-> Generated: 2026-08-03
-> Stale if HEAD moves past `6bcb12d` or branch differs.
-> Supersedes the handoffs at `6aea7a1`, `9b1f124`, and `50ebbc1`.
+> Generated: 2026-08-13
+> Linked worktree: `/home/ubuntu/lgtm-issue-41-validate-policy-config`
+> Branch: `issue-41-validate-policy-config`
 
-## State
+## Current state
 
-Main is at `6bcb12d`, pushed, all gates green: fmt, clippy, **543 tests**, 71 rules
-validated. Four milestones closed this session. 30 open slices remain.
+Issue #41 implementation is complete and ready for Reviewer. The linked worktree is
+non-main and remains associated with issue #41. The phase was fast-forwarded from the
+verified temporary phase worktree at `39b56b4`.
+
+- `fabed3e` — schema severity enum, canonical runtime preflight, initial parity tests.
+- `90672a4` — V1/V2 parity matrix and valid-path proof.
+- `8049644` — bounded, control-free schema diagnostics.
+- `39b56b4` — bounded, control-free semantic policy diagnostics at `run_config`.
+- `implementation_plan.md` is updated with completed criteria and evidence.
+- CodeGraph was synced and reports 165 files, 2,601 nodes, 6,348 edges, up to date.
+- Fresh Sol review: PASS; no findings; six config tests audited as non-vacuous.
+
+Current verification evidence:
+
+- `cargo fmt --check`, `git diff --check`, Clippy, locked build: exit 0.
+- `cargo test --locked --all-targets --all-features`: 552 passed.
+- CLI help, 71-rule policy validation, config validation, shellcheck, and installer tests: exit 0.
+- `cargo run --locked -- check --tier full`: `passed=20 warning=6 unverified=13 failed=0`.
+
+Issue state is transitioned to `agent:review`; do not merge or switch the issue branch.
+
+## Historical repository context
 
 | Milestone | Status |
 |---|---|

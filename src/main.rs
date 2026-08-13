@@ -626,28 +626,33 @@ fn run_config(command: ConfigCommand) -> ExitCode {
     let value: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("config failed: invalid JSON ({error})");
+            report_config_diagnostic("config failed", format_args!("invalid JSON ({error})"));
             return ExitCode::FAILURE;
         }
     };
     match command {
         ConfigCommand::Validate => {
-            if value.get("version").and_then(serde_json::Value::as_str)
+            let success_message = if value.get("version").and_then(serde_json::Value::as_str)
                 == Some(lgtm::config_v2::VERSION)
             {
                 match lgtm::config_v2::parse(&value) {
-                    Ok(_) => println!("config valid: V2"),
+                    Ok(_) => "config valid: V2",
                     Err(error) => {
-                        eprintln!("config invalid: {error}");
+                        report_config_invalid(error);
                         return ExitCode::FAILURE;
                     }
                 }
             } else if let Err(error) = lgtm::checks::commands::load(&root) {
-                eprintln!("config invalid: {error}");
+                report_config_invalid(error);
                 return ExitCode::FAILURE;
             } else {
-                println!("config valid: V1 compatibility");
+                "config valid: V1 compatibility"
+            };
+            if let Err(error) = lgtm::policy::load_profiled_registry(&root) {
+                report_config_invalid(error);
+                return ExitCode::FAILURE;
             }
+            println!("{success_message}");
             ExitCode::SUCCESS
         }
         ConfigCommand::Show => write_json(&value),
@@ -696,6 +701,15 @@ fn run_config(command: ConfigCommand) -> ExitCode {
             ExitCode::SUCCESS
         }
     }
+}
+
+fn report_config_invalid(error: impl std::fmt::Display) {
+    report_config_diagnostic("config invalid", error);
+}
+
+fn report_config_diagnostic(prefix: &str, error: impl std::fmt::Display) {
+    let diagnostic = lgtm::config_v2::sanitize_config_diagnostic(error);
+    eprintln!("{prefix}: {diagnostic}");
 }
 
 fn command_available(command: &str, cwd: &Path) -> bool {
