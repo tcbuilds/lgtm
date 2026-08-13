@@ -391,6 +391,29 @@ fn unparseable_coverage_projects_to_unverified_without_failure() {
 }
 
 #[test]
+fn missing_coverage_executable_projects_to_unverified_without_failure() {
+    let fixture = Fixture::create();
+    let missing = fixture
+        .root
+        .join("missing-coverage")
+        .to_string_lossy()
+        .into_owned();
+    let evidence = run_coverage(
+        &fixture.root,
+        &[coverage_command(missing, Some(80), Some(80))],
+    );
+    let results = coverage_results(&evidence);
+
+    assert_eq!(evidence[0].status, "unverified");
+    assert_eq!(evidence[0].line_percent, None);
+    assert_eq!(evidence[0].branch_percent, None);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].rule_id, "required-repository-commands");
+    assert_eq!(results[0].status, Status::Unverified);
+    assert!(!results[0].is_failure());
+}
+
+#[test]
 fn no_coverage_not_applicable_remains_evidence_only() {
     let fixture = Fixture::create();
     let evidence = run_coverage(&fixture.root, &[]);

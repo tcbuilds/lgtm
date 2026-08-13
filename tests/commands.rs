@@ -607,6 +607,33 @@ fn unparseable_coverage_is_unverified_and_does_not_fail_stop() {
 }
 
 #[test]
+fn missing_coverage_executable_is_unverified_and_does_not_fail_stop() {
+    let repo = TempRepo::new();
+    write_coverage_fixture(&repo, "line coverage: 100% branch coverage: 100%", 80, 80);
+    let missing = repo.path().join("bin/missing-coverage");
+    let mut config: Value =
+        serde_json::from_str(&repo.read(".lgtm/config.json")).expect("coverage config JSON");
+    config["workspaces"][0]["coverage"][0]["argv"][0] = json!(missing);
+    repo.write(".lgtm/config.json", &config.to_string());
+
+    let output = run_full_stop(&repo, "coverage-missing", false);
+
+    assert!(
+        output.status.success(),
+        "missing coverage executable must allow Stop"
+    );
+    let stdout = String::from_utf8(output.stdout).expect("Stop stdout is UTF-8");
+    assert!(stdout.contains("UNVERIFIED required-repository-commands"));
+    let record = latest_evidence(&repo);
+    assert_eq!(record["coverage"][0]["status"], "unverified");
+    assert_eq!(
+        projected_coverage_result(&record, "unverified")["status"],
+        "unverified"
+    );
+    assert_eq!(record["rules"]["failed"], 0);
+}
+
+#[test]
 fn active_stop_hook_summarizes_failed_coverage_instead_of_blocking() {
     let repo = TempRepo::new();
     write_coverage_fixture(&repo, "line coverage: 50% branch coverage: 50%", 80, 80);
