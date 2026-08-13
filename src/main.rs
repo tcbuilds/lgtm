@@ -638,18 +638,18 @@ fn run_config(command: ConfigCommand) -> ExitCode {
                 match lgtm::config_v2::parse(&value) {
                     Ok(_) => "config valid: V2",
                     Err(error) => {
-                        eprintln!("config invalid: {error}");
+                        report_config_invalid(error);
                         return ExitCode::FAILURE;
                     }
                 }
             } else if let Err(error) = lgtm::checks::commands::load(&root) {
-                eprintln!("config invalid: {error}");
+                report_config_invalid(error);
                 return ExitCode::FAILURE;
             } else {
                 "config valid: V1 compatibility"
             };
             if let Err(error) = lgtm::policy::load_profiled_registry(&root) {
-                eprintln!("config invalid: {error}");
+                report_config_invalid(error);
                 return ExitCode::FAILURE;
             }
             println!("{success_message}");
@@ -701,6 +701,11 @@ fn run_config(command: ConfigCommand) -> ExitCode {
             ExitCode::SUCCESS
         }
     }
+}
+
+fn report_config_invalid(error: impl std::fmt::Display) {
+    let diagnostic = lgtm::config_v2::sanitize_config_diagnostic(&error.to_string());
+    eprintln!("config invalid: {diagnostic}");
 }
 
 fn command_available(command: &str, cwd: &Path) -> bool {

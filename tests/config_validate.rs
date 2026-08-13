@@ -291,3 +291,40 @@ fn bounds_and_sanitizes_schema_field_path_diagnostic() {
     assert!(!diagnostic.contains(UNRELATED_MARKER));
     assert!(diagnostic.len() <= 2200);
 }
+
+#[test]
+fn semantic_policy_diagnostics_are_bounded_and_strip_controls() {
+    let rule_prefix = "disabled_rules-";
+    let long_rule_id = format!(
+        "\u{0007}{rule_prefix}{}",
+        "r".repeat(4096 - rule_prefix.len())
+    );
+    let config = v2_config(
+        "default",
+        &[long_rule_id.as_str()],
+        &[(UNRELATED_MARKER, "warning")],
+    );
+    assert!(
+        lgtm::config_v2::parse(&config).is_ok(),
+        "semantic fixture must pass V2 structural parsing"
+    );
+
+    let repo = TempRepo::new();
+    write_config(&repo, &config);
+    let output = run_validate(&repo);
+    let diagnostic = stderr(&output);
+    assert!(!output.status.success());
+    assert!(
+        diagnostic.contains("policy override references unknown rule")
+            || diagnostic.contains("unknown rule"),
+        "diagnostic should identify the unknown rule: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("disabled_rules"),
+        "diagnostic should identify the disabled_rules field: {diagnostic}"
+    );
+    assert!(!diagnostic.trim_end().chars().any(char::is_control));
+    assert!(!diagnostic.contains(long_rule_id.as_str()));
+    assert!(!diagnostic.contains(UNRELATED_MARKER));
+    assert!(diagnostic.len() <= 2200);
+}

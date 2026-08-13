@@ -13,7 +13,7 @@ pub const VERSION: &str = "2";
 pub const SCHEMA_JSON: &str = include_str!("../policy/config-v2.schema.json");
 const SCHEMA_ERROR_PATH_MAX_BYTES: usize = 128;
 const SCHEMA_ERROR_MESSAGE_MAX_BYTES: usize = 256;
-const SCHEMA_DIAGNOSTIC_MAX_BYTES: usize = 2048;
+const CONFIG_DIAGNOSTIC_MAX_BYTES: usize = 2048;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -56,7 +56,7 @@ pub fn parse(value: &Value) -> Result<ConfigV2, ConfigV2Error> {
     if !errors.is_empty() {
         return Err(ConfigV2Error::Invalid(truncate_with_ellipsis(
             &errors.join("; "),
-            SCHEMA_DIAGNOSTIC_MAX_BYTES,
+            CONFIG_DIAGNOSTIC_MAX_BYTES,
         )));
     }
     let config: ConfigV2 = serde_json::from_value(value.clone())?;
@@ -280,6 +280,10 @@ fn contains_shell_operator(character: &str) -> bool {
             '|' | '&' | ';' | '<' | '>' | '$' | '`' | '(' | ')' | '\n' | '\r'
         )
     })
+}
+
+pub fn sanitize_config_diagnostic(value: &str) -> String {
+    sanitize_and_truncate(value, CONFIG_DIAGNOSTIC_MAX_BYTES)
 }
 
 fn sanitize_and_truncate(value: &str, max_bytes: usize) -> String {
