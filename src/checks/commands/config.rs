@@ -42,6 +42,12 @@ impl Settings {
     }
 }
 
+#[derive(Debug)]
+pub struct ConfigSnapshot {
+    pub settings: Result<Settings, String>,
+    pub digest: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct StructuredCommand {
     pub argv: Vec<String>,
@@ -63,6 +69,26 @@ pub struct CoverageCommand {
 }
 
 pub fn load(root: &Path) -> Result<Settings, String> {
+    load_snapshot(root).settings
+}
+
+/// Read repository-command configuration once and retain the digest of the
+/// exact bytes that were parsed. Stop uses this snapshot for command evidence
+/// and rejects records if the path changes before evidence is persisted.
+pub fn load_snapshot(root: &Path) -> ConfigSnapshot {
+    match read_config(root) {
+        Ok(raw) => ConfigSnapshot {
+            digest: digest_bytes(&raw),
+            settings: parse_config(&raw),
+        },
+        Err(reason) => ConfigSnapshot {
+            settings: Err(reason),
+            digest: digest_bytes(""),
+        },
+    }
+}
+
+fn read_config(root: &Path) -> Result<String, String> {
     let path = root.join(".lgtm/config.json");
     match std::fs::symlink_metadata(&path) {
         Ok(metadata) if !metadata.is_file() => {
@@ -85,7 +111,7 @@ pub fn load(root: &Path) -> Result<Settings, String> {
                 }
             }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(defaults()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
         Err(error) => return Err(format!("inspect config ({error})")),
     }
     let Some(file) = crate::fsutil::open_regular_file(&path)
@@ -100,11 +126,15 @@ pub fn load(root: &Path) -> Result<Settings, String> {
     if raw.len() as u64 > MAX_CONFIG_BYTES {
         return Err(format!("config exceeds {MAX_CONFIG_BYTES} bytes"));
     }
+    Ok(raw)
+}
+
+fn parse_config(raw: &str) -> Result<Settings, String> {
     if raw.trim().is_empty() {
         return Ok(defaults());
     }
     let value: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|error| format!("parse required commands ({error})"))?;
+        serde_json::from_str(raw).map_err(|error| format!("parse required commands ({error})"))?;
     if value.get("version").and_then(serde_json::Value::as_str) == Some(crate::config_v2::VERSION) {
         let config = crate::config_v2::parse(&value).map_err(|error| error.to_string())?;
         let mut commands = Vec::new();
@@ -178,6 +208,13 @@ pub fn load(root: &Path) -> Result<Settings, String> {
         coverage: Vec::new(),
         workspace_ids: Vec::new(),
     })
+}
+
+fn digest_bytes(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn defaults() -> Settings {

@@ -32,13 +32,29 @@ same budget. Targeted Stop remains targeted and does not run coverage, while
 explicit full checks and the pre-commit full gate use the shared structured and
 coverage budget.
 
-When the budget expires, the existing bounded runner terminates the active
-process group. The active structured command and every later structured command
-are recorded in order with null exit codes and unverified results. Active or
-unrun coverage commands are recorded in order with `status: "unverified"` and
-no metrics. A gate-level unverified repository-command result makes the Stop
-summary say `action required`; an exit code observed after the deadline is not
-classified as passed.
+When the budget expires, the bounded runner terminates the active process
+group. The same absolute deadline covers process wait and stdout/stderr drain;
+a successful parent that leaves a descendant holding its pipes open is
+unverified and its process group is terminated. The active structured command
+and every later structured command are recorded in order with null exit codes
+and unverified results. Active or unrun coverage commands are recorded in order
+with `status: "unverified"` and no metrics. A gate-level unverified
+repository-command result makes ordinary Stop/check output say `action
+required`; an exit code observed after the deadline is not classified as
+passed.
+
+The pre-commit full gate treats aggregate exhaustion and invalid command
+configuration as immutable failures. These failures are attached only after
+profile, override, and waiver processing, so repository policy cannot authorize
+a commit whose command gate did not run completely. Ordinary Stop/check keeps
+the same conditions unverified rather than converting them into violations.
+Neither condition makes a full evidence record reusable.
+
+Command evidence and the enclosing task record use the digest of the exact
+configuration bytes read and parsed before execution. The hook compares those
+bytes with the config path again before recording; replacement during command
+execution is unverified for ordinary Stop/check, denies pre-commit, and prevents
+reuse.
 
 ## Consequences
 
@@ -47,4 +63,4 @@ new dependency, scheduler, or user override. Operators can distinguish a
 completed pass from an incomplete gate using existing nullable evidence fields
 and the unverified status. A large repository may need a later explicit
 decision about a larger budget, staged selection, or parallel execution; this
- decision does not add those escape hatches.
+decision does not add those escape hatches.

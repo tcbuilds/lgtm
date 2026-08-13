@@ -119,6 +119,35 @@ fn aggregate_budget_stops_structured_and_coverage_in_order() {
 }
 
 #[test]
+fn coverage_only_cutoff_exhausts_the_aggregate_budget() {
+    let fixture = Fixture::create();
+    let started = fixture.root.join("coverage-only-started");
+    let coverage = CoverageCommand {
+        workspace_id: "root".to_string(),
+        argv: vec![fixture.script_body(
+            "coverage-only",
+            &format!("touch {}; sleep 1", started.display()),
+        )],
+        cwd: ".".into(),
+        timeout: std::time::Duration::from_secs(30),
+        scope: "unit".to_string(),
+        line_threshold_percent: Some(80),
+        branch_threshold_percent: Some(80),
+    };
+
+    let elapsed = std::time::Instant::now();
+    let mut budget = ExecutionBudget::new(std::time::Duration::from_millis(100));
+    let evidence = run_coverage_with_budget(&fixture.root, &[coverage], &mut budget);
+
+    assert!(started.exists());
+    assert!(budget.is_exhausted());
+    assert!(elapsed.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(evidence[0].status, "unverified");
+    assert!(evidence[0].line_percent.is_none());
+    assert!(evidence[0].branch_percent.is_none());
+}
+
+#[test]
 fn aggregate_budget_preserves_successful_structured_and_coverage_runs() {
     let fixture = Fixture::create();
     let structured = StructuredCommand {

@@ -5,6 +5,7 @@ use crate::policy::Severity;
 
 const RULE_ID: &str = "required-repository-commands";
 const REQUIRED_COMMAND_CHECK: &str = "command.required";
+const CONFIG_CHECK: &str = "command.config";
 const AGGREGATE_BUDGET_CHECK: &str = "command.aggregate_budget";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -78,10 +79,20 @@ fn result_with_check(
 }
 
 pub fn config_unverified(reason: &str) -> EnforcementResult {
-    result(
+    result_with_check(
         "configuration",
         Status::Unverified,
         &format!("could not run ({reason})"),
+        CONFIG_CHECK,
+    )
+}
+
+pub fn config_mutation_unverified() -> EnforcementResult {
+    result_with_check(
+        "configuration",
+        Status::Unverified,
+        "changed after repository commands were configured and before their evidence was recorded",
+        CONFIG_CHECK,
     )
 }
 

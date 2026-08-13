@@ -36,16 +36,17 @@ impl ExecutionBudget {
         self.exhausted
     }
 
-    fn timeout_for(&mut self, configured: Duration) -> Option<Duration> {
-        let Some(deadline) = self.deadline else {
-            return Some(configured);
+    fn deadline_for(&mut self, configured: Duration) -> Option<Instant> {
+        let now = Instant::now();
+        let configured_deadline = now.checked_add(configured).unwrap_or(now);
+        let Some(gate_deadline) = self.deadline else {
+            return Some(configured_deadline);
         };
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        if now >= gate_deadline {
             self.exhausted = true;
             None
         } else {
-            Some(configured.min(remaining))
+            Some(configured_deadline.min(gate_deadline))
         }
     }
 
@@ -97,7 +98,7 @@ pub fn run_structured_with_budget(
     }
     for command in commands {
         let display = command.argv.join(" ");
-        let Some(timeout) = budget.timeout_for(command.timeout) else {
+        let Some(deadline) = budget.deadline_for(command.timeout) else {
             output
                 .evidence
                 .push(unrun_structured_evidence(command, &display));
@@ -112,7 +113,7 @@ pub fn run_structured_with_budget(
             .current_dir(root.join(&command.cwd))
             .stdin(Stdio::null());
         apply_environment(&mut process);
-        let details = crate::checks::gitleaks::runner::run_details_with_timeout(process, timeout);
+        let details = crate::checks::gitleaks::runner::run_details_with_deadline(process, deadline);
         let budget_expired = budget.expired();
         let details = if budget_expired { None } else { details };
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
@@ -163,7 +164,7 @@ pub fn run_coverage_with_budget(
     }
     let mut evidence = Vec::with_capacity(commands.len());
     for command in commands {
-        let Some(timeout) = budget.timeout_for(command.timeout) else {
+        let Some(deadline) = budget.deadline_for(command.timeout) else {
             evidence.push(unrun_coverage_evidence(command));
             continue;
         };
@@ -174,7 +175,8 @@ pub fn run_coverage_with_budget(
             .stdin(Stdio::null());
         apply_environment(&mut process);
         let measured_at_ms = unix_ms();
-        let captured = crate::checks::gitleaks::runner::run_details_with_timeout(process, timeout);
+        let captured =
+            crate::checks::gitleaks::runner::run_details_with_deadline(process, deadline);
         if budget.expired() {
             evidence.push(coverage_unverified_evidence(command, Some(measured_at_ms)));
             continue;
