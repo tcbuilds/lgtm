@@ -94,14 +94,10 @@ pub fn run_coverage(root: &Path, commands: &[CoverageCommand]) -> Vec<CoverageEv
                     let text = String::from_utf8_lossy(&details.stdout);
                     let line = parse_metric(&text, "line");
                     let branch = parse_metric(&text, "branch");
-                    let passed = line.is_some_and(|value| {
-                        command
-                            .line_threshold_percent
-                            .is_none_or(|threshold| value >= f64::from(threshold))
-                    }) && branch.is_none_or(|value| {
-                        command
-                            .branch_threshold_percent
-                            .is_none_or(|threshold| value >= f64::from(threshold))
+                    let passed = command.line_threshold_percent.is_none_or(|threshold| {
+                        line.is_some_and(|value| value >= f64::from(threshold))
+                    }) && command.branch_threshold_percent.is_none_or(|threshold| {
+                        branch.is_some_and(|value| value >= f64::from(threshold))
                     });
                     let missing_configured_metric = (command.line_threshold_percent.is_some()
                         && line.is_none())

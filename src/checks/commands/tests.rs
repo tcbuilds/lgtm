@@ -331,6 +331,18 @@ fn below_branch_threshold_projects_to_failed_required_repository_command() {
 }
 
 #[test]
+fn branch_only_metric_above_threshold_remains_passing() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body("branch-pass", "echo 'branch coverage: 90%'");
+    let evidence = run_coverage(&fixture.root, &[coverage_command(tool, None, Some(80))]);
+    let results = coverage_results(&evidence);
+
+    assert_eq!(evidence[0].status, "passed");
+    assert_eq!(results[0].status, Status::Passed);
+    assert!(!results[0].is_failure());
+}
+
+#[test]
 fn unparseable_coverage_projects_to_unverified_without_failure() {
     let fixture = Fixture::create();
     let tool = fixture.script_body("unverified", "echo 'coverage report unavailable'");
