@@ -16,6 +16,30 @@ pub struct Settings {
     pub structured: Vec<StructuredCommand>,
     pub timeout: std::time::Duration,
     pub coverage: Vec<CoverageCommand>,
+    pub workspace_ids: Vec<String>,
+}
+
+impl Settings {
+    pub fn validate_workspace(&self, workspace: Option<&str>) -> Result<(), String> {
+        let Some(workspace) = workspace else {
+            return Ok(());
+        };
+        if self.workspace_ids.iter().any(|known| known == workspace) {
+            return Ok(());
+        }
+        let workspace = workspace
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect::<String>();
+        let available = if self.workspace_ids.is_empty() {
+            "none configured".to_string()
+        } else {
+            self.workspace_ids.join(", ")
+        };
+        Err(format!(
+            "unknown workspace `{workspace}`; available workspaces: {available}; select a configured workspace id or omit the workspace selector"
+        ))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -86,7 +110,9 @@ pub fn load(root: &Path) -> Result<Settings, String> {
         let mut commands = Vec::new();
         let mut structured = Vec::new();
         let mut coverage = Vec::new();
+        let mut workspace_ids = Vec::new();
         for workspace in config.workspaces {
+            workspace_ids.push(workspace.id.clone());
             for item in &workspace.coverage {
                 coverage.push(CoverageCommand {
                     workspace_id: workspace.id.clone(),
@@ -117,6 +143,7 @@ pub fn load(root: &Path) -> Result<Settings, String> {
             structured,
             timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
             coverage,
+            workspace_ids,
         });
     }
     let timeout = timeout(&value)?;
@@ -126,6 +153,7 @@ pub fn load(root: &Path) -> Result<Settings, String> {
             structured: Vec::new(),
             timeout,
             coverage: Vec::new(),
+            workspace_ids: Vec::new(),
         });
     };
     let map = required
@@ -151,6 +179,7 @@ pub fn load(root: &Path) -> Result<Settings, String> {
         structured: Vec::new(),
         timeout,
         coverage: Vec::new(),
+        workspace_ids: Vec::new(),
     })
 }
 
@@ -160,6 +189,7 @@ fn defaults() -> Settings {
         structured: Vec::new(),
         timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
         coverage: Vec::new(),
+        workspace_ids: Vec::new(),
     }
 }
 

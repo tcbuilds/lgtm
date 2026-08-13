@@ -30,7 +30,7 @@ pub struct CommandEvidence {
     pub finished_at_ms: Option<u128>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CoverageEvidence {
     pub workspace_id: String,
     pub status: String,
@@ -72,6 +72,47 @@ pub fn config_unverified(reason: &str) -> EnforcementResult {
         Status::Unverified,
         &format!("could not run ({reason})"),
     )
+}
+
+pub(crate) fn invalid_workspace(reason: &str) -> EnforcementResult {
+    let mut invalid = result("workspace selector", Status::Failed, reason);
+    invalid.remediation = Some(
+        "Select a configured workspace id or omit the workspace selector, then retry Stop."
+            .to_string(),
+    );
+    invalid
+}
+
+pub(crate) fn coverage_results(evidence: &[CoverageEvidence]) -> Vec<EnforcementResult> {
+    evidence.iter().filter_map(coverage_result).collect()
+}
+
+fn coverage_result(evidence: &CoverageEvidence) -> Option<EnforcementResult> {
+    let (status, reason) = match evidence.status.as_str() {
+        "passed" => (Status::Passed, "passed"),
+        "failed" => (
+            Status::Failed,
+            "failed configured thresholds; raise coverage and rerun",
+        ),
+        "unverified" => (Status::Unverified, "could not verify coverage"),
+        "not_applicable" => return None,
+        _ => (Status::Unverified, "could not verify coverage"),
+    };
+    let identity = format!(
+        "coverage workspace={} scope={} tool={}",
+        evidence.workspace_id,
+        evidence.scope.as_deref().unwrap_or("unspecified"),
+        evidence.tool.as_deref().unwrap_or("unknown")
+    );
+    let mut projected = result(&identity, status, reason);
+    if status != Status::Passed {
+        projected.remediation = Some(format!(
+            "Run the coverage tool for workspace `{}` scope `{}`, satisfy its configured thresholds, then retry Stop.",
+            sanitize(&evidence.workspace_id),
+            sanitize(evidence.scope.as_deref().unwrap_or("unspecified"))
+        ));
+    }
+    Some(projected)
 }
 
 pub(super) fn not_applicable() -> EnforcementResult {

@@ -89,30 +89,7 @@ pub fn run_coverage(root: &Path, commands: &[CoverageCommand]) -> Vec<CoverageEv
             let measured_at_ms = unix_ms();
             let captured =
                 crate::checks::gitleaks::runner::run_details_with_timeout(process, command.timeout);
-            let (status, line_percent, branch_percent) = match captured {
-                Some(details) if details.code == Some(0) => {
-                    let text = String::from_utf8_lossy(&details.stdout);
-                    let line = parse_metric(&text, "line");
-                    let branch = parse_metric(&text, "branch");
-                    let passed = line.is_some_and(|value| {
-                        command
-                            .line_threshold_percent
-                            .is_none_or(|threshold| value >= f64::from(threshold))
-                    }) && branch.is_none_or(|value| {
-                        command
-                            .branch_threshold_percent
-                            .is_none_or(|threshold| value >= f64::from(threshold))
-                    });
-                    if line.is_none() && branch.is_none() {
-                        ("unverified", line, branch)
-                    } else if passed {
-                        ("passed", line, branch)
-                    } else {
-                        ("failed", line, branch)
-                    }
-                }
-                _ => ("unverified", None, None),
-            };
+            let (status, line_percent, branch_percent) = classify_coverage(command, captured);
             CoverageEvidence {
                 workspace_id: command.workspace_id.clone(),
                 status: status.to_string(),
@@ -126,21 +103,100 @@ pub fn run_coverage(root: &Path, commands: &[CoverageCommand]) -> Vec<CoverageEv
         .collect()
 }
 
-fn parse_metric(output: &str, label: &str) -> Option<f64> {
+fn classify_coverage(
+    command: &CoverageCommand,
+    captured: Option<crate::checks::gitleaks::runner::Captured>,
+) -> (&'static str, Option<f64>, Option<f64>) {
+    match captured {
+        Some(details) if details.code == Some(0) => {
+            let text = String::from_utf8_lossy(&details.stdout);
+            let line = parse_metric(&text, "line");
+            let branch = parse_metric(&text, "branch");
+            let status = classify_coverage_status(command, line, branch);
+            (status, line, branch)
+        }
+        _ => ("unverified", None, None),
+    }
+}
+
+fn classify_coverage_status(
+    command: &CoverageCommand,
+    line: Option<f64>,
+    branch: Option<f64>,
+) -> &'static str {
+    let passed = command
+        .line_threshold_percent
+        .is_none_or(|threshold| line.is_some_and(|value| value >= f64::from(threshold)))
+        && command
+            .branch_threshold_percent
+            .is_none_or(|threshold| branch.is_some_and(|value| value >= f64::from(threshold)));
+    let line_below_threshold = command
+        .line_threshold_percent
+        .is_some_and(|threshold| line.is_some_and(|value| value < f64::from(threshold)));
+    let branch_below_threshold = command
+        .branch_threshold_percent
+        .is_some_and(|threshold| branch.is_some_and(|value| value < f64::from(threshold)));
+    let missing_configured_metric = (command.line_threshold_percent.is_some() && line.is_none())
+        || (command.branch_threshold_percent.is_some() && branch.is_none());
+    if line_below_threshold || branch_below_threshold {
+        "failed"
+    } else if (line.is_none() && branch.is_none()) || missing_configured_metric {
+        "unverified"
+    } else if passed {
+        "passed"
+    } else {
+        "failed"
+    }
+}
+
+pub(super) fn parse_metric(output: &str, label: &str) -> Option<f64> {
     output.lines().find_map(|line| {
         let lower = line.to_ascii_lowercase();
-        let start = lower.find(label)?;
+        let start = find_metric_label(&lower, label)?;
         let suffix = &lower[start + label.len()..];
-        if !suffix.contains('%') {
-            return None;
-        }
-        let percent = suffix
-            .chars()
-            .skip_while(|character| !character.is_ascii_digit())
-            .take_while(char::is_ascii_digit)
-            .collect::<String>();
-        percent.parse().ok()
+        let next_metric = ["line", "branch"]
+            .into_iter()
+            .filter(|metric| *metric != label)
+            .filter_map(|metric| find_metric_label(suffix, metric))
+            .min();
+        let suffix = next_metric.map_or(suffix, |end| &suffix[..end]);
+        parse_percent(suffix)
     })
+}
+
+fn find_metric_label(text: &str, label: &str) -> Option<usize> {
+    text.match_indices(label).find_map(|(start, _)| {
+        let before = text[..start].chars().next_back();
+        let end = start + label.len();
+        let after = text[end..].chars().next();
+        (before.is_none_or(is_metric_boundary) && after.is_none_or(is_metric_boundary))
+            .then_some(start)
+    })
+}
+
+fn is_metric_boundary(character: char) -> bool {
+    !character.is_alphanumeric() && character != '_'
+}
+
+fn parse_percent(metric: &str) -> Option<f64> {
+    let percent = metric.find('%')?;
+    let prefix = metric[..percent].trim_end();
+    let number_start = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, character)| !character.is_ascii_digit() && !matches!(character, '.' | '+' | '-'))
+        .map_or(0, |(index, character)| index + character.len_utf8());
+    let token = &prefix[number_start..];
+    if token.is_empty()
+        || prefix[..number_start]
+            .chars()
+            .next_back()
+            .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        return None;
+    }
+    let value = token.parse::<f64>().ok()?;
+    (value.is_finite() && (0.0..=100.0).contains(&value)).then_some(value)
 }
 
 fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mut RunResults) {

@@ -1,7 +1,7 @@
 //! Stop hook: rerun required secret checks and enforce unresolved MUST failures.
 
 use std::collections::BTreeSet;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -99,8 +99,9 @@ struct EvidenceMeta<'a> {
 #[derive(Debug, Deserialize)]
 struct StoredTaskEvidence {
     task_id: String,
-    rules: RuleCounts,
+    results: Vec<EnforcementResult>,
     commands: Vec<commands::CommandEvidence>,
+    coverage: Vec<commands::CoverageEvidence>,
     policy_version: String,
     binary_version: String,
     touched_files_digest: String,
@@ -233,6 +234,11 @@ fn run_inner(
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
+    let workspace_error = commands::load(&root).ok().and_then(|settings| {
+        settings
+            .validate_workspace(hook_input.workspace.as_deref())
+            .err()
+    });
     let (paths, had_edits) = if hook_input.check {
         (check_paths(&root)?, false)
     } else {
@@ -246,7 +252,7 @@ fn run_inner(
             hook_input.transcript_path.as_deref().map(Path::new),
             &configured,
         );
-    if !hook_input.check && !had_edits && !claims_only {
+    if !hook_input.check && !had_edits && !claims_only && workspace_error.is_none() {
         return Ok(ExitCode::SUCCESS);
     }
     let (profile, registry, overrides, waivers, compatibility, policy_sources) =
@@ -290,12 +296,17 @@ fn run_inner(
     bind_command_provenance(&root, &paths, &mut command_run.evidence);
     let coverage = if tier == "full" {
         commands::load(&root)
-            .map(|settings| commands::run_coverage(&root, &settings.coverage))
+            .map(|settings| {
+                let selected =
+                    select_coverage_commands(&settings.coverage, hook_input.workspace.as_deref());
+                commands::run_coverage(&root, &selected)
+            })
             .unwrap_or_else(|_| commands::run_coverage(&root, &[]))
     } else {
         commands::run_coverage(&root, &[])
     };
     results.extend(command_run.results);
+    results.extend(commands::coverage_results(&coverage));
     if !hook_input.check {
         let mut claim_evidence = command_run.evidence.clone();
         claim_evidence.extend(
@@ -314,6 +325,9 @@ fn run_inner(
     crate::policy::profile::apply_resolved_results(&registry, &mut results);
     crate::policy::overrides::apply_results(&overrides, &mut results);
     crate::policy::waivers::apply(&waivers, &mut results);
+    if let Some(reason) = workspace_error {
+        results.push(commands::invalid_workspace(&reason));
+    }
     append_task_evidence(
         EvidenceMeta {
             root: &root,
@@ -349,6 +363,17 @@ fn effective_tier(tier: Option<&str>) -> &str {
         Tier::Targeted => "targeted",
         Tier::Full => "full",
     })
+}
+
+fn select_coverage_commands(
+    coverage: &[commands::CoverageCommand],
+    workspace: Option<&str>,
+) -> Vec<commands::CoverageCommand> {
+    coverage
+        .iter()
+        .filter(|command| workspace.is_none_or(|id| command.workspace_id == id))
+        .cloned()
+        .collect()
 }
 
 // Executable names the repository configures as required commands. Claim matching
@@ -463,7 +488,7 @@ fn matching_full_evidence(
     raw.lines().rev().find_map(|line| {
         let record: StoredTaskEvidence = serde_json::from_str(line).ok()?;
         (record.task_id == session_id
-            && record.rules.failed == 0
+            && stored_gate_passed(&record)
             && record.tier.as_deref() == Some("full")
             && record.policy_version == crate::policy::POLICY_BUNDLE_VERSION
             && record.binary_version == env!("CARGO_PKG_VERSION")
@@ -471,6 +496,26 @@ fn matching_full_evidence(
             && record.touched_files_digest == expected_files)
             .then_some(record.commands)
     })
+}
+
+fn stored_gate_passed(record: &StoredTaskEvidence) -> bool {
+    let has_blocking_failure = record
+        .results
+        .iter()
+        .any(|result| result.is_failure() && result.severity == Severity::Error);
+    let command_results_verified = record.results.iter().all(|result| {
+        result.rule_id != "required-repository-commands"
+            || !matches!(result.status, Status::Failed | Status::Unverified)
+    });
+    let commands_verified = record
+        .commands
+        .iter()
+        .all(|command| command.exit_code == Some(0));
+    let coverage_verified = record
+        .coverage
+        .iter()
+        .all(|coverage| matches!(coverage.status.as_str(), "passed" | "not_applicable"));
+    !has_blocking_failure && command_results_verified && commands_verified && coverage_verified
 }
 
 fn read_diff_baseline(root: &Path, session_id: Option<&str>) -> Option<BTreeSet<String>> {
@@ -791,31 +836,87 @@ fn validate_evidence(record: &str) -> Result<(), String> {
 }
 
 fn append_bounded_regular(path: &Path, line: &[u8]) -> Result<(), String> {
-    use std::io::Write as _;
-
     if line.len() as u64 > MAX_TASK_EVIDENCE_BYTES {
         return Err("single evidence record exceeds maximum size".to_string());
     }
-    let existing_size = match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => metadata.len(),
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
         Ok(_) => return Err("evidence path is not a regular file".to_string()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .and_then(|mut file| file.write_all(line))
+                .map_err(|error| format!("append evidence ({error})"));
+        }
         Err(error) => return Err(format!("inspect evidence ({error})")),
-    };
-    let should_rotate = existing_size.saturating_add(line.len() as u64) > MAX_TASK_EVIDENCE_BYTES;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true);
-    if existing_size == 0 && !path.exists() {
-        options.create_new(true);
-    } else if should_rotate {
-        options.truncate(true);
-    } else {
-        options.append(true);
     }
-    options
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
         .open(path)
-        .and_then(|mut file| file.write_all(line))
+        .map_err(|error| format!("open evidence ({error})"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("inspect open evidence ({error})"))?;
+    if !metadata.is_file() {
+        return Err("evidence path is not a regular file".to_string());
+    }
+    if metadata.len().saturating_add(line.len() as u64) > MAX_TASK_EVIDENCE_BYTES {
+        file.set_len(0)
+            .and_then(|()| file.seek(SeekFrom::Start(0)))
+            .and_then(|_| file.write_all(line))
+            .map_err(|error| format!("rotate evidence ({error})"))?;
+        return Ok(());
+    }
+
+    let mut existing = Vec::with_capacity(metadata.len() as usize);
+    file.seek(SeekFrom::Start(0))
+        .and_then(|_| file.read_to_end(&mut existing))
+        .map_err(|error| format!("read evidence tail ({error})"))?;
+    let (valid_prefix_len, needs_delimiter) = recoverable_evidence_prefix(&existing);
+    let projected_size = (valid_prefix_len as u64)
+        .saturating_add(u64::from(needs_delimiter))
+        .saturating_add(line.len() as u64);
+    if projected_size > MAX_TASK_EVIDENCE_BYTES {
+        file.set_len(0)
+            .and_then(|()| file.seek(SeekFrom::Start(0)))
+            .and_then(|_| file.write_all(line))
+            .map_err(|error| format!("rotate evidence ({error})"))?;
+        return Ok(());
+    }
+
+    file.set_len(valid_prefix_len as u64)
+        .and_then(|()| file.seek(SeekFrom::Start(valid_prefix_len as u64)))
+        .and_then(|_| {
+            if needs_delimiter {
+                file.write_all(b"\n")?;
+            }
+            file.write_all(line)
+        })
         .map_err(|error| format!("append evidence ({error})"))
+}
+
+fn recoverable_evidence_prefix(existing: &[u8]) -> (usize, bool) {
+    if existing.is_empty() || existing.ends_with(b"\n") {
+        return (existing.len(), false);
+    }
+    let tail_start = existing
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index + 1);
+    if serde_json::from_slice::<serde_json::Value>(&existing[tail_start..]).is_ok() {
+        (existing.len(), true)
+    } else {
+        (tail_start, false)
+    }
 }
 
 fn count_results(results: &[EnforcementResult]) -> RuleCounts {
@@ -939,6 +1040,101 @@ fn write_block_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stored_record(
+        severity: Severity,
+        exit_code: Option<i32>,
+        coverage_status: &str,
+    ) -> StoredTaskEvidence {
+        StoredTaskEvidence {
+            task_id: "task".to_string(),
+            results: vec![EnforcementResult {
+                rule_id: "review".to_string(),
+                status: Status::Failed,
+                severity,
+                message: "review finding".to_string(),
+                locations: Vec::new(),
+                remediation: None,
+                evidence: ResultEvidence {
+                    check: "native.review".to_string(),
+                    tool_version: None,
+                    finding_descriptions: Vec::new(),
+                },
+            }],
+            commands: vec![commands::CommandEvidence {
+                command: "check".to_string(),
+                exit_code,
+                duration_ms: 1,
+                argv: Vec::new(),
+                cwd: None,
+                workspace_id: None,
+                config_digest: None,
+                touched_files_digest: None,
+                policy_version: None,
+                binary_version: None,
+                started_at_ms: None,
+                finished_at_ms: None,
+            }],
+            coverage: vec![commands::CoverageEvidence {
+                workspace_id: "workspace".to_string(),
+                status: coverage_status.to_string(),
+                tool: None,
+                scope: None,
+                line_percent: None,
+                branch_percent: None,
+                measured_at_ms: None,
+            }],
+            policy_version: crate::policy::POLICY_BUNDLE_VERSION.to_string(),
+            binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            touched_files_digest: "files".to_string(),
+            config_digest: "config".to_string(),
+            tier: Some("full".to_string()),
+        }
+    }
+
+    #[test]
+    fn reusable_gate_allows_warning_failures_but_rejects_incomplete_tool_evidence() {
+        assert!(stored_gate_passed(&stored_record(
+            Severity::Warning,
+            Some(0),
+            "passed"
+        )));
+        assert!(!stored_gate_passed(&stored_record(
+            Severity::Error,
+            Some(0),
+            "passed"
+        )));
+        for exit_code in [None, Some(1)] {
+            assert!(!stored_gate_passed(&stored_record(
+                Severity::Warning,
+                exit_code,
+                "passed"
+            )));
+        }
+        for coverage_status in ["failed", "unverified"] {
+            assert!(!stored_gate_passed(&stored_record(
+                Severity::Warning,
+                Some(0),
+                coverage_status
+            )));
+        }
+        for status in [Status::Failed, Status::Unverified] {
+            let mut incomplete = stored_record(Severity::Warning, Some(0), "passed");
+            incomplete.commands.clear();
+            incomplete.results[0].rule_id = "required-repository-commands".to_string();
+            incomplete.results[0].status = status;
+            assert!(!stored_gate_passed(&incomplete));
+        }
+    }
+
+    #[test]
+    fn evidence_tail_recovery_only_delimits_valid_json() {
+        assert_eq!(recoverable_evidence_prefix(b"{\"valid\":true}"), (14, true));
+        assert_eq!(
+            recoverable_evidence_prefix(b"{\"valid\":true}\n{\"broken\":"),
+            (15, false)
+        );
+    }
 
     #[test]
     fn summary_messages_are_sanitized_and_bounded() {
