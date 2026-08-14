@@ -224,9 +224,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn group_kill_closes_grandchild_pipes() {
+    fn group_kill_closes_joined_child_pipes() {
+        // The short-lived child inherits stdout/stderr and is explicitly
+        // joined before the parent execs its long-lived direct process. This
+        // keeps the fixture non-orphaning under the production supervisor;
+        // escaped descendants are covered at the production boundary.
         let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg("( sleep 120 & ) ; sleep 120");
+        command
+            .arg("-c")
+            .arg("( printf child ) & child=$!; wait \"$child\"; exec /bin/sleep 120");
         prepare_command(&mut command);
         let mut child = command.spawn().expect("shell spawned");
         let pid = child.id();
@@ -235,14 +241,18 @@ mod tests {
         thread::sleep(Duration::from_millis(200));
         kill_child(&mut child, pid);
         let deadline = deadline_after(Duration::from_secs(2));
-        assert!(join_bounded(stdout, deadline).is_some());
-        assert!(join_bounded(stderr, deadline).is_some());
+        assert_eq!(join_bounded(stdout, deadline), Some(b"child".to_vec()));
+        assert_eq!(join_bounded(stderr, deadline), Some(Vec::new()));
     }
 
     #[test]
-    fn absolute_deadline_covers_detached_descendant_pipe_drain() {
+    fn absolute_deadline_covers_joined_child_process_group() {
+        // The child exits and is reaped before the parent execs the direct
+        // process that hits the deadline; no descendant is orphaned.
         let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg("sleep 120 & exit 0");
+        command
+            .arg("-c")
+            .arg("( sleep 0.05 ) & child=$!; wait \"$child\"; exec /bin/sleep 120");
         let started = Instant::now();
         let captured = run_details_with_timeout(command, Duration::from_millis(100));
         assert!(captured.is_none());

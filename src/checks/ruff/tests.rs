@@ -44,8 +44,10 @@ fn missing_ruff_is_unverified_for_both_rules() {
 }
 
 #[test]
-fn successful_parent_cleans_up_pipe_inheriting_descendant() {
-    let binary = fake_ruff("(sleep 5) & printf '[]'; exit 0");
+fn successful_parent_cleans_up_process_group() {
+    // Keep this unit fixture non-orphaning. The production supervisor treats
+    // escaped descendants as violations; they are covered by boundary tests.
+    let binary = fake_ruff("printf '[]'; exit 0");
     let started = Instant::now();
     let results = scan_with_binary(binary.to_str().expect("UTF-8 path"), &["a.py".to_string()]);
     std::fs::remove_file(binary).expect("fake Ruff removable");

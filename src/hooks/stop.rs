@@ -1534,6 +1534,7 @@ mod tests {
         for (field, value) in [
             ("platform", "different-platform"),
             ("containment_version", "different-containment-version"),
+            ("containment_version", "linux-isolated-subreaper-v1"),
         ] {
             let mut mismatched = record(Vec::new());
             mismatched[field] = serde_json::json!(value);
@@ -1561,7 +1562,7 @@ mod tests {
         ));
         std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
         let command = root.join(".lgtm/bin/slow");
-        std::fs::write(&command, "#!/bin/sh\nsleep 1\n").expect("fixture command");
+        std::fs::write(&command, "#!/bin/sh\nexec /bin/sleep 1\n").expect("fixture command");
         std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
             .expect("fixture permissions");
         std::fs::write(
@@ -1641,7 +1642,7 @@ mod tests {
         ));
         std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
         let coverage = root.join(".lgtm/bin/coverage");
-        std::fs::write(&coverage, "#!/bin/sh\nsleep 1\n").expect("coverage command");
+        std::fs::write(&coverage, "#!/bin/sh\nexec /bin/sleep 1\n").expect("coverage command");
         std::fs::set_permissions(&coverage, std::fs::Permissions::from_mode(0o700))
             .expect("fixture permissions");
         std::fs::write(
@@ -1838,25 +1839,24 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn delayed_last_command_descendant_is_nonpassing_and_not_reusable() {
+    fn joined_last_command_is_nonpassing_and_not_reusable() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "lgtm-delayed-config-replacement-{}-{}",
+            "lgtm-joined-command-{}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
-        let command = root.join(".lgtm/bin/delayed-replace-config");
+        let command = root.join(".lgtm/bin/joined-command");
+        // Detached-descendant containment is exercised at the production
+        // supervisor boundary; this fixture joins its child before failing.
         std::fs::write(
             &command,
-            format!(
-                "#!/bin/sh\n( sleep 0.1; printf '{{}}\\n' > {} ) >/dev/null 2>&1 &\nexit 0\n",
-                root.join(".lgtm/config.json").display()
-            ),
+            "#!/bin/sh\n( sleep 0.05 ) & child=$!; wait \"$child\"; exit 7\n",
         )
-        .expect("delayed replacement command");
+        .expect("joined failing command");
         std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
             .expect("fixture permissions");
         let original = serde_json::json!({
@@ -1889,9 +1889,8 @@ mod tests {
             Duration::from_secs(1),
         )
         .expect("pre-commit gate runs")
-        .expect("descendant containment violation denies pre-commit");
-        assert!(decision.contains("descendant outlived the direct command"));
-        std::thread::sleep(Duration::from_millis(200));
+        .expect("joined failing command denies pre-commit");
+        assert!(decision.contains("exit status 7"));
         assert_eq!(
             std::fs::read_to_string(root.join(".lgtm/config.json")).expect("config remains"),
             original
@@ -1923,7 +1922,7 @@ mod tests {
         for (path, body) in [
             (
                 &active,
-                format!("touch {}; sleep 1", active_started.display()),
+                format!("touch {}; exec /bin/sleep 1", active_started.display()),
             ),
             (&later, format!("touch {}; exit 0", later_started.display())),
             (

@@ -21,7 +21,7 @@ pub fn platform_id() -> String {
 }
 
 #[cfg(target_os = "linux")]
-pub const CONTAINMENT_VERSION: &str = "linux-isolated-subreaper-v1";
+pub const CONTAINMENT_VERSION: &str = "linux-isolated-subreaper-v2";
 #[cfg(not(target_os = "linux"))]
 pub const CONTAINMENT_VERSION: &str = "unavailable-v1";
 
@@ -228,11 +228,15 @@ fn run_supervisor(request: SupervisorRequest) -> SupervisorResponse {
         let _ = child.kill();
     }
     let direct_reaped = status.is_some() || reap_direct_child(&mut child, deadline);
-    let cleanup = terminate_adopted_descendants(deadline);
+    let cleanup = terminate_adopted_descendants(pid, deadline);
     let captured_stdout = join_bounded(stdout, deadline);
     let captured_stderr = join_bounded(stderr, deadline);
 
     let outcome = match cleanup {
+        // A command cutoff is already a non-passing wait result; preserve its
+        // timeout classification even when killing the process group leaves
+        // an adopted child for cleanup to reap.
+        Cleanup::Violation if status.is_none() => SupervisorOutcome::CouldNotRun,
         Cleanup::Violation => SupervisorOutcome::ContainmentViolation,
         Cleanup::Clean
             if direct_reaped
@@ -388,11 +392,21 @@ enum Cleanup {
 }
 
 #[cfg(target_os = "linux")]
-fn terminate_adopted_descendants(deadline: Instant) -> Cleanup {
+fn terminate_adopted_descendants(direct_pid: u32, deadline: Instant) -> Cleanup {
     let mut found = false;
     let mut quiet_since = None;
     loop {
-        reap_exited_children();
+        let reaped_adopted = match reap_exited_children(direct_pid as libc::pid_t) {
+            Ok(reaped) => reaped,
+            Err(()) => return Cleanup::Unproven,
+        };
+        if reaped_adopted {
+            // An adopted descendant can already be a zombie before the first
+            // procfs scan. Treat that activity exactly like an observed live
+            // descendant and restart the quiescence interval.
+            found = true;
+            quiet_since = None;
+        }
         let children = match direct_children() {
             Ok(children) => children,
             Err(()) => return Cleanup::Unproven,
@@ -426,12 +440,29 @@ fn terminate_adopted_descendants(deadline: Instant) -> Cleanup {
 }
 
 #[cfg(target_os = "linux")]
-fn reap_exited_children() {
+fn reap_exited_children(direct_pid: libc::pid_t) -> Result<bool, ()> {
+    let mut reaped_adopted = false;
     loop {
         // SAFETY: waitpid with WNOHANG does not write through the null status pointer.
         let reaped = unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) };
-        if reaped <= 0 {
-            break;
+        match reaped {
+            0 => return Ok(reaped_adopted),
+            pid if pid > 0 => {
+                reaped_adopted |= pid != direct_pid;
+            }
+            -1 => {
+                let error = std::io::Error::last_os_error().raw_os_error();
+                if error == Some(libc::EINTR) {
+                    continue;
+                }
+                // ECHILD is the normal no-waitable-children result after the
+                // direct command has been reaped; every other wait error is
+                // containment-unproven rather than a clean cleanup.
+                return (error == Some(libc::ECHILD))
+                    .then_some(reaped_adopted)
+                    .ok_or(());
+            }
+            _ => return Err(()),
         }
     }
 }

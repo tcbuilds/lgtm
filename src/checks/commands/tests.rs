@@ -36,7 +36,7 @@ impl Fixture {
 #[test]
 fn configured_duration_terminates_long_command() {
     let fixture = Fixture::create();
-    let command = fixture.script_body("slow", "sleep 1");
+    let command = fixture.script_body("slow", "exec /bin/sleep 1");
     let output = run(
         &fixture.root,
         &[command],
@@ -54,7 +54,7 @@ fn aggregate_budget_stops_structured_and_coverage_in_order() {
     let coverage_started = fixture.root.join("coverage-started");
     let slow = fixture.script_body(
         "slow",
-        &format!("touch {}; sleep 1", structured_started.display()),
+        &format!("touch {}; exec /bin/sleep 1", structured_started.display()),
     );
     let later = fixture.script_body(
         "later",
@@ -126,7 +126,7 @@ fn coverage_only_cutoff_exhausts_the_aggregate_budget() {
         workspace_id: "root".to_string(),
         argv: vec![fixture.script_body(
             "coverage-only",
-            &format!("touch {}; sleep 1", started.display()),
+            &format!("touch {}; exec /bin/sleep 1", started.display()),
         )],
         cwd: ".".into(),
         timeout: std::time::Duration::from_secs(30),
@@ -659,7 +659,7 @@ fn nonzero_coverage_process_projects_to_unverified_without_failure() {
 #[test]
 fn timed_out_coverage_process_projects_to_unverified_without_failure() {
     let fixture = Fixture::create();
-    let tool = fixture.script_body("coverage-timeout", "sleep 1");
+    let tool = fixture.script_body("coverage-timeout", "exec /bin/sleep 1");
     let mut command = coverage_command(tool, Some(80), Some(80));
     command.timeout = std::time::Duration::from_millis(20);
     let evidence = run_coverage(&fixture.root, &[command]);

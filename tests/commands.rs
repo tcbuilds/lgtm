@@ -537,7 +537,7 @@ fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
             record["platform"],
             format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
         );
-        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v1");
+        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v2");
         assert!(record["results"].as_array().is_some_and(|results| {
             results.iter().any(|result| {
                 result["status"] == "failed"
@@ -550,6 +550,76 @@ fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
 
     std::thread::sleep(std::time::Duration::from_millis(1_200));
     assert_eq!(repo.read(".lgtm/config.json"), original);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn adopted_zombie_before_first_proc_scan_denies_and_is_not_reused() {
+    let repo = TempRepo::new();
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    repo.write(
+        "bin/adopted-zombie-check",
+        "#!/bin/sh\nsetsid -f /bin/sh -c 'printf x >> \"$1\"; sleep 0.05; exit 0' sh \"$1\" </dev/null >/dev/null 2>&1 &\nwhile [ ! -f \"$1\" ]; do sleep 0.01; done\nsleep 0.2\nexit 0\n",
+    );
+    let command = repo.path().join("bin/adopted-zombie-check");
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    let marker = repo.path().join("adopted-zombie-runs");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "tests",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [command.to_string_lossy(), marker.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "adopted-zombie", "src/app.rs")
+            .status
+            .success()
+    );
+
+    for expected_runs in ["x", "xx"] {
+        let output = run_pre_tool_use_command(&repo, "adopted-zombie", "git commit -m test");
+        assert!(output.status.success());
+        let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision JSON");
+        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(
+            decision["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("descendant outlived the direct command"))
+        );
+        assert_eq!(repo.read("adopted-zombie-runs"), expected_runs);
+
+        let record = latest_evidence(&repo);
+        assert_eq!(record["commands"][0]["exit_code"], Value::Null);
+        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v2");
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["status"] == "failed"
+                    && result["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("descendant outlived"))
+            })
+        }));
+    }
 }
 
 #[cfg(target_os = "linux")]
