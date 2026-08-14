@@ -182,7 +182,7 @@ fn every_rule_scope_is_loadable_from_its_document() {
 
 #[test]
 fn frontmatter_schema_rejects_empty_path_entries() {
-    let contents = "---\npaths:\n  - \"\"\n---\n# body";
+    let contents = "---\ndescription: Empty path fixture.\npaths:\n  - \"\"\n---\n# body";
     let error = load_rule_files(&[("empty-path.md", contents)]).expect_err("empty path");
     assert!(error.to_string().contains("empty-path.md"));
     assert!(error.to_string().contains("paths"));
@@ -190,13 +190,13 @@ fn frontmatter_schema_rejects_empty_path_entries() {
 
 #[test]
 fn frontmatter_schema_rejects_duplicate_paths_and_headings() {
-    let duplicate_paths = "---\npaths:\n  - \"**/*.rs\"\n  - \"**/*.rs\"\n---\n# body";
+    let duplicate_paths = "---\ndescription: Duplicate paths fixture.\npaths:\n  - \"**/*.rs\"\n  - \"**/*.rs\"\n---\n# body";
     let path_error =
         load_rule_files(&[("duplicate-paths.md", duplicate_paths)]).expect_err("duplicate paths");
     assert!(path_error.to_string().contains("duplicate-paths.md"));
     assert!(path_error.to_string().contains("paths"));
 
-    let duplicate_headings = "---\nheadings: [\"Rust\", \"Rust\"]\n---\n# body";
+    let duplicate_headings = "---\ndescription: Duplicate headings fixture.\nheadings: [\"Rust\", \"Rust\"]\n---\n# body";
     let heading_error = load_rule_files(&[("duplicate-headings.md", duplicate_headings)])
         .expect_err("duplicate headings");
     assert!(heading_error.to_string().contains("duplicate-headings.md"));

@@ -1,4 +1,5 @@
 ---
+description: LGTM configuration safety rules.
 paths:
   - "**/*.{yaml,yml,json,toml,ini,env}"
   - "**/.env.example"

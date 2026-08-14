@@ -1,4 +1,5 @@
 ---
+description: LGTM Go design patterns.
 paths:
   - "**/*.go"
 ---

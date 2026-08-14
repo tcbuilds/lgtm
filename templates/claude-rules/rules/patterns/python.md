@@ -1,4 +1,5 @@
 ---
+description: LGTM Python design patterns.
 paths:
   - "**/*.py"
   - "**/*.pyi"

@@ -1,4 +1,5 @@
 ---
+description: LGTM shell engineering rules.
 paths:
   - "**/*.{sh,bash,zsh}"
 headings: ["Shell"]

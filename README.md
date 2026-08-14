@@ -35,7 +35,7 @@ lgtm init
 lgtm doctor
 ```
 
-`lgtm init` adds the project configuration and Claude Code hooks without replacing existing settings. `lgtm doctor` shows any optional checking tools you still need to install, including `gitleaks`, `ruff`, and `semgrep`.
+`lgtm init` adds the project configuration and Claude Code hooks without replacing existing settings. `lgtm doctor` shows any optional checking tools you still need to install, including `gitleaks`, `ruff`, and `semgrep`. It also scans the repository's bounded workspace tree and reports advisory, repository-relevant language servers (such as `rust-analyzer`, `gopls`, or `clangd`). These recommendations never run a server or install anything; missing servers do not affect the doctor's successful exit. JVM projects receive a coarse Java/JVM recommendation and may need a separate Kotlin language server.
 
 It also writes `.lgtm/execpolicy.json`, a list of command prefixes that are refused before they run — `rm -rf`, `git push --force`, `git reset --hard`, `dd`, and similar. Edit it to suit your repository; re-running `lgtm init` never overwrites it. Matching compares whole argv elements from the start of the command, so `git push --force-with-lease` stays allowed while `git push --force` is denied. It is a guardrail against an agent's obvious mistakes, not a sandbox: a prohibited command placed after a positional argument, inside a compound `&&` shell line, or behind `sudo` is not caught.
 

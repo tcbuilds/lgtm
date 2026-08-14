@@ -1,4 +1,5 @@
 ---
+description: LGTM Go engineering rules.
 paths:
   - "**/*.go"
 headings: ["Go"]

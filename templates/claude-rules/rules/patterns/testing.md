@@ -1,4 +1,5 @@
 ---
+description: LGTM testing patterns.
 paths:
   - "**/test_*.py"
   - "**/*_test.{py,go,rs}"

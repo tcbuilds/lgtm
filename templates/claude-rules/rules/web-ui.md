@@ -1,4 +1,5 @@
 ---
+description: LGTM web UI engineering rules.
 paths:
   - "**/*.{html,htm,tsx,jsx,css,scss,sass,less}"
 headings: ["HTML, CSS, And UI Styling"]

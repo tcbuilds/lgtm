@@ -1,4 +1,5 @@
 ---
+description: LGTM Rust design patterns.
 paths:
   - "**/*.rs"
 ---

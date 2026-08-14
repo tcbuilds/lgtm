@@ -1,4 +1,5 @@
 ---
+description: LGTM testing rules.
 paths:
   - "**/*.{py,rs,ts,tsx,js,jsx,mjs,cjs,go,java,kt,kts,cs,c,cc,cpp,cxx,h,hh,hpp,hxx}"
   - "**/test_*.py"

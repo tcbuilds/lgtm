@@ -19,6 +19,7 @@ fn yaml_frontmatter_rejects_unknown_top_level_keys() {
 fn duplicate_frontmatter_ids_have_both_paths() {
     let rule = load_registry().expect("embedded registry")[0].clone();
     let document = serde_json::to_string(&RuleFrontmatter {
+        description: "Duplicate ID fixture.".to_string(),
         paths: Vec::new(),
         headings: Vec::new(),
         rules: vec![rule],
@@ -46,7 +47,11 @@ fn body_excludes_frontmatter_sentinel() {
 #[test]
 fn crlf_frontmatter_delimiters_parse_rules() {
     let rule = load_registry().expect("embedded registry")[0].clone();
-    let document = serde_json::json!({"rules": [rule.clone()]}).to_string();
+    let document = serde_json::json!({
+        "description": "CRLF fixture.",
+        "rules": [rule.clone()]
+    })
+    .to_string();
     let fixture = format!("---\r\n{document}\r\n---\r\nbody");
     let rules = load_rule_files(&[("crlf-fixture.md", &fixture)]).expect("CRLF fixture");
     assert_eq!(rules, vec![rule]);

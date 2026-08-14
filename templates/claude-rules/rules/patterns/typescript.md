@@ -1,4 +1,5 @@
 ---
+description: LGTM TypeScript design patterns.
 paths:
   - "**/*.{ts,tsx,js,jsx,mjs,cjs}"
 ---

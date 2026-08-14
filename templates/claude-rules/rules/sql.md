@@ -1,4 +1,5 @@
 ---
+description: LGTM SQL engineering rules.
 paths:
   - "**/*.sql"
   - "**/migrations/**"

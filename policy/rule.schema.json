@@ -9,7 +9,12 @@
       "description": "Machine fields carried by a rule file alongside its prose.",
       "type": "object",
       "additionalProperties": false,
+      "required": ["description"],
       "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
         "paths": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 },

@@ -1,4 +1,5 @@
 ---
+description: LGTM engineering standards and agent behavior.
 rules:
   [
     {

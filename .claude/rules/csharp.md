@@ -1,4 +1,5 @@
 ---
+description: LGTM C# engineering rules.
 paths:
   - "**/*.cs"
 headings: ["C#"]

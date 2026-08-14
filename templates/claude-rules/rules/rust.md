@@ -1,4 +1,5 @@
 ---
+description: LGTM Rust engineering rules.
 paths:
   - "**/*.rs"
 headings: ["Rust"]

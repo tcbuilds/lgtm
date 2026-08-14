@@ -94,6 +94,7 @@ const RULE_ORDER: &[&str] = &[
 #[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RuleFrontmatter {
+    pub description: String,
     #[serde(default)]
     pub paths: Vec<String>,
     #[serde(default)]
@@ -261,17 +262,18 @@ fn parse_yaml_shell(
     if keys.is_empty() {
         return Err(FrontmatterError::Malformed {
             path: path.to_string(),
-            reason: "expected paths, headings, or rules metadata".to_string(),
+            reason: "expected description, paths, headings, or rules metadata".to_string(),
         });
     }
     for key in &keys {
-        if !matches!(*key, "paths" | "headings" | "rules") {
+        if !matches!(*key, "description" | "paths" | "headings" | "rules") {
             return Err(FrontmatterError::Malformed {
                 path: path.to_string(),
                 reason: format!("unknown frontmatter key `{key}`"),
             });
         }
     }
+    let description = yaml_scalar(path, raw, "description")?;
     let paths = yaml_list(raw, "paths");
     let headings = inline_list(path, raw, "headings")?;
     let rules: Vec<Rule> = match raw.find("rules:") {
@@ -285,6 +287,12 @@ fn parse_yaml_shell(
         None => Vec::new(),
     };
     let mut object = serde_json::Map::new();
+    if let Some(description) = description {
+        object.insert(
+            "description".to_string(),
+            serde_json::Value::String(description),
+        );
+    }
     if keys.contains(&"paths") {
         object.insert(
             "paths".to_string(),
@@ -327,6 +335,27 @@ fn yaml_top_level_keys(raw: &str) -> Vec<&str> {
                 .then_some(key.trim_matches(|character| matches!(character, '"' | '\'')))
         })
         .collect()
+}
+
+fn yaml_scalar(path: &str, raw: &str, key: &str) -> Result<Option<String>, FrontmatterError> {
+    let Some(value) = raw.lines().find_map(|line| {
+        if line.as_bytes().first().is_some_and(u8::is_ascii_whitespace) {
+            return None;
+        }
+        let (candidate, value) = line.split_once(':')?;
+        (candidate.trim() == key).then_some(value.trim())
+    }) else {
+        return Ok(None);
+    };
+    if value.starts_with('"') {
+        return serde_json::from_str(value).map(Some).map_err(|error| {
+            FrontmatterError::Malformed {
+                path: path.to_string(),
+                reason: format!("{key} must be a string: {error}"),
+            }
+        });
+    }
+    Ok(Some(value.trim_matches('\'').to_string()))
 }
 
 fn yaml_list(raw: &str, key: &str) -> Vec<String> {

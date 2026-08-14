@@ -64,6 +64,21 @@ fn plain_init_installs_complete_rules_and_hooks_idempotently() {
         first_rules.len() > 2,
         "all rule and pattern files must land"
     );
+    for (path, contents) in &first_rules {
+        let contents = std::str::from_utf8(contents).expect("rule template must be UTF-8");
+        let frontmatter = contents
+            .strip_prefix("---\n")
+            .and_then(|contents| contents.split_once("\n---\n"))
+            .map(|(frontmatter, _)| frontmatter)
+            .expect("installed rule must have frontmatter");
+        assert!(
+            frontmatter
+                .lines()
+                .any(|line| line.starts_with("description: ")),
+            "{} must have a loader-compatible description",
+            path.display()
+        );
+    }
     let first_text = String::from_utf8_lossy(&first.stdout);
     assert!(first_text.contains("rule files: written"));
     assert!(first_text.contains(".claude/rules/standards.md"));

@@ -1153,7 +1153,7 @@ fn adapter_event(event: HookEvent) -> lgtm::adapter::HookEvent {
     }
 }
 
-/// Report whether the wrapped MVP tool is ready and how to install it.
+/// Report whether wrapped tools and repository-relevant language servers are ready.
 fn run_doctor() -> ExitCode {
     match lgtm::checks::gitleaks::installed_version() {
         Some(version) => println!("gitleaks: ready ({version})"),
@@ -1179,6 +1179,7 @@ fn run_doctor() -> ExitCode {
             println!("  Install: uv tool install semgrep");
         }
     }
+    print_language_server_recommendations();
     match lgtm::checks::commands::load(Path::new(".")) {
         Ok(settings) if !settings.structured.is_empty() => {
             println!(
@@ -1197,6 +1198,45 @@ fn run_doctor() -> ExitCode {
         Err(reason) => println!("config gates: invalid ({reason})"),
     }
     ExitCode::SUCCESS
+}
+
+fn print_language_server_recommendations() {
+    let workspaces = match lgtm::discovery::discover(Path::new(".")) {
+        Ok(workspaces) => workspaces,
+        Err(_) => {
+            println!(
+                "language servers: unavailable (repository discovery failed; no recommendations made)"
+            );
+            return;
+        }
+    };
+    println!("language servers (advisory; repository-derived):");
+    for server in lgtm::doctor::recommendations(&workspaces) {
+        let ready = std::env::var_os("PATH")
+            .map(|path| {
+                let pathext = std::env::var_os("PATHEXT")
+                    .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+                lgtm::doctor::probe_status(server.command, &path, cfg!(windows), &pathext)
+            })
+            .unwrap_or(lgtm::doctor::ProbeStatus::Missing);
+        match ready {
+            lgtm::doctor::ProbeStatus::Ready => println!("  {}: ready", server.command),
+            lgtm::doctor::ProbeStatus::Missing => {
+                println!("  {}: MISSING", server.command);
+                println!("    Install: {}", server.install);
+            }
+            lgtm::doctor::ProbeStatus::UnverifiedRustupProxy => {
+                println!(
+                    "  {}: UNVERIFIED (rustup proxy; component availability not proven)",
+                    server.command
+                );
+                println!("    Install: {}", server.install);
+            }
+        }
+        if let Some(note) = server.note {
+            println!("    Note: {note}");
+        }
+    }
 }
 
 /// Emit a stable "not yet implemented" line to stderr for a subcommand.

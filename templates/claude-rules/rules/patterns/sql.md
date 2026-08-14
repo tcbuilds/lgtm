@@ -1,4 +1,5 @@
 ---
+description: LGTM SQL design patterns.
 paths:
   - "**/*.sql"
   - "**/migrations/**"

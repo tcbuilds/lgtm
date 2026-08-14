@@ -1,4 +1,5 @@
 ---
+description: LGTM infrastructure engineering rules.
 paths:
   - "**/*.{tf,tfvars}"
   - "**/Dockerfile*"

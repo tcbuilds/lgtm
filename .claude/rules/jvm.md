@@ -1,4 +1,5 @@
 ---
+description: LGTM Java and Kotlin engineering rules.
 paths:
   - "**/*.{java,kt,kts}"
 headings: ["Java", "Kotlin"]

@@ -16,17 +16,28 @@ fn temp_root(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn every_template_declares_paths_except_the_entry_document() {
+fn every_template_has_a_description_and_scoped_templates_declare_paths() {
     for (relative, contents) in TEMPLATES {
+        let frontmatter = contents
+            .strip_prefix("---\n")
+            .and_then(|contents| contents.split_once("\n---\n"))
+            .map(|(frontmatter, _)| frontmatter)
+            .expect("template frontmatter");
+        assert!(
+            frontmatter
+                .lines()
+                .any(|line| line.starts_with("description: ")),
+            "{relative} must describe itself for compatible rule loaders"
+        );
         if *relative == "standards.md" {
             assert!(
-                !contents.starts_with("---\npaths:\n"),
+                !frontmatter.lines().any(|line| line == "paths:"),
                 "the entry document must load every session, so it carries no paths frontmatter"
             );
             continue;
         }
         assert!(
-            contents.starts_with("---\npaths:\n"),
+            frontmatter.lines().any(|line| line == "paths:"),
             "{relative} must declare a paths glob so it loads only for matching files"
         );
     }

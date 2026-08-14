@@ -1,4 +1,5 @@
 ---
+description: LGTM core design patterns.
 paths:
   - "**/*.{rs,py,ts,tsx,js,jsx,go,java,kt,cs,rb,swift,scala}"
 headings: ["Core Principles", "Refactoring Standards", "Master Techniques For Maintainable Systems"]

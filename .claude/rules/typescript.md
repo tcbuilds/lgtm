@@ -1,4 +1,5 @@
 ---
+description: LGTM TypeScript and JavaScript engineering rules.
 paths:
   - "**/*.{ts,tsx,js,jsx,mjs,cjs}"
 headings: ["TypeScript And JavaScript"]

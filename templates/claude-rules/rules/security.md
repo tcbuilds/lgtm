@@ -1,4 +1,5 @@
 ---
+description: LGTM security rules.
 paths:
   - "**/*"
 headings: ["Non-Negotiable Rules", "Security Standards"]

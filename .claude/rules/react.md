@@ -1,4 +1,5 @@
 ---
+description: LGTM React engineering rules.
 paths:
   - "**/*.{tsx,jsx}"
 headings: ["React"]

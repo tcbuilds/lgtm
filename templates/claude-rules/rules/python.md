@@ -1,4 +1,5 @@
 ---
+description: LGTM Python engineering rules.
 paths:
   - "**/*.py"
   - "**/*.pyi"

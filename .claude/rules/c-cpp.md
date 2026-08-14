@@ -1,4 +1,5 @@
 ---
+description: LGTM C and C++ engineering rules.
 paths:
   - "**/*.{c,h,cc,cpp,cxx,hpp,hxx}"
 headings: ["C And C++"]

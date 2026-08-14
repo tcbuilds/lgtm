@@ -1,4 +1,5 @@
 ---
+description: LGTM React design patterns.
 paths:
   - "**/*.{tsx,jsx}"
 ---

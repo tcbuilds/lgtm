@@ -1,4 +1,5 @@
 ---
+description: LGTM error handling rules.
 paths:
   - "**/*.{rs,py,pyi,ts,tsx,js,jsx,mjs,cjs,go,java,kt,kts,cs,c,cc,cpp,cxx,h,hpp,sql,sh,bash,zsh,html,css,scss,sass,less,tf,tfvars}"
 headings: ["Error Handling"]
