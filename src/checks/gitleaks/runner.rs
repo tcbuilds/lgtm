@@ -224,15 +224,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn group_kill_closes_joined_child_pipes() {
-        // The short-lived child inherits stdout/stderr and is explicitly
-        // joined before the parent execs its long-lived direct process. This
-        // keeps the fixture non-orphaning under the production supervisor;
-        // escaped descendants are covered at the production boundary.
+    fn group_kill_closes_pipe_inheriting_child() {
+        // Keep the direct shell alive while it waits for a same-group child.
+        // The child holds both inherited pipes until the process-group kill;
+        // production escaped-descendant behavior is covered at its boundary.
         let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
-            .arg("( printf child ) & child=$!; wait \"$child\"; exec /bin/sleep 120");
+            .arg("( printf child; printf error >&2; exec /bin/sleep 120 ) & wait");
         prepare_command(&mut command);
         let mut child = command.spawn().expect("shell spawned");
         let pid = child.id();
@@ -242,17 +241,17 @@ mod tests {
         kill_child(&mut child, pid);
         let deadline = deadline_after(Duration::from_secs(2));
         assert_eq!(join_bounded(stdout, deadline), Some(b"child".to_vec()));
-        assert_eq!(join_bounded(stderr, deadline), Some(Vec::new()));
+        assert_eq!(join_bounded(stderr, deadline), Some(b"error".to_vec()));
     }
 
     #[test]
-    fn absolute_deadline_covers_joined_child_process_group() {
-        // The child exits and is reaped before the parent execs the direct
-        // process that hits the deadline; no descendant is orphaned.
+    fn absolute_deadline_covers_pipe_inheriting_child_cleanup() {
+        // The direct shell waits for its same-group child, so the timeout must
+        // kill the whole group and bound the inherited-pipe drain as well.
         let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
-            .arg("( sleep 0.05 ) & child=$!; wait \"$child\"; exec /bin/sleep 120");
+            .arg("( printf child; printf error >&2; exec /bin/sleep 120 ) & wait");
         let started = Instant::now();
         let captured = run_details_with_timeout(command, Duration::from_millis(100));
         assert!(captured.is_none());
