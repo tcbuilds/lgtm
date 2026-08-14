@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -79,6 +79,8 @@ struct TaskEvidence<'a> {
     policy_version: &'static str,
     policy_digest: String,
     binary_version: &'static str,
+    platform: String,
+    containment_version: &'static str,
     started_at_ms: u128,
     finished_at_ms: u128,
     touched_files_digest: String,
@@ -91,6 +93,7 @@ struct EvidenceMeta<'a> {
     session_id: Option<&'a str>,
     profile: &'a str,
     paths: &'a [String],
+    config_digest: &'a str,
     started_at_ms: u128,
     finished_at_ms: u128,
     tier: &'a str,
@@ -101,9 +104,14 @@ struct StoredTaskEvidence {
     task_id: String,
     results: Vec<EnforcementResult>,
     commands: Vec<commands::CommandEvidence>,
+    #[serde(default)]
     coverage: Vec<commands::CoverageEvidence>,
     policy_version: String,
     binary_version: String,
+    #[serde(default)]
+    platform: Option<String>,
+    #[serde(default)]
+    containment_version: Option<String>,
     touched_files_digest: String,
     config_digest: String,
     #[serde(default)]
@@ -157,6 +165,14 @@ pub(crate) fn run_pre_commit_gate(
     root: &Path,
     session_id: Option<&str>,
 ) -> Result<Option<String>, String> {
+    run_pre_commit_gate_with_budget(root, session_id, commands::STOP_COMMAND_BUDGET)
+}
+
+fn run_pre_commit_gate_with_budget(
+    root: &Path,
+    session_id: Option<&str>,
+    command_budget: Duration,
+) -> Result<Option<String>, String> {
     let paths = check_paths(root)?;
     if matching_full_evidence(root, session_id, &paths).is_some() {
         return Ok(None);
@@ -169,11 +185,13 @@ pub(crate) fn run_pre_commit_gate(
     });
     let mut input = std::io::Cursor::new(payload.to_string());
     let mut output = Vec::new();
-    let code = run_inner(
+    let code = run_inner_with_options(
         &mut input,
         &mut output,
         &InternalGateAdapter,
         crate::adapter::HookEvent::Stop,
+        command_budget,
+        true,
     )?;
     if code == ExitCode::SUCCESS {
         return Ok(None);
@@ -230,11 +248,33 @@ fn run_inner(
     adapter: &dyn HookAdapter,
     event: crate::adapter::HookEvent,
 ) -> Result<ExitCode, String> {
+    run_inner_with_budget(input, output, adapter, event, commands::STOP_COMMAND_BUDGET)
+}
+
+fn run_inner_with_budget(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    event: crate::adapter::HookEvent,
+    command_budget: Duration,
+) -> Result<ExitCode, String> {
+    run_inner_with_options(input, output, adapter, event, command_budget, false)
+}
+
+fn run_inner_with_options(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    event: crate::adapter::HookEvent,
+    command_budget: Duration,
+    pre_commit: bool,
+) -> Result<ExitCode, String> {
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Targeted);
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
-    let workspace_error = commands::load(&root).ok().and_then(|settings| {
+    let config_snapshot = commands::load_snapshot(&root);
+    let workspace_error = config_snapshot.settings.as_ref().ok().and_then(|settings| {
         settings
             .validate_workspace(hook_input.workspace.as_deref())
             .err()
@@ -245,7 +285,7 @@ fn run_inner(
         let touched = touched_paths(&root, hook_input.session_id.as_deref())?;
         (touched.files, touched.had_edits)
     };
-    let configured = configured_executables(&root);
+    let configured = configured_executables(config_snapshot.settings.as_ref().ok());
     let claims_only = !hook_input.check
         && !had_edits
         && crate::checks::claims::has_verification_claims(
@@ -291,20 +331,37 @@ fn run_inner(
         results.extend(crate::checks::auth::scan(&paths));
     }
     let tier = effective_tier(hook_input.tier.as_deref());
-    let mut command_run =
-        run_repository_commands(&root, hook_input.workspace.as_deref(), Some(tier), &paths);
-    bind_command_provenance(&root, &paths, &mut command_run.evidence);
-    let coverage = if tier == "full" {
-        commands::load(&root)
-            .map(|settings| {
-                let selected =
-                    select_coverage_commands(&settings.coverage, hook_input.workspace.as_deref());
-                commands::run_coverage(&root, &selected)
-            })
-            .unwrap_or_else(|_| commands::run_coverage(&root, &[]))
-    } else {
-        commands::run_coverage(&root, &[])
-    };
+    let mut budget = commands::ExecutionBudget::new(command_budget);
+    let (mut command_run, coverage) = run_repository_commands(
+        &root,
+        config_snapshot.settings.as_ref(),
+        hook_input.workspace.as_deref(),
+        Some(tier),
+        &paths,
+        &mut budget,
+    );
+    if budget.is_exhausted() {
+        command_run.results.push(commands::budget_unverified());
+    }
+    if budget.containment_failed() {
+        command_run.results.push(commands::containment_unverified());
+    }
+    if trusted_config_changed(&root, &config_snapshot) {
+        command_run
+            .results
+            .push(commands::config_mutation_unverified());
+    }
+    bind_command_provenance(&config_snapshot.digest, &paths, &mut command_run.evidence);
+    let mut post_policy_command_gate_results =
+        take_post_policy_command_gate_results(&mut command_run.results, pre_commit);
+    if pre_commit {
+        post_policy_command_gate_results.extend(
+            coverage
+                .iter()
+                .filter(|item| item.status != "passed" && item.status != "not_applicable")
+                .map(|item| commands::coverage_failure(&item.workspace_id, &item.status)),
+        );
+    }
     results.extend(command_run.results);
     results.extend(commands::coverage_results(&coverage));
     if !hook_input.check {
@@ -325,6 +382,20 @@ fn run_inner(
     crate::policy::profile::apply_resolved_results(&registry, &mut results);
     crate::policy::overrides::apply_results(&overrides, &mut results);
     crate::policy::waivers::apply(&waivers, &mut results);
+    if trusted_config_changed(&root, &config_snapshot)
+        && !results
+            .iter()
+            .chain(&post_policy_command_gate_results)
+            .any(is_config_result)
+    {
+        let mut mutation = commands::config_mutation_unverified();
+        if pre_commit {
+            mutation.status = Status::Failed;
+            mutation.severity = Severity::Error;
+        }
+        results.push(mutation);
+    }
+    results.append(&mut post_policy_command_gate_results);
     if let Some(reason) = workspace_error {
         results.push(commands::invalid_workspace(&reason));
     }
@@ -334,6 +405,7 @@ fn run_inner(
             session_id: hook_input.session_id.as_deref(),
             profile: &profile,
             paths: &paths,
+            config_digest: &config_snapshot.digest,
             started_at_ms,
             finished_at_ms: unix_ms(),
             tier,
@@ -345,6 +417,36 @@ fn run_inner(
         &overrides,
         &waivers,
     )?;
+
+    // Evidence persistence is part of the authorization transaction. If the
+    // trusted config path changed while the first record was being made
+    // durable, append a non-reusable denial record before deciding the gate.
+    if trusted_config_changed(&root, &config_snapshot) && !results.iter().any(is_config_result) {
+        let mut mutation = commands::config_mutation_unverified();
+        if pre_commit {
+            mutation.status = Status::Failed;
+            mutation.severity = Severity::Error;
+        }
+        results.push(mutation);
+        append_task_evidence(
+            EvidenceMeta {
+                root: &root,
+                session_id: hook_input.session_id.as_deref(),
+                profile: &profile,
+                paths: &paths,
+                config_digest: &config_snapshot.digest,
+                started_at_ms,
+                finished_at_ms: unix_ms(),
+                tier,
+            },
+            &results,
+            &command_run.evidence,
+            &coverage,
+            &policy_sources,
+            &overrides,
+            &waivers,
+        )?;
+    }
 
     let failures: Vec<&EnforcementResult> = results
         .iter()
@@ -378,8 +480,8 @@ fn select_coverage_commands(
 
 // Executable names the repository configures as required commands. Claim matching
 // is limited to these so backticked prose cannot invent an unprovable command.
-fn configured_executables(root: &Path) -> Vec<String> {
-    let Ok(settings) = commands::load(root) else {
+fn configured_executables(settings: Option<&commands::Settings>) -> Vec<String> {
+    let Some(settings) = settings else {
         return Vec::new();
     };
     let structured = settings
@@ -412,11 +514,13 @@ fn legacy_version_result() -> EnforcementResult {
 
 fn run_repository_commands(
     root: &Path,
+    settings: Result<&commands::Settings, &String>,
     workspace: Option<&str>,
     tier: Option<&str>,
     touched_paths: &[String],
-) -> commands::RunResults {
-    match commands::load(root) {
+    budget: &mut commands::ExecutionBudget,
+) -> (commands::RunResults, Vec<commands::CoverageEvidence>) {
+    match settings {
         Ok(configured) if !configured.structured.is_empty() => {
             let selected: Vec<_> = configured
                 .structured
@@ -426,19 +530,41 @@ fn run_repository_commands(
                 .filter(|command| workspace_touched(root, &command.cwd, touched_paths))
                 .cloned()
                 .collect();
-            commands::run_structured(root, &selected)
+            let command_run = commands::run_structured_with_budget(root, &selected, budget);
+            let coverage = if tier == Some("full") {
+                let selected = select_coverage_commands(&configured.coverage, workspace);
+                commands::run_coverage_with_budget(root, &selected, budget)
+            } else {
+                commands::run_coverage(root, &[])
+            };
+            (command_run, coverage)
         }
-        Ok(configured) if !configured.commands.is_empty() => commands::RunResults {
-            results: vec![commands::config_unverified(
-                "legacy config requires `lgtm init --migrate-config`",
-            )],
-            evidence: Vec::new(),
-        },
-        Ok(_) => commands::run_structured(root, &[]),
-        Err(reason) => commands::RunResults {
-            results: vec![commands::config_unverified(&reason)],
-            evidence: Vec::new(),
-        },
+        Ok(configured) if !configured.commands.is_empty() => (
+            commands::RunResults {
+                results: vec![commands::config_unverified(
+                    "legacy config requires `lgtm init --migrate-config`",
+                )],
+                evidence: Vec::new(),
+            },
+            commands::run_coverage(root, &[]),
+        ),
+        Ok(configured) => {
+            let command_run = commands::run_structured_with_budget(root, &[], budget);
+            let coverage = if tier == Some("full") {
+                let selected = select_coverage_commands(&configured.coverage, workspace);
+                commands::run_coverage_with_budget(root, &selected, budget)
+            } else {
+                commands::run_coverage(root, &[])
+            };
+            (command_run, coverage)
+        }
+        Err(reason) => (
+            commands::RunResults {
+                results: vec![commands::config_unverified(reason)],
+                evidence: Vec::new(),
+            },
+            commands::run_coverage(root, &[]),
+        ),
     }
 }
 
@@ -453,17 +579,13 @@ fn workspace_touched(root: &Path, cwd: &Path, touched_paths: &[String]) -> bool 
 }
 
 fn bind_command_provenance(
-    root: &Path,
+    config_digest: &str,
     paths: &[String],
     evidence: &mut [commands::CommandEvidence],
 ) {
-    let config_digest = digest_bytes(&crate::fsutil::read_optional_bounded(
-        &root.join(".lgtm/config.json"),
-        256 * 1024,
-    ));
-    let touched_files_digest = digest_paths(root, paths);
+    let touched_files_digest = digest_paths(paths);
     for item in evidence {
-        item.config_digest = Some(config_digest.clone());
+        item.config_digest = Some(config_digest.to_string());
         item.touched_files_digest = Some(touched_files_digest.clone());
         item.policy_version = Some(crate::policy::POLICY_BUNDLE_VERSION.to_string());
         item.binary_version = Some(env!("CARGO_PKG_VERSION").to_string());
@@ -476,28 +598,128 @@ fn matching_full_evidence(
     paths: &[String],
 ) -> Option<Vec<commands::CommandEvidence>> {
     let session_id = session_id?;
-    let expected_config = digest_bytes(&crate::fsutil::read_optional_bounded(
-        &root.join(".lgtm/config.json"),
-        256 * 1024,
-    ));
-    let expected_files = digest_paths(root, paths);
+    // Reuse is authorization, not just a digest lookup: revalidate that the
+    // current path is a trusted regular file (or an absent default config) and
+    // parse the exact bytes whose digest is compared with durable evidence.
+    let snapshot = commands::load_snapshot(root);
+    let settings = snapshot.settings.as_ref().ok()?;
+    if !settings.commands.is_empty() && settings.structured.is_empty() {
+        return None;
+    }
+    let selected_commands = settings
+        .structured
+        .iter()
+        .filter(|command| command.tier == "full")
+        .filter(|command| workspace_touched(root, &command.cwd, paths))
+        .collect::<Vec<_>>();
+    let expected_files = digest_paths(paths);
     let raw = crate::fsutil::read_optional_bounded(
         &root.join(".lgtm/evidence/evidence.jsonl"),
         MAX_TASK_EVIDENCE_BYTES,
     );
-    raw.lines().rev().find_map(|line| {
+    let record = raw.lines().rev().find_map(|line| {
         let record: StoredTaskEvidence = serde_json::from_str(line).ok()?;
         (record.task_id == session_id
-            && stored_gate_passed(&record)
             && record.tier.as_deref() == Some("full")
             && record.policy_version == crate::policy::POLICY_BUNDLE_VERSION
             && record.binary_version == env!("CARGO_PKG_VERSION")
-            && record.config_digest == expected_config
-            && record.touched_files_digest == expected_files)
-            .then_some(record.commands)
-    })
+            && record.platform.as_deref() == Some(commands::platform_id().as_str())
+            && record.containment_version.as_deref() == Some(commands::CONTAINMENT_VERSION))
+        .then_some(record)
+    })?;
+    if record.config_digest != snapshot.digest || record.touched_files_digest != expected_files {
+        return None;
+    }
+
+    full_record_passed(&record, &selected_commands, &settings.coverage).then_some(record.commands)
 }
 
+fn full_record_passed(
+    record: &StoredTaskEvidence,
+    selected_commands: &[&commands::StructuredCommand],
+    expected_coverage: &[commands::CoverageCommand],
+) -> bool {
+    if record
+        .results
+        .iter()
+        .any(is_non_reusable_command_gate_result)
+        || record
+            .results
+            .iter()
+            .any(|result| result.is_failure() && result.severity == Severity::Error)
+    {
+        return false;
+    }
+
+    let passed_required_results = record
+        .results
+        .iter()
+        .filter(|result| {
+            commands::is_required_command_result(result) && result.status == Status::Passed
+        })
+        .count();
+    if passed_required_results != selected_commands.len()
+        || record.commands.len() != selected_commands.len()
+    {
+        return false;
+    }
+    if !record
+        .commands
+        .iter()
+        .zip(selected_commands)
+        .all(|(evidence, expected)| {
+            evidence.exit_code == Some(0)
+                && evidence.started_at_ms.is_some()
+                && evidence.finished_at_ms.is_some()
+                && evidence.argv == expected.argv
+                && evidence.cwd.as_deref() == Some(expected.cwd.to_string_lossy().as_ref())
+                && evidence.workspace_id.as_deref() == Some(expected.workspace_id.as_str())
+        })
+    {
+        return false;
+    }
+
+    if expected_coverage.is_empty() {
+        return record.coverage.len() == 1 && record.coverage[0].status == "not_applicable";
+    }
+    record.coverage.len() == expected_coverage.len()
+        && record
+            .coverage
+            .iter()
+            .zip(expected_coverage)
+            .all(|(evidence, expected)| coverage_obligation_passed(evidence, expected))
+}
+
+fn coverage_obligation_passed(
+    evidence: &commands::CoverageEvidence,
+    expected: &commands::CoverageCommand,
+) -> bool {
+    evidence.status == "passed"
+        && evidence.measured_at_ms.is_some()
+        && evidence.workspace_id == expected.workspace_id
+        && evidence.tool.as_deref() == expected.argv.first().map(String::as_str)
+        && evidence.scope.as_deref() == Some(expected.scope.as_str())
+        && expected.line_threshold_percent.is_none_or(|threshold| {
+            evidence
+                .line_percent
+                .is_some_and(|value| value >= f64::from(threshold))
+        })
+        && expected.branch_threshold_percent.is_none_or(|threshold| {
+            evidence
+                .branch_percent
+                .is_some_and(|value| value >= f64::from(threshold))
+        })
+}
+
+fn trusted_config_changed(root: &Path, original: &commands::ConfigSnapshot) -> bool {
+    if original.settings.is_err() {
+        return false;
+    }
+    let current = commands::load_snapshot(root);
+    current.settings.is_err() || current.digest != original.digest
+}
+
+#[cfg(test)]
 fn stored_gate_passed(record: &StoredTaskEvidence) -> bool {
     let has_blocking_failure = record
         .results
@@ -516,6 +738,46 @@ fn stored_gate_passed(record: &StoredTaskEvidence) -> bool {
         .iter()
         .all(|coverage| matches!(coverage.status.as_str(), "passed" | "not_applicable"));
     !has_blocking_failure && command_results_verified && commands_verified && coverage_verified
+}
+
+fn is_aggregate_budget_result(result: &EnforcementResult) -> bool {
+    result.evidence.check == commands::budget_unverified().evidence.check
+}
+
+fn is_config_result(result: &EnforcementResult) -> bool {
+    result.evidence.check == commands::config_unverified("").evidence.check
+}
+
+fn is_non_reusable_command_gate_result(result: &EnforcementResult) -> bool {
+    is_aggregate_budget_result(result)
+        || is_config_result(result)
+        || (commands::is_required_command_result(result)
+            && result.status != Status::Passed
+            && result.status != Status::NotApplicable)
+        || (result.evidence.check == "command.coverage"
+            && result.status != Status::Passed
+            && result.status != Status::NotApplicable)
+}
+
+fn take_post_policy_command_gate_results(
+    results: &mut Vec<EnforcementResult>,
+    pre_commit: bool,
+) -> Vec<EnforcementResult> {
+    let mut protected = Vec::new();
+    results.retain(|result| {
+        if is_non_reusable_command_gate_result(result) {
+            let mut result = result.clone();
+            if pre_commit {
+                result.status = Status::Failed;
+                result.severity = Severity::Error;
+            }
+            protected.push(result);
+            false
+        } else {
+            true
+        }
+    });
+    protected
 }
 
 fn read_diff_baseline(root: &Path, session_id: Option<&str>) -> Option<BTreeSet<String>> {
@@ -773,13 +1035,12 @@ fn append_task_evidence(
         policy_version: crate::policy::POLICY_BUNDLE_VERSION,
         policy_digest: crate::policy::bundle_digest(),
         binary_version: env!("CARGO_PKG_VERSION"),
+        platform: commands::platform_id(),
+        containment_version: commands::CONTAINMENT_VERSION,
         started_at_ms: metadata.started_at_ms,
         finished_at_ms: metadata.finished_at_ms,
-        touched_files_digest: digest_paths(root, metadata.paths),
-        config_digest: digest_bytes(&crate::fsutil::read_optional_bounded(
-            &root.join(".lgtm/config.json"),
-            256 * 1024,
-        )),
+        touched_files_digest: digest_paths(metadata.paths),
+        config_digest: metadata.config_digest.to_string(),
         tier: metadata.tier,
     };
     let mut line =
@@ -795,7 +1056,7 @@ fn unix_ms() -> u128 {
         .map_or(0, |duration| duration.as_millis())
 }
 
-fn digest_paths(root: &Path, paths: &[String]) -> String {
+fn digest_paths(paths: &[String]) -> String {
     let mut material = String::new();
     for path in paths {
         material.push_str(path);
@@ -806,7 +1067,6 @@ fn digest_paths(root: &Path, paths: &[String]) -> String {
         ));
         material.push('\0');
     }
-    let _ = root;
     digest_bytes(&material)
 }
 
@@ -1041,6 +1301,9 @@ fn write_block_decision(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     fn stored_record(
         severity: Severity,
         exit_code: Option<i32>,
@@ -1086,6 +1349,8 @@ mod tests {
             }],
             policy_version: crate::policy::POLICY_BUNDLE_VERSION.to_string(),
             binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            platform: Some(commands::platform_id()),
+            containment_version: Some(commands::CONTAINMENT_VERSION.to_string()),
             touched_files_digest: "files".to_string(),
             config_digest: "config".to_string(),
             tier: Some("full".to_string()),
@@ -1162,6 +1427,614 @@ mod tests {
         let paths = check_paths(&root).expect("check paths");
         assert!(paths.iter().any(|path| path.ends_with("src/app.py")));
         assert!(!paths.iter().any(|path| path.contains("semgrep-python")));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn aggregate_budget_unverified_result_cannot_report_passed() {
+        let mut output = Vec::new();
+        write_summary(
+            &mut output,
+            &ClaudeAdapter,
+            crate::adapter::HookEvent::Stop,
+            &[commands::budget_unverified()],
+        )
+        .expect("summary writes");
+        let summary = String::from_utf8(output).expect("summary is UTF-8");
+        assert!(summary.contains("lgtm: action required"));
+        assert!(summary.contains("UNVERIFIED"));
+        assert!(!summary.contains("lgtm: passed"));
+    }
+
+    #[test]
+    fn incomplete_command_gate_evidence_is_not_reused_but_unrelated_unverified_is() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-full-evidence-reuse-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let evidence_path = root.join(".lgtm/evidence/evidence.jsonl");
+        std::fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
+            .expect("evidence directory");
+        let config_digest = digest_bytes("");
+        let touched_files_digest = digest_paths(&[]);
+        let record = |results: Vec<serde_json::Value>| {
+            serde_json::json!({
+                "task_id": "aggregate-budget",
+                "rules": {
+                    "passed": 0,
+                    "failed": 0,
+                    "warning": 0,
+                    "skipped": 0,
+                    "not_applicable": 0,
+                    "unverified": results.iter().filter(|result| result["status"] == "unverified").count(),
+                    "overridden": 0,
+                    "waived": 0
+                },
+                "results": results,
+                "commands": [],
+                "coverage": [{
+                    "workspace_id": "repository",
+                    "status": "not_applicable",
+                    "tool": null,
+                    "scope": null,
+                    "line_percent": null,
+                    "branch_percent": null,
+                    "measured_at_ms": null
+                }],
+                "policy_version": crate::policy::POLICY_BUNDLE_VERSION,
+                "binary_version": env!("CARGO_PKG_VERSION"),
+                "platform": commands::platform_id(),
+                "containment_version": commands::CONTAINMENT_VERSION,
+                "touched_files_digest": touched_files_digest,
+                "config_digest": config_digest,
+                "tier": "full"
+            })
+        };
+        let mut incomplete_command = commands::config_unverified("ordinary command");
+        incomplete_command.evidence.check = "command.required".to_string();
+        let mut unrelated_unverified = commands::config_unverified("unrelated check");
+        unrelated_unverified.evidence.check = "native.unrelated".to_string();
+        let cases = [
+            (
+                vec![serde_json::to_value(commands::budget_unverified()).expect("cutoff result")],
+                false,
+            ),
+            (
+                vec![
+                    serde_json::to_value(commands::config_unverified("invalid config"))
+                        .expect("config result"),
+                ],
+                false,
+            ),
+            (
+                vec![serde_json::to_value(incomplete_command).expect("command result")],
+                false,
+            ),
+            (
+                vec![serde_json::to_value(unrelated_unverified).expect("unrelated result")],
+                true,
+            ),
+            (Vec::new(), true),
+        ];
+
+        for (results, reusable) in cases {
+            std::fs::write(&evidence_path, format!("{}\n", record(results)))
+                .expect("evidence record");
+            assert_eq!(
+                matching_full_evidence(&root, Some("aggregate-budget"), &[]).is_some(),
+                reusable,
+                "cutoff-specific evidence reuse decision"
+            );
+        }
+
+        for (field, value) in [
+            ("platform", "different-platform"),
+            ("containment_version", "different-containment-version"),
+            ("containment_version", "linux-isolated-subreaper-v1"),
+        ] {
+            let mut mismatched = record(Vec::new());
+            mismatched[field] = serde_json::json!(value);
+            std::fs::write(&evidence_path, format!("{mismatched}\n"))
+                .expect("mismatched evidence record");
+            assert!(
+                matching_full_evidence(&root, Some("aggregate-budget"), &[]).is_none(),
+                "{field} mismatch must prevent authorization reuse"
+            );
+        }
+
+        std::fs::remove_dir_all(root).expect("temporary evidence directory removal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pre_commit_gate_denies_aggregate_budget_exhaustion() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-pre-commit-budget-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
+        let command = root.join(".lgtm/bin/slow");
+        std::fs::write(&command, "#!/bin/sh\nexec /bin/sleep 1\n").expect("fixture command");
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture permissions");
+        std::fs::write(
+            root.join(".lgtm/config.json"),
+            serde_json::json!({
+                "version": "2",
+                "profile": "prototype",
+                "workspaces": [{
+                    "id": "root",
+                    "language": "shell",
+                    "root": ".",
+                    "commands": [{
+                        "argv": [command.to_string_lossy()],
+                        "cwd": ".",
+                        "timeout_seconds": 30,
+                        "tier": "full",
+                        "purpose": "test",
+                        "source": "fixture",
+                        "confidence": "high"
+                    }],
+                    "coverage": []
+                }],
+                "disabled_rules": [],
+                "severity_overrides": {}
+            })
+            .to_string(),
+        )
+        .expect("fixture config");
+        std::fs::write(
+            root.join(".lgtm/waivers.json"),
+            serde_json::json!({
+                "waivers": [{
+                    "rule_id": "required-repository-commands",
+                    "reason": "fixture waiver must not authorize a truncated gate",
+                    "owner": "test-owner",
+                    "expires": "2999-01-01"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("fixture waiver");
+
+        let reason = run_pre_commit_gate_with_budget(
+            &root,
+            Some("pre-commit-budget"),
+            Duration::from_millis(50),
+        )
+        .expect("pre-commit gate runs")
+        .expect("aggregate cutoff denies commit");
+
+        assert!(reason.contains("aggregate execution budget expired"));
+        let evidence =
+            std::fs::read_to_string(root.join(".lgtm/evidence/evidence.jsonl")).expect("evidence");
+        let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("record");
+        assert_eq!(record["profile"], "prototype");
+        assert_eq!(record["waivers"].as_array().map(Vec::len), Some(1));
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["status"] == "failed"
+                    && result["evidence"]["check"] == commands::budget_unverified().evidence.check
+            })
+        }));
+
+        std::fs::remove_dir_all(root).expect("temporary fixture removal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn coverage_only_cutoff_denies_pre_commit_with_stable_aggregate_evidence() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-coverage-only-budget-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
+        let coverage = root.join(".lgtm/bin/coverage");
+        std::fs::write(&coverage, "#!/bin/sh\nexec /bin/sleep 1\n").expect("coverage command");
+        std::fs::set_permissions(&coverage, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture permissions");
+        std::fs::write(
+            root.join(".lgtm/config.json"),
+            serde_json::json!({
+                "version": "2",
+                "profile": "default",
+                "workspaces": [{
+                    "id": "root",
+                    "language": "shell",
+                    "root": ".",
+                    "commands": [],
+                    "coverage": [{
+                        "argv": [coverage.to_string_lossy()],
+                        "cwd": ".",
+                        "timeout_seconds": 30,
+                        "scope": "unit",
+                        "line_threshold_percent": 80,
+                        "branch_threshold_percent": 80
+                    }]
+                }],
+                "disabled_rules": [],
+                "severity_overrides": {}
+            })
+            .to_string(),
+        )
+        .expect("fixture config");
+
+        let reason = run_pre_commit_gate_with_budget(
+            &root,
+            Some("coverage-only-budget"),
+            Duration::from_millis(50),
+        )
+        .expect("pre-commit gate runs")
+        .expect("coverage cutoff denies commit");
+        assert!(reason.contains("aggregate execution budget expired"));
+
+        let evidence =
+            std::fs::read_to_string(root.join(".lgtm/evidence/evidence.jsonl")).expect("evidence");
+        let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("record");
+        assert_eq!(record["coverage"][0]["status"], "unverified");
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["status"] == "failed"
+                    && result["evidence"]["check"] == "command.aggregate_budget"
+            })
+        }));
+
+        std::fs::remove_dir_all(root).expect("temporary fixture removal");
+    }
+
+    #[test]
+    fn invalid_v2_command_count_is_rejected_by_profile_validation() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-invalid-v2-precommit-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join(".lgtm")).expect("fixture directory");
+        let commands = (0..=crate::config_v2::MAX_STRUCTURED_COMMANDS)
+            .map(|_| {
+                serde_json::json!({
+                    "argv": ["true"],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                })
+            })
+            .collect::<Vec<_>>();
+        std::fs::write(
+            root.join(".lgtm/config.json"),
+            serde_json::json!({
+                "version": "2",
+                "profile": "default",
+                "workspaces": [{
+                    "id": "root",
+                    "language": "shell",
+                    "root": ".",
+                    "commands": commands,
+                    "coverage": []
+                }],
+                "disabled_rules": [],
+                "severity_overrides": {}
+            })
+            .to_string(),
+        )
+        .expect("invalid V2 config");
+
+        let payload = serde_json::json!({
+            "cwd": root,
+            "session_id": "invalid-v2",
+            "check": true,
+            "tier": "full"
+        });
+        let mut input = std::io::Cursor::new(payload.to_string());
+        let mut output = Vec::new();
+        let check_error = run_inner_with_budget(
+            &mut input,
+            &mut output,
+            &ClaudeAdapter,
+            crate::adapter::HookEvent::Stop,
+            Duration::from_secs(1),
+        )
+        .expect_err("profile validation rejects the invalid V2 config");
+        assert!(check_error.contains("config V2 is invalid"));
+
+        let pre_commit_error =
+            run_pre_commit_gate_with_budget(&root, Some("invalid-v2"), Duration::from_secs(1))
+                .expect_err("pre-commit fails closed on invalid profile config");
+        assert!(pre_commit_error.contains("config V2 is invalid"));
+        assert!(!root.join(".lgtm/evidence/evidence.jsonl").exists());
+
+        std::fs::remove_dir_all(root).expect("temporary fixture removal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_replacement_denies_pre_commit_and_binds_original_bytes() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-config-replacement-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
+        let command = root.join(".lgtm/bin/replace-config");
+        std::fs::write(
+            &command,
+            format!(
+                "#!/bin/sh\nprintf '{{}}\\n' > {}\n",
+                root.join(".lgtm/config.json").display()
+            ),
+        )
+        .expect("replacement command");
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture permissions");
+        let original = serde_json::json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "root",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [command.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string();
+        std::fs::write(root.join(".lgtm/config.json"), &original).expect("fixture config");
+        let original_digest = digest_bytes(&original);
+
+        let reason = run_pre_commit_gate_with_budget(
+            &root,
+            Some("config-replacement"),
+            Duration::from_secs(1),
+        )
+        .expect("pre-commit gate runs")
+        .expect("config replacement denies commit");
+        assert!(reason.contains("changed after repository commands were configured"));
+
+        let evidence =
+            std::fs::read_to_string(root.join(".lgtm/evidence/evidence.jsonl")).expect("evidence");
+        let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("record");
+        assert_eq!(record["config_digest"], original_digest);
+        assert_eq!(record["commands"][0]["config_digest"], original_digest);
+        assert_eq!(record["commands"][0]["exit_code"], 0);
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["status"] == "failed" && result["evidence"]["check"] == "command.config"
+            })
+        }));
+        assert!(matching_full_evidence(&root, Some("config-replacement"), &[]).is_none());
+
+        std::fs::remove_dir_all(root).expect("temporary fixture removal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn joined_last_command_is_nonpassing_and_not_reusable() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-joined-command-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
+        let command = root.join(".lgtm/bin/joined-command");
+        // Detached-descendant containment is exercised at the production
+        // supervisor boundary; this fixture joins its child before failing.
+        std::fs::write(
+            &command,
+            "#!/bin/sh\n( sleep 0.05 ) & child=$!; wait \"$child\"; exit 7\n",
+        )
+        .expect("joined failing command");
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture permissions");
+        let original = serde_json::json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "root",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [command.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string();
+        std::fs::write(root.join(".lgtm/config.json"), &original).expect("fixture config");
+
+        let decision = run_pre_commit_gate_with_budget(
+            &root,
+            Some("delayed-config-replacement"),
+            Duration::from_secs(1),
+        )
+        .expect("pre-commit gate runs")
+        .expect("joined failing command denies pre-commit");
+        assert!(decision.contains("exit status 7"));
+        assert_eq!(
+            std::fs::read_to_string(root.join(".lgtm/config.json")).expect("config remains"),
+            original
+        );
+        assert!(matching_full_evidence(&root, Some("delayed-config-replacement"), &[]).is_none());
+
+        std::fs::remove_dir_all(root).expect("temporary fixture removal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_stop_budget_records_cutoff_evidence_and_action_required_summary() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-stop-budget-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join(".lgtm")).expect("config directory");
+        std::fs::create_dir_all(root.join("bin")).expect("binary directory");
+        let active_started = root.join("active-started");
+        let later_started = root.join("later-started");
+        let coverage_started = root.join("coverage-started");
+        let active = root.join("bin/active");
+        let later = root.join("bin/later");
+        let coverage = root.join("bin/coverage");
+        for (path, body) in [
+            (
+                &active,
+                format!("touch {}; exec /bin/sleep 1", active_started.display()),
+            ),
+            (&later, format!("touch {}; exit 0", later_started.display())),
+            (
+                &coverage,
+                format!(
+                    "touch {}; echo 'line coverage: 95% branch coverage: 95%'",
+                    coverage_started.display()
+                ),
+            ),
+        ] {
+            std::fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("script");
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .expect("script permissions");
+        }
+        std::fs::write(
+            root.join(".lgtm/config.json"),
+            serde_json::json!({
+                "version": "2",
+                "profile": "default",
+                "workspaces": [{
+                    "id": "root",
+                    "language": "shell",
+                    "root": ".",
+                    "commands": [
+                        {
+                            "argv": [active.to_string_lossy()],
+                            "cwd": ".",
+                            "timeout_seconds": 30,
+                            "tier": "full",
+                            "purpose": "test",
+                            "source": "fixture",
+                            "confidence": "high"
+                        },
+                        {
+                            "argv": [later.to_string_lossy()],
+                            "cwd": ".",
+                            "timeout_seconds": 30,
+                            "tier": "full",
+                            "purpose": "test",
+                            "source": "fixture",
+                            "confidence": "high"
+                        }
+                    ],
+                    "coverage": [{
+                        "argv": [coverage.to_string_lossy()],
+                        "cwd": ".",
+                        "timeout_seconds": 30,
+                        "scope": "unit",
+                        "line_threshold_percent": 80,
+                        "branch_threshold_percent": 80
+                    }]
+                }],
+                "disabled_rules": [],
+                "severity_overrides": {}
+            })
+            .to_string(),
+        )
+        .expect("config");
+
+        let payload = serde_json::json!({
+            "cwd": root,
+            "session_id": "aggregate-budget",
+            "check": true,
+            "tier": "full"
+        });
+        let mut input = std::io::Cursor::new(payload.to_string());
+        let mut output = Vec::new();
+        let code = run_inner_with_budget(
+            &mut input,
+            &mut output,
+            &ClaudeAdapter,
+            crate::adapter::HookEvent::Stop,
+            Duration::from_millis(100),
+        )
+        .expect("Stop runs");
+
+        assert_eq!(code, ExitCode::SUCCESS);
+        let summary = String::from_utf8(output).expect("summary UTF-8");
+        assert!(summary.contains("lgtm: action required"));
+        assert!(summary.contains("unverified"));
+        assert!(active_started.exists());
+        assert!(!later_started.exists());
+        assert!(!coverage_started.exists());
+        let evidence =
+            std::fs::read_to_string(root.join(".lgtm/evidence/evidence.jsonl")).expect("evidence");
+        let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("record");
+        assert_eq!(record["tier"], "full");
+        assert_eq!(record["commands"][0]["exit_code"], serde_json::Value::Null);
+        assert_eq!(record["commands"][1]["exit_code"], serde_json::Value::Null);
+        assert_eq!(
+            record["commands"][1]["started_at_ms"],
+            serde_json::Value::Null
+        );
+        assert_eq!(record["coverage"][0]["status"], "unverified");
+        assert_eq!(
+            record["coverage"][0]["line_percent"],
+            serde_json::Value::Null
+        );
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("aggregate execution budget expired"))
+            })
+        }));
+        let results: Vec<EnforcementResult> =
+            serde_json::from_value(record["results"].clone()).expect("typed results");
+        assert!(results.iter().any(is_aggregate_budget_result));
+        assert!(results.iter().any(|result| {
+            is_aggregate_budget_result(result) && result.status == Status::Unverified
+        }));
+
         std::fs::remove_dir_all(root).ok();
     }
 }

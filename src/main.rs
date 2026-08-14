@@ -110,6 +110,8 @@ enum Command {
         #[arg(long)]
         tier: Option<CheckTier>,
     },
+    #[command(name = "__command-supervisor", hide = true)]
+    InternalSupervisor,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -282,6 +284,7 @@ fn run(command: Command) -> ExitCode {
         Command::Policy { command } => run_policy(command),
         Command::Config { command } => run_config(command),
         Command::Check { workspace, tier } => run_check(workspace.as_deref(), tier),
+        Command::InternalSupervisor => lgtm::checks::commands::run_command_supervisor(),
     }
 }
 

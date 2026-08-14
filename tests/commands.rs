@@ -441,6 +441,220 @@ fn stop_is_targeted_and_reuses_successful_precommit_evidence() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
+    let repo = TempRepo::new();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .expect("git starts");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    git(&["init", "-q"]);
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    repo.write(
+        "bin/escape-check",
+        "#!/bin/sh\nprintf x >> \"$1\"\nsetsid -f /bin/sh -c 'sleep 1; cp \"$1\" \"$2\"; git -C \"$3\" add .lgtm/config.json' sh \"$2\" \"$3\" \"$4\" </dev/null >/dev/null 2>&1\nexit 0\n",
+    );
+    let command = repo.path().join("bin/escape-check");
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    let marker = repo.path().join("escape-runs");
+    let replacement_path = repo.path().join(".git/replacement-config.json");
+    let config_path = repo.path().join(".lgtm/config.json");
+    let replacement = json!({
+        "version": "2",
+        "profile": "default",
+        "workspaces": [],
+        "disabled_rules": [],
+        "severity_overrides": {}
+    })
+    .to_string();
+    std::fs::write(&replacement_path, &replacement).expect("replacement config");
+    let original = json!({
+        "version": "2",
+        "profile": "default",
+        "workspaces": [{
+            "id": "tests",
+            "language": "shell",
+            "root": ".",
+            "commands": [{
+                "argv": [
+                    command.to_string_lossy(),
+                    marker.to_string_lossy(),
+                    replacement_path.to_string_lossy(),
+                    config_path.to_string_lossy(),
+                    repo.path().to_string_lossy()
+                ],
+                "cwd": ".",
+                "timeout_seconds": 30,
+                "tier": "full",
+                "purpose": "test",
+                "source": "fixture",
+                "confidence": "high"
+            }],
+            "coverage": []
+        }],
+        "disabled_rules": [],
+        "severity_overrides": {}
+    })
+    .to_string();
+    repo.write(".lgtm/config.json", &original);
+    git(&["add", "src/app.rs", "bin/escape-check", ".lgtm/config.json"]);
+    assert!(
+        run_post_tool_use(&repo, "session-escape", "src/app.rs")
+            .status
+            .success()
+    );
+
+    for expected_runs in ["x", "xx"] {
+        let authorization =
+            run_pre_tool_use_command(&repo, "session-escape", "sleep 2 && git commit -m test");
+        assert!(authorization.status.success());
+        let decision: Value =
+            serde_json::from_slice(&authorization.stdout).expect("containment deny decision");
+        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(
+            decision["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("descendant outlived the direct command"))
+        );
+        assert_eq!(repo.read("escape-runs"), expected_runs);
+
+        let record = latest_evidence(&repo);
+        assert_eq!(record["commands"][0]["exit_code"], Value::Null);
+        assert_eq!(
+            record["platform"],
+            format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+        );
+        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v2");
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["status"] == "failed"
+                    && result["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("descendant outlived"))
+            })
+        }));
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(1_200));
+    assert_eq!(repo.read(".lgtm/config.json"), original);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn adopted_zombie_before_first_proc_scan_denies_and_is_not_reused() {
+    let repo = TempRepo::new();
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    repo.write(
+        "bin/adopted-zombie-check",
+        "#!/bin/sh\nsetsid -f /bin/sh -c 'printf x >> \"$1\"; sleep 0.05; exit 0' sh \"$1\" </dev/null >/dev/null 2>&1 &\nwhile [ ! -f \"$1\" ]; do sleep 0.01; done\nsleep 0.2\nexit 0\n",
+    );
+    let command = repo.path().join("bin/adopted-zombie-check");
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    let marker = repo.path().join("adopted-zombie-runs");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "tests",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [command.to_string_lossy(), marker.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "adopted-zombie", "src/app.rs")
+            .status
+            .success()
+    );
+
+    for expected_runs in ["x", "xx"] {
+        let output = run_pre_tool_use_command(&repo, "adopted-zombie", "git commit -m test");
+        assert!(output.status.success());
+        let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision JSON");
+        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(
+            decision["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("descendant outlived the direct command"))
+        );
+        assert_eq!(repo.read("adopted-zombie-runs"), expected_runs);
+
+        let record = latest_evidence(&repo);
+        assert_eq!(record["commands"][0]["exit_code"], Value::Null);
+        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v2");
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["status"] == "failed"
+                    && result["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("descendant outlived"))
+            })
+        }));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn isolated_supervisor_preserves_unrelated_child_waitability() {
+    let mut unrelated = Command::new("/bin/sh")
+        .args(["-c", "sleep 0.2; exit 23"])
+        .spawn()
+        .expect("unrelated child starts");
+    let request = json!({
+        "argv": ["/bin/true"],
+        "cwd": ".",
+        "timeout_ms": 1_000,
+        "path": std::env::var("PATH").ok(),
+        "home": std::env::var("HOME").ok(),
+        "ci": std::env::var("CI").ok()
+    });
+    let supervisor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .arg("__command-supervisor")
+        .env_clear()
+        .env(
+            "LGTM_INTERNAL_COMMAND_SUPERVISOR_REQUEST",
+            request.to_string(),
+        )
+        .output()
+        .expect("isolated supervisor starts");
+    assert!(supervisor.status.success());
+    let response: Value = serde_json::from_slice(&supervisor.stdout).expect("supervisor response");
+    assert_eq!(response["outcome"], "completed");
+    assert_eq!(response["code"], 0);
+
+    let status = unrelated.wait().expect("unrelated owner can still wait");
+    assert_eq!(status.code(), Some(23));
+}
+
 #[test]
 fn precommit_reuses_full_evidence_with_only_warning_severity_failures() {
     let repo = TempRepo::new();
@@ -512,6 +726,174 @@ fn precommit_reuses_full_evidence_with_only_warning_severity_failures() {
         "x",
         "reusable warning-only evidence must avoid rerunning the full gate"
     );
+}
+
+#[test]
+fn timed_out_required_command_denies_each_retry_and_is_never_reused() {
+    let repo = TempRepo::new();
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    let marker = repo.path().join("timeout-runs");
+    repo.write(
+        "bin/timeout-check",
+        "#!/bin/sh\nprintf x >> \"$1\"\nsleep 2\n",
+    );
+    let command = repo.path().join("bin/timeout-check");
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "tests",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [command.to_string_lossy(), marker.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 1,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "timeout-retry", "src/app.rs")
+            .status
+            .success()
+    );
+
+    for expected_runs in ["x", "xx"] {
+        let output = run_pre_tool_use_command(&repo, "timeout-retry", "git commit -m test");
+        let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision JSON");
+        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(
+            decision["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("missing, timed out, or wait failed"))
+        );
+        assert_eq!(repo.read("timeout-runs"), expected_runs);
+    }
+}
+
+#[test]
+fn failed_coverage_threshold_denies_each_retry_and_is_never_reused() {
+    let repo = TempRepo::new();
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    let marker = repo.path().join("coverage-failure-runs");
+    repo.write(
+        "bin/coverage-check",
+        "#!/bin/sh\nprintf x >> \"$1\"\necho 'line coverage: 50%'\n",
+    );
+    let coverage = repo.path().join("bin/coverage-check");
+    std::fs::set_permissions(&coverage, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "tests",
+                "language": "shell",
+                "root": ".",
+                "commands": [],
+                "coverage": [{
+                    "argv": [coverage.to_string_lossy(), marker.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "scope": "unit",
+                    "line_threshold_percent": 80
+                }]
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "coverage-retry", "src/app.rs")
+            .status
+            .success()
+    );
+
+    for expected_runs in ["x", "xx"] {
+        let output = run_pre_tool_use_command(&repo, "coverage-retry", "git commit -m test");
+        let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision JSON");
+        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(
+            decision["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("coverage for workspace tests"))
+        );
+        assert_eq!(repo.read("coverage-failure-runs"), expected_runs);
+    }
+}
+
+#[test]
+fn config_trust_is_revalidated_before_successful_evidence_reuse() {
+    let repo = TempRepo::new();
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    let marker = repo.path().join("trusted-config-runs");
+    repo.write("bin/required-check", "#!/bin/sh\nprintf x >> \"$1\"\n");
+    let command = repo.path().join("bin/required-check");
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    let config_path = repo.path().join(".lgtm/config.json");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "tests",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [command.to_string_lossy(), marker.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "config-trust", "src/app.rs")
+            .status
+            .success()
+    );
+    let first = run_pre_tool_use_command(&repo, "config-trust", "git commit -m test");
+    assert!(first.stdout.is_empty());
+    assert_eq!(repo.read("trusted-config-runs"), "x");
+
+    std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o666))
+        .expect("world-writable config");
+    let denied = run_pre_tool_use_command(&repo, "config-trust", "git commit -m test");
+    let decision: Value = serde_json::from_slice(&denied.stdout).expect("deny decision JSON");
+    assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(repo.read("trusted-config-runs"), "x");
+
+    std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
+        .expect("trusted config restored");
+    let rerun = run_pre_tool_use_command(&repo, "config-trust", "git commit -m test");
+    assert!(rerun.stdout.is_empty());
+    assert_eq!(repo.read("trusted-config-runs"), "xx");
 }
 
 #[test]

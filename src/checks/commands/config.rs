@@ -42,6 +42,12 @@ impl Settings {
     }
 }
 
+#[derive(Debug)]
+pub struct ConfigSnapshot {
+    pub settings: Result<Settings, String>,
+    pub digest: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct StructuredCommand {
     pub argv: Vec<String>,
@@ -63,36 +69,58 @@ pub struct CoverageCommand {
 }
 
 pub fn load(root: &Path) -> Result<Settings, String> {
-    let path = root.join(".lgtm/config.json");
-    match std::fs::symlink_metadata(&path) {
-        Ok(metadata) if !metadata.is_file() => {
-            return Err("config is not a regular file".to_string());
-        }
-        Ok(metadata) if metadata.len() > MAX_CONFIG_BYTES => {
-            return Err(format!("config exceeds {MAX_CONFIG_BYTES} bytes"));
-        }
-        Ok(metadata) => {
-            #[cfg(unix)]
-            {
-                // The process owner check uses the kernel effective UID; no
-                // memory or pointer is passed, so this libc call is safe.
-                let foreign_owner = metadata.uid() != unsafe { libc::geteuid() };
-                let world_writable = metadata.permissions().mode() & 0o002 != 0;
-                if foreign_owner || world_writable {
-                    return Err(
-                        "config must be owned by the runner and not world writable".to_string()
-                    );
-                }
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(defaults()),
-        Err(error) => return Err(format!("inspect config ({error})")),
+    load_snapshot(root).settings
+}
+
+/// Read repository-command configuration once and retain the digest of the
+/// exact bytes that were parsed. Stop uses this snapshot for command evidence
+/// and rejects records if the path changes before evidence is persisted.
+pub fn load_snapshot(root: &Path) -> ConfigSnapshot {
+    match read_config(root) {
+        Ok(raw) => ConfigSnapshot {
+            digest: digest_bytes(&raw),
+            settings: parse_config(&raw),
+        },
+        Err(reason) => ConfigSnapshot {
+            settings: Err(reason),
+            digest: digest_bytes(""),
+        },
     }
-    let Some(file) = crate::fsutil::open_regular_file(&path)
+}
+
+fn read_config(root: &Path) -> Result<String, String> {
+    let path = root.join(".lgtm/config.json");
+    let file = match crate::fsutil::open_regular_file(&path)
         .map_err(|error| format!("open config ({error})"))?
-    else {
-        return Err("config could not be opened as a regular file".to_string());
+    {
+        Some(file) => file,
+        None => match std::fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(String::new());
+            }
+            Ok(_) => return Err("config is not a regular file".to_string()),
+            Err(error) => return Err(format!("inspect config ({error})")),
+        },
     };
+    // Validate the metadata of the exact descriptor that will be parsed. On
+    // Unix open_regular_file uses O_NOFOLLOW and fstat, so a path replacement
+    // cannot split trust validation from snapshot bytes.
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("inspect open config ({error})"))?;
+    if metadata.len() > MAX_CONFIG_BYTES {
+        return Err(format!("config exceeds {MAX_CONFIG_BYTES} bytes"));
+    }
+    #[cfg(unix)]
+    {
+        // The process owner check uses the kernel effective UID; no memory or
+        // pointer is passed, so this libc call is safe.
+        let foreign_owner = metadata.uid() != unsafe { libc::geteuid() };
+        let world_writable = metadata.permissions().mode() & 0o002 != 0;
+        if foreign_owner || world_writable {
+            return Err("config must be owned by the runner and not world writable".to_string());
+        }
+    }
     let mut raw = String::new();
     file.take(MAX_CONFIG_BYTES + 1)
         .read_to_string(&mut raw)
@@ -100,11 +128,15 @@ pub fn load(root: &Path) -> Result<Settings, String> {
     if raw.len() as u64 > MAX_CONFIG_BYTES {
         return Err(format!("config exceeds {MAX_CONFIG_BYTES} bytes"));
     }
+    Ok(raw)
+}
+
+fn parse_config(raw: &str) -> Result<Settings, String> {
     if raw.trim().is_empty() {
         return Ok(defaults());
     }
     let value: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|error| format!("parse required commands ({error})"))?;
+        serde_json::from_str(raw).map_err(|error| format!("parse required commands ({error})"))?;
     if value.get("version").and_then(serde_json::Value::as_str) == Some(crate::config_v2::VERSION) {
         let config = crate::config_v2::parse(&value).map_err(|error| error.to_string())?;
         let mut commands = Vec::new();
@@ -134,9 +166,6 @@ pub fn load(root: &Path) -> Result<Settings, String> {
                     timeout: std::time::Duration::from_secs(command.timeout_seconds),
                 });
             }
-        }
-        if commands.len() > MAX_COMMANDS {
-            return Err(format!("workspaces exceed {MAX_COMMANDS} commands"));
         }
         return Ok(Settings {
             commands,
@@ -181,6 +210,13 @@ pub fn load(root: &Path) -> Result<Settings, String> {
         coverage: Vec::new(),
         workspace_ids: Vec::new(),
     })
+}
+
+fn digest_bytes(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn defaults() -> Settings {

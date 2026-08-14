@@ -36,7 +36,7 @@ impl Fixture {
 #[test]
 fn configured_duration_terminates_long_command() {
     let fixture = Fixture::create();
-    let command = fixture.script_body("slow", "sleep 1");
+    let command = fixture.script_body("slow", "exec /bin/sleep 1");
     let output = run(
         &fixture.root,
         &[command],
@@ -44,6 +44,138 @@ fn configured_duration_terminates_long_command() {
     );
     assert_eq!(output.results[0].status, Status::Unverified);
     assert_eq!(output.evidence[0].exit_code, None);
+}
+
+#[test]
+fn aggregate_budget_stops_structured_and_coverage_in_order() {
+    let fixture = Fixture::create();
+    let structured_started = fixture.root.join("structured-started");
+    let later_structured_started = fixture.root.join("later-structured-started");
+    let coverage_started = fixture.root.join("coverage-started");
+    let slow = fixture.script_body(
+        "slow",
+        &format!("touch {}; exec /bin/sleep 1", structured_started.display()),
+    );
+    let later = fixture.script_body(
+        "later",
+        &format!("touch {}; exit 0", later_structured_started.display()),
+    );
+    let coverage_tool = fixture.script_body(
+        "coverage",
+        &format!(
+            "touch {}; echo 'line coverage: 95% branch coverage: 95%'",
+            coverage_started.display()
+        ),
+    );
+    let structured = vec![
+        StructuredCommand {
+            argv: vec![slow],
+            cwd: ".".into(),
+            workspace_id: "root".to_string(),
+            tier: "full".to_string(),
+            timeout: std::time::Duration::from_secs(30),
+        },
+        StructuredCommand {
+            argv: vec![later],
+            cwd: ".".into(),
+            workspace_id: "root".to_string(),
+            tier: "full".to_string(),
+            timeout: std::time::Duration::from_secs(30),
+        },
+    ];
+    let coverage = vec![CoverageCommand {
+        workspace_id: "root".to_string(),
+        argv: vec![coverage_tool],
+        cwd: ".".into(),
+        timeout: std::time::Duration::from_secs(30),
+        scope: "unit".to_string(),
+        line_threshold_percent: Some(80),
+        branch_threshold_percent: Some(80),
+    }];
+
+    let started = std::time::Instant::now();
+    let mut budget = ExecutionBudget::new(std::time::Duration::from_millis(100));
+    let structured_output = run_structured_with_budget(&fixture.root, &structured, &mut budget);
+    let coverage_output = run_coverage_with_budget(&fixture.root, &coverage, &mut budget);
+
+    assert!(budget.is_exhausted());
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert!(structured_started.exists());
+    assert!(!later_structured_started.exists());
+    assert_eq!(structured_output.evidence[0].exit_code, None);
+    assert_eq!(structured_output.evidence[1].exit_code, None);
+    assert!(structured_output.evidence[1].started_at_ms.is_none());
+    assert!(
+        structured_output
+            .results
+            .iter()
+            .all(|result| result.status == Status::Unverified)
+    );
+    assert_eq!(coverage_output[0].status, "unverified");
+    assert!(coverage_output[0].line_percent.is_none());
+    assert!(coverage_output[0].branch_percent.is_none());
+    assert!(coverage_output[0].measured_at_ms.is_none());
+    assert!(!coverage_started.exists());
+}
+
+#[test]
+fn coverage_only_cutoff_exhausts_the_aggregate_budget() {
+    let fixture = Fixture::create();
+    let started = fixture.root.join("coverage-only-started");
+    let coverage = CoverageCommand {
+        workspace_id: "root".to_string(),
+        argv: vec![fixture.script_body(
+            "coverage-only",
+            &format!("touch {}; exec /bin/sleep 1", started.display()),
+        )],
+        cwd: ".".into(),
+        timeout: std::time::Duration::from_secs(30),
+        scope: "unit".to_string(),
+        line_threshold_percent: Some(80),
+        branch_threshold_percent: Some(80),
+    };
+
+    let elapsed = std::time::Instant::now();
+    let mut budget = ExecutionBudget::new(std::time::Duration::from_millis(100));
+    let evidence = run_coverage_with_budget(&fixture.root, &[coverage], &mut budget);
+
+    assert!(started.exists());
+    assert!(budget.is_exhausted());
+    assert!(elapsed.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(evidence[0].status, "unverified");
+    assert!(evidence[0].line_percent.is_none());
+    assert!(evidence[0].branch_percent.is_none());
+}
+
+#[test]
+fn aggregate_budget_preserves_successful_structured_and_coverage_runs() {
+    let fixture = Fixture::create();
+    let structured = StructuredCommand {
+        argv: vec![fixture.script("pass", 0)],
+        cwd: ".".into(),
+        workspace_id: "root".to_string(),
+        tier: "full".to_string(),
+        timeout: std::time::Duration::from_secs(30),
+    };
+    let coverage = CoverageCommand {
+        workspace_id: "root".to_string(),
+        argv: vec![
+            fixture.script_body("coverage", "echo 'line coverage: 95% branch coverage: 95%'"),
+        ],
+        cwd: ".".into(),
+        timeout: std::time::Duration::from_secs(30),
+        scope: "unit".to_string(),
+        line_threshold_percent: Some(80),
+        branch_threshold_percent: Some(80),
+    };
+
+    let mut budget = ExecutionBudget::new(std::time::Duration::from_secs(2));
+    let structured_output = run_structured_with_budget(&fixture.root, &[structured], &mut budget);
+    let coverage_output = run_coverage_with_budget(&fixture.root, &[coverage], &mut budget);
+
+    assert!(!budget.is_exhausted());
+    assert_eq!(structured_output.results[0].status, Status::Passed);
+    assert_eq!(coverage_output[0].status, "passed");
 }
 
 impl Drop for Fixture {
@@ -246,6 +378,25 @@ fn coverage_without_a_configured_tool_is_not_applicable() {
     assert_eq!(evidence[0].status, "not_applicable");
     assert!(evidence[0].line_percent.is_none());
     assert!(evidence[0].branch_percent.is_none());
+}
+
+#[test]
+fn configured_coverage_requires_each_configured_metric() {
+    let fixture = Fixture::create();
+    let tool = fixture.script_body("line-only-coverage", "echo 'line coverage: 95%'");
+    let command = CoverageCommand {
+        workspace_id: "backend".to_string(),
+        argv: vec![tool],
+        cwd: ".".into(),
+        timeout: std::time::Duration::from_secs(30),
+        scope: "unit".to_string(),
+        line_threshold_percent: Some(80),
+        branch_threshold_percent: Some(80),
+    };
+    let evidence = run_coverage(&fixture.root, &[command]);
+    assert_eq!(evidence[0].status, "unverified");
+    assert_eq!(evidence[0].line_percent, Some(95.0));
+    assert_eq!(evidence[0].branch_percent, None);
 }
 
 #[test]
@@ -508,7 +659,7 @@ fn nonzero_coverage_process_projects_to_unverified_without_failure() {
 #[test]
 fn timed_out_coverage_process_projects_to_unverified_without_failure() {
     let fixture = Fixture::create();
-    let tool = fixture.script_body("coverage-timeout", "sleep 1");
+    let tool = fixture.script_body("coverage-timeout", "exec /bin/sleep 1");
     let mut command = coverage_command(tool, Some(80), Some(80));
     command.timeout = std::time::Duration::from_millis(20);
     let evidence = run_coverage(&fixture.root, &[command]);

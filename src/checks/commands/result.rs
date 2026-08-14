@@ -4,6 +4,10 @@ use crate::checks::{EnforcementResult, ResultEvidence, Status};
 use crate::policy::Severity;
 
 const RULE_ID: &str = "required-repository-commands";
+const REQUIRED_COMMAND_CHECK: &str = "command.required";
+const COVERAGE_CHECK: &str = "command.coverage";
+const CONFIG_CHECK: &str = "command.config";
+const AGGREGATE_BUDGET_CHECK: &str = "command.aggregate_budget";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommandEvidence {
@@ -47,6 +51,15 @@ pub struct RunResults {
 }
 
 pub(super) fn result(command: &str, status: Status, reason: &str) -> EnforcementResult {
+    result_with_check(command, status, reason, REQUIRED_COMMAND_CHECK)
+}
+
+fn result_with_check(
+    command: &str,
+    status: Status,
+    reason: &str,
+    check: &str,
+) -> EnforcementResult {
     EnforcementResult {
         rule_id: RULE_ID.to_string(),
         status,
@@ -59,7 +72,7 @@ pub(super) fn result(command: &str, status: Status, reason: &str) -> Enforcement
         remediation: (status != Status::Passed)
             .then(|| "Fix the command or repository failure, then retry Stop.".to_string()),
         evidence: ResultEvidence {
-            check: "command.required".to_string(),
+            check: check.to_string(),
             tool_version: None,
             finding_descriptions: Vec::new(),
         },
@@ -67,10 +80,20 @@ pub(super) fn result(command: &str, status: Status, reason: &str) -> Enforcement
 }
 
 pub fn config_unverified(reason: &str) -> EnforcementResult {
-    result(
+    result_with_check(
         "configuration",
         Status::Unverified,
         &format!("could not run ({reason})"),
+        CONFIG_CHECK,
+    )
+}
+
+pub fn config_mutation_unverified() -> EnforcementResult {
+    result_with_check(
+        "configuration",
+        Status::Unverified,
+        "changed after repository commands were configured and before their evidence was recorded",
+        CONFIG_CHECK,
     )
 }
 
@@ -104,7 +127,7 @@ fn coverage_result(evidence: &CoverageEvidence) -> Option<EnforcementResult> {
         evidence.scope.as_deref().unwrap_or("unspecified"),
         evidence.tool.as_deref().unwrap_or("unknown")
     );
-    let mut projected = result(&identity, status, reason);
+    let mut projected = result_with_check(&identity, status, reason, COVERAGE_CHECK);
     if status != Status::Passed {
         projected.remediation = Some(format!(
             "Run the coverage tool for workspace `{}` scope `{}`, satisfy its configured thresholds, then retry Stop.",
@@ -113,6 +136,36 @@ fn coverage_result(evidence: &CoverageEvidence) -> Option<EnforcementResult> {
         ));
     }
     Some(projected)
+}
+
+pub fn budget_unverified() -> EnforcementResult {
+    result_with_check(
+        "aggregate repository-command gate",
+        Status::Unverified,
+        "was not fully run because the aggregate execution budget expired",
+        AGGREGATE_BUDGET_CHECK,
+    )
+}
+
+pub fn containment_unverified() -> EnforcementResult {
+    result(
+        "configured-command descendant containment",
+        Status::Unverified,
+        "could not be established or proven complete",
+    )
+}
+
+pub fn coverage_failure(workspace_id: &str, status: &str) -> EnforcementResult {
+    result_with_check(
+        &format!("coverage for workspace {workspace_id}"),
+        Status::Failed,
+        &format!("did not pass ({status})"),
+        COVERAGE_CHECK,
+    )
+}
+
+pub fn is_required_command_result(result: &EnforcementResult) -> bool {
+    result.evidence.check == REQUIRED_COMMAND_CHECK
 }
 
 pub(super) fn not_applicable() -> EnforcementResult {

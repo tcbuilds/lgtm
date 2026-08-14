@@ -15,6 +15,9 @@ pub const SCHEMA_JSON: &str = include_str!("../policy/config-v2.schema.json");
 const SCHEMA_ERROR_PATH_MAX_BYTES: usize = 128;
 const SCHEMA_ERROR_MESSAGE_MAX_BYTES: usize = 256;
 const CONFIG_DIAGNOSTIC_MAX_BYTES: usize = 2048;
+pub const MAX_WORKSPACES: usize = 64;
+pub const MAX_STRUCTURED_COMMANDS: usize = 64;
+pub const MAX_COVERAGE_COMMANDS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +85,31 @@ pub fn validate(config: &ConfigV2) -> Result<(), ConfigV2Error> {
         return Err(ConfigV2Error::Invalid(
             "severity_overrides values must be one of: error, warning, info".to_string(),
         ));
+    }
+    if config.workspaces.len() > MAX_WORKSPACES {
+        return Err(ConfigV2Error::Invalid(format!(
+            "config V2 contains more than {MAX_WORKSPACES} workspaces"
+        )));
+    }
+    let structured_count = config
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.commands.len())
+        .sum::<usize>();
+    if structured_count > MAX_STRUCTURED_COMMANDS {
+        return Err(ConfigV2Error::Invalid(format!(
+            "config V2 contains more than {MAX_STRUCTURED_COMMANDS} structured commands"
+        )));
+    }
+    let coverage_count = config
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.coverage.len())
+        .sum::<usize>();
+    if coverage_count > MAX_COVERAGE_COMMANDS {
+        return Err(ConfigV2Error::Invalid(format!(
+            "config V2 contains more than {MAX_COVERAGE_COMMANDS} coverage commands"
+        )));
     }
     for workspace in &config.workspaces {
         validate_relative_path(&workspace.root, "workspace root")?;
@@ -373,6 +401,7 @@ fn validate_relative_path(path: &Path, label: &str) -> Result<(), ConfigV2Error>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discovery::CoverageSpec;
     use serde_json::json;
 
     #[test]
@@ -434,5 +463,130 @@ mod tests {
         assert!(diagnostic.len() <= CONFIG_DIAGNOSTIC_MAX_BYTES);
         assert!(!diagnostic.chars().any(char::is_control));
         assert!(diagnostic.ends_with('…'));
+    }
+
+    fn workspace(
+        index: usize,
+        commands: Vec<CommandSpec>,
+        coverage: Vec<CoverageSpec>,
+    ) -> Workspace {
+        Workspace {
+            id: format!("workspace-{index}"),
+            language: "shell".to_string(),
+            root: Path::new(".").to_path_buf(),
+            commands,
+            coverage,
+        }
+    }
+
+    fn command_spec() -> CommandSpec {
+        CommandSpec {
+            argv: vec!["true".to_string()],
+            cwd: Path::new(".").to_path_buf(),
+            timeout_seconds: 30,
+            tier: "full".to_string(),
+            purpose: "test".to_string(),
+            source: "fixture".to_string(),
+            confidence: "high".to_string(),
+        }
+    }
+
+    fn coverage_spec() -> CoverageSpec {
+        CoverageSpec {
+            argv: vec!["true".to_string()],
+            cwd: Path::new(".").to_path_buf(),
+            timeout_seconds: 30,
+            scope: "unit".to_string(),
+            line_threshold_percent: None,
+            branch_threshold_percent: None,
+        }
+    }
+
+    fn config(workspaces: Vec<Workspace>) -> ConfigV2 {
+        ConfigV2 {
+            version: VERSION.to_string(),
+            profile: "default".to_string(),
+            workspaces,
+            disabled_rules: Vec::new(),
+            severity_overrides: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn accepts_exact_v2_workspace_and_aggregate_command_limits() {
+        let workspaces = (0..MAX_WORKSPACES)
+            .map(|index| workspace(index, Vec::new(), Vec::new()))
+            .collect();
+        assert!(validate(&config(workspaces)).is_ok());
+
+        let structured_at_limit = config(vec![
+            workspace(
+                0,
+                vec![command_spec(); MAX_STRUCTURED_COMMANDS / 2],
+                Vec::new(),
+            ),
+            workspace(
+                1,
+                vec![command_spec(); MAX_STRUCTURED_COMMANDS / 2],
+                Vec::new(),
+            ),
+        ]);
+        assert!(validate(&structured_at_limit).is_ok());
+
+        let coverage_at_limit = config(vec![
+            workspace(
+                0,
+                Vec::new(),
+                vec![coverage_spec(); MAX_COVERAGE_COMMANDS / 2],
+            ),
+            workspace(
+                1,
+                Vec::new(),
+                vec![coverage_spec(); MAX_COVERAGE_COMMANDS / 2],
+            ),
+        ]);
+        assert!(validate(&coverage_at_limit).is_ok());
+    }
+
+    #[test]
+    fn rejects_the_first_v2_workspace_or_aggregate_command_over_limit() {
+        let mut too_many_workspaces = (0..MAX_WORKSPACES)
+            .map(|index| workspace(index, Vec::new(), Vec::new()))
+            .collect::<Vec<_>>();
+        too_many_workspaces.push(workspace(MAX_WORKSPACES, Vec::new(), Vec::new()));
+        let error = validate(&config(too_many_workspaces)).expect_err("workspace cap");
+        assert!(error.to_string().contains("64 workspaces"));
+
+        let mut too_many_structured = vec![
+            workspace(
+                0,
+                vec![command_spec(); MAX_STRUCTURED_COMMANDS / 2],
+                Vec::new(),
+            ),
+            workspace(
+                1,
+                vec![command_spec(); MAX_STRUCTURED_COMMANDS / 2],
+                Vec::new(),
+            ),
+        ];
+        too_many_structured[1].commands.push(command_spec());
+        let error = validate(&config(too_many_structured)).expect_err("structured cap");
+        assert!(error.to_string().contains("64 structured commands"));
+
+        let mut too_many_coverage = vec![
+            workspace(
+                0,
+                Vec::new(),
+                vec![coverage_spec(); MAX_COVERAGE_COMMANDS / 2],
+            ),
+            workspace(
+                1,
+                Vec::new(),
+                vec![coverage_spec(); MAX_COVERAGE_COMMANDS / 2],
+            ),
+        ];
+        too_many_coverage[1].coverage.push(coverage_spec());
+        let error = validate(&config(too_many_coverage)).expect_err("coverage cap");
+        assert!(error.to_string().contains("64 coverage commands"));
     }
 }
