@@ -211,7 +211,10 @@ pub fn body(contents: &str) -> Result<&str, FrontmatterError> {
     split_frontmatter("<inline>", contents).map(|parts| parts.map_or(contents, |(_, body)| body))
 }
 
-fn parse_file(path: &str, contents: &str) -> Result<Option<RuleFrontmatter>, FrontmatterError> {
+pub(crate) fn parse_file(
+    path: &str,
+    contents: &str,
+) -> Result<Option<RuleFrontmatter>, FrontmatterError> {
     let Some((raw, _)) = split_frontmatter(path, contents)? else {
         return Ok(None);
     };
@@ -274,7 +277,7 @@ fn parse_yaml_shell(
         }
     }
     let description = yaml_scalar(path, raw, "description")?;
-    let paths = yaml_list(raw, "paths");
+    let paths = yaml_list(path, raw, "paths")?;
     let headings = inline_list(path, raw, "headings")?;
     let rules: Vec<Rule> = match raw.find("rules:") {
         Some(rules_start) => {
@@ -358,7 +361,20 @@ fn yaml_scalar(path: &str, raw: &str, key: &str) -> Result<Option<String>, Front
     Ok(Some(value.trim_matches('\'').to_string()))
 }
 
-fn yaml_list(raw: &str, key: &str) -> Vec<String> {
+fn yaml_list(path: &str, raw: &str, key: &str) -> Result<Vec<String>, FrontmatterError> {
+    let Some(line) = raw.lines().find(|line| {
+        !line.as_bytes().first().is_some_and(u8::is_ascii_whitespace)
+            && line
+                .split_once(':')
+                .is_some_and(|(candidate, _)| candidate.trim() == key)
+    }) else {
+        return Ok(Vec::new());
+    };
+    let value = line.split_once(':').map_or("", |(_, value)| value.trim());
+    if !value.is_empty() {
+        return inline_list(path, raw, key);
+    }
+
     let mut values = Vec::new();
     let mut reading = false;
     for line in raw.lines() {
@@ -368,13 +384,26 @@ fn yaml_list(raw: &str, key: &str) -> Vec<String> {
             continue;
         }
         if reading && !line.starts_with(' ') {
-            reading = false;
+            break;
         }
-        if reading && let Some(value) = trimmed.strip_prefix("- ") {
-            values.push(value.trim_matches('"').to_string());
+        if !reading || trimmed.is_empty() {
+            continue;
         }
+        let Some(value) = trimmed.strip_prefix("- ") else {
+            return Err(FrontmatterError::Malformed {
+                path: path.to_string(),
+                reason: format!("{key} must be a JSON-compatible YAML sequence"),
+            });
+        };
+        values.push(value.trim_matches('"').to_string());
     }
-    values
+    if values.is_empty() {
+        return Err(FrontmatterError::Malformed {
+            path: path.to_string(),
+            reason: format!("{key} must contain at least one path"),
+        });
+    }
+    Ok(values)
 }
 
 fn inline_list(path: &str, raw: &str, key: &str) -> Result<Vec<String>, FrontmatterError> {
