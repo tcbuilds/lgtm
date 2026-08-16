@@ -595,6 +595,45 @@ fn nonregular_state_file_fails_open_without_opening_it() {
 }
 
 #[test]
+fn trusted_private_ancestor_allows_missing_state_directories() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let state = TempState::new("private-ancestor");
+    let ancestor = state.root.join("private");
+    std::fs::create_dir(&ancestor).expect("ancestor directory");
+    std::fs::set_permissions(&ancestor, std::fs::Permissions::from_mode(0o700))
+        .expect("private ancestor permissions");
+    let store = FileSessionDedupStore::new(ancestor.join("evidence/sessions.json"));
+
+    assert!(
+        store
+            .filter_and_record("session", &["source.md".to_string()])
+            .expect("private ancestor state")
+            .is_empty()
+    );
+    assert!(ancestor.join("evidence/sessions.json").exists());
+}
+
+#[test]
+fn untrusted_writable_ancestor_fails_open_without_state_creation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let state = TempState::new("writable-ancestor");
+    let ancestor = state.root.join("shared");
+    std::fs::create_dir(&ancestor).expect("ancestor directory");
+    std::fs::set_permissions(&ancestor, std::fs::Permissions::from_mode(0o777))
+        .expect("writable ancestor permissions");
+    let store = FileSessionDedupStore::new(ancestor.join("evidence/sessions.json"));
+
+    assert!(
+        store
+            .filter_and_record("session", &["source.md".to_string()])
+            .is_err()
+    );
+    assert!(!ancestor.join("evidence").exists());
+}
+
+#[test]
 fn ancestor_symlink_cannot_redirect_state_outside_the_repository() {
     use std::os::unix::fs::symlink;
 
@@ -656,18 +695,22 @@ fn healthy_lock_contention_is_busy_without_duplicate_guidance() {
     let store = FileSessionDedupStore::new(&state.path);
     let transaction = store.begin("busy-session").expect("held transaction");
     let path = state.path.clone();
-    let handle = std::thread::spawn(move || {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let store = FileSessionDedupStore::new(path);
         let source = TestSource {
             documents: vec![source("rule.md", "body")],
         };
-        select_rule_bodies_with_source_and_store(
+        let result = select_rule_bodies_with_source_and_store(
             &persistent_request("busy-session"),
             &source,
             &store,
-        )
+        );
+        let _ = sender.send(result);
     });
-    let result = handle.join().expect("contention selection");
+    let result = receiver
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("contention selection must be bounded");
     assert!(result.bodies.is_empty());
     assert_eq!(result.diagnostics, ["guidance session state busy"]);
     drop(transaction);

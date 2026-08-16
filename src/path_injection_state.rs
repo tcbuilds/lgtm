@@ -29,7 +29,7 @@ pub const MAX_SESSION_DEDUP_STATE_BYTES: usize = 256 * 1_024;
 pub const MAX_SESSION_DEDUP_SESSIONS: usize = 64;
 
 #[cfg(unix)]
-const MAX_LOCK_ATTEMPTS: u32 = 20;
+const MAX_LOCK_ATTEMPTS: u32 = 100;
 #[cfg(unix)]
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -315,6 +315,7 @@ fn open_directory_path(path: &Path) -> Result<std::fs::File, SessionDedupStoreEr
         Path::new(".")
     };
     let mut directory = open_directory_pathname(start)?;
+    validate_traversal_directory(&directory)?;
     for component in path.components() {
         let std::path::Component::Normal(name) = component else {
             if matches!(
@@ -358,6 +359,7 @@ fn open_or_create_directory(
     match open_directory_at(parent, name) {
         Ok(directory) => {
             parent.sync_all().map_err(|_| SessionDedupStoreError)?;
+            validate_traversal_directory(&directory)?;
             Ok(directory)
         }
         Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
@@ -367,8 +369,10 @@ fn open_or_create_directory(
             if result < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
                 return Err(SessionDedupStoreError);
             }
+            parent.sync_all().map_err(|_| SessionDedupStoreError)?;
             let directory = open_directory_at(parent, name).map_err(|_| SessionDedupStoreError)?;
             parent.sync_all().map_err(|_| SessionDedupStoreError)?;
+            validate_traversal_directory(&directory)?;
             Ok(directory)
         }
         Err(_) => Err(SessionDedupStoreError),
@@ -393,12 +397,23 @@ fn open_directory_at(parent: &std::fs::File, name: &CString) -> std::io::Result<
 }
 
 #[cfg(unix)]
-fn validate_directory(directory: &std::fs::File) -> Result<(), SessionDedupStoreError> {
+fn validate_traversal_directory(directory: &std::fs::File) -> Result<(), SessionDedupStoreError> {
     let metadata = directory.metadata().map_err(|_| SessionDedupStoreError)?;
-    if !metadata.is_dir()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o022 != 0
-    {
+    let effective_uid = unsafe { libc::geteuid() };
+    let root_owned_sticky = metadata.uid() == 0 && metadata.mode() & 0o1000 != 0;
+    let trusted_owner = metadata.uid() == effective_uid || metadata.uid() == 0;
+    let untrusted_write = metadata.mode() & 0o022 != 0 && !root_owned_sticky;
+    if !metadata.is_dir() || !trusted_owner || untrusted_write {
+        return Err(SessionDedupStoreError);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_directory(directory: &std::fs::File) -> Result<(), SessionDedupStoreError> {
+    validate_traversal_directory(directory)?;
+    let metadata = directory.metadata().map_err(|_| SessionDedupStoreError)?;
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
         return Err(SessionDedupStoreError);
     }
     Ok(())
@@ -626,6 +641,7 @@ fn temp_name() -> Result<CString, SessionDedupStoreError> {
     .map_err(|_| SessionDedupStoreError)
 }
 
+#[derive(Debug)]
 enum StateLockError {
     Contended,
     Unavailable,
@@ -639,6 +655,17 @@ struct StateLock {
 impl StateLock {
     #[cfg(unix)]
     fn acquire(location: &StateLocation) -> Result<Self, StateLockError> {
+        Self::acquire_with_hook(location, || {})
+    }
+
+    #[cfg(unix)]
+    fn acquire_with_hook<F>(
+        location: &StateLocation,
+        mut on_contention: F,
+    ) -> Result<Self, StateLockError>
+    where
+        F: FnMut(),
+    {
         regular_entry_status(location.directory.as_raw_fd(), &location.lock_name)
             .map_err(|_| StateLockError::Unavailable)?;
         let file = openat_file(
@@ -671,6 +698,7 @@ impl StateLock {
             if !contended {
                 return Err(StateLockError::Unavailable);
             }
+            on_contention();
             if attempt + 1 < MAX_LOCK_ATTEMPTS {
                 std::thread::sleep(LOCK_RETRY_INTERVAL);
             }
@@ -702,5 +730,68 @@ impl Drop for StateLock {
         unsafe {
             let _ = libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::mpsc;
+
+    struct RemoveDirectory(std::path::PathBuf);
+
+    impl Drop for RemoveDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn lock_retry_observes_contention_before_release() {
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-path-injection-lock-retry-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("lock retry directory");
+        let _cleanup = RemoveDirectory(root.clone());
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .expect("private lock retry directory");
+        let path = root.join("sessions.json");
+        let first_location = prepare_parent(&path).expect("first location");
+        let held = StateLock::acquire(&first_location).expect("held lock");
+        let second_location = prepare_parent(&path).expect("second location");
+        let (contended_sender, contended_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let acquired = StateLock::acquire_with_hook(&second_location, || {
+                contended_sender
+                    .send(())
+                    .expect("contention receiver remains active");
+                release_receiver
+                    .recv()
+                    .expect("release acknowledgment remains active");
+            })
+            .is_ok();
+            result_sender
+                .send(acquired)
+                .expect("result receiver remains active");
+        });
+
+        contended_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("lock retry must observe contention");
+        drop(held);
+        release_sender
+            .send(())
+            .expect("release acknowledgment receiver remains active");
+        assert!(
+            result_receiver
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("lock retry must finish after release")
+        );
+        assert!(handle.join().is_ok());
     }
 }
