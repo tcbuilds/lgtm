@@ -15,6 +15,7 @@ pub mod doctor;
 pub mod fsutil;
 pub mod hooks;
 pub mod init;
+pub mod path_injection;
 pub mod policy;
 pub mod report;
 pub mod select;
