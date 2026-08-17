@@ -1,4 +1,8 @@
+#[cfg(target_os = "linux")]
+use std::ffi::OsString;
 use std::io::Write;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output, Stdio};
 
@@ -8,6 +12,20 @@ mod common;
 use common::TempRepo;
 
 const COVERAGE_RULE_ID: &str = "required-repository-commands";
+
+#[cfg(target_os = "linux")]
+fn encode_supervisor_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    bytes
+        .iter()
+        .flat_map(|byte| {
+            [
+                HEX[(byte >> 4) as usize] as char,
+                HEX[(byte & 0x0f) as usize] as char,
+            ]
+        })
+        .collect()
+}
 
 fn run_post_tool_use(repo: &TempRepo, session_id: &str, file: &str) -> std::process::Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
@@ -153,6 +171,27 @@ fn write_workspace_coverage_fixture(repo: &TempRepo) {
 }
 
 fn run_full_stop(repo: &TempRepo, session_id: &str, stop_hook_active: bool) -> Output {
+    run_full_stop_with_environment(repo, session_id, stop_hook_active, None, None, None)
+}
+
+fn run_full_stop_with_path_and_home(
+    repo: &TempRepo,
+    session_id: &str,
+    stop_hook_active: bool,
+    path: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Output {
+    run_full_stop_with_environment(repo, session_id, stop_hook_active, path, home, None)
+}
+
+fn run_full_stop_with_environment(
+    repo: &TempRepo,
+    session_id: &str,
+    stop_hook_active: bool,
+    path: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+    ci: Option<&std::ffi::OsStr>,
+) -> Output {
     let payload = json!({
         "cwd": repo.path(),
         "session_id": session_id,
@@ -160,13 +199,22 @@ fn run_full_stop(repo: &TempRepo, session_id: &str, stop_hook_active: bool) -> O
         "tier": "full",
         "stop_hook_active": stop_hook_active
     });
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_lgtm"));
+    command
         .args(["hook", "stop"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Stop hook starts");
+        .stderr(Stdio::piped());
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    if let Some(home) = home {
+        command.env("HOME", home);
+    }
+    if let Some(ci) = ci {
+        command.env("CI", ci);
+    }
+    let mut child = command.spawn().expect("Stop hook starts");
     write!(child.stdin.take().expect("stdin available"), "{payload}").expect("payload writes");
     child.wait_with_output().expect("Stop hook exits")
 }
@@ -537,7 +585,7 @@ fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
             record["platform"],
             format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
         );
-        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v2");
+        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v3");
         assert!(record["results"].as_array().is_some_and(|results| {
             results.iter().any(|result| {
                 result["status"] == "failed"
@@ -610,7 +658,7 @@ fn adopted_zombie_before_first_proc_scan_denies_and_is_not_reused() {
 
         let record = latest_evidence(&repo);
         assert_eq!(record["commands"][0]["exit_code"], Value::Null);
-        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v2");
+        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v3");
         assert!(record["results"].as_array().is_some_and(|results| {
             results.iter().any(|result| {
                 result["status"] == "failed"
@@ -631,11 +679,21 @@ fn isolated_supervisor_preserves_unrelated_child_waitability() {
         .expect("unrelated child starts");
     let request = json!({
         "argv": ["/bin/true"],
-        "cwd": ".",
-        "timeout_ms": 1_000,
-        "path": std::env::var("PATH").ok(),
-        "home": std::env::var("HOME").ok(),
-        "ci": std::env::var("CI").ok()
+        "repository_root": encode_supervisor_bytes(
+            std::env::current_dir()
+                .expect("repository root")
+                .as_os_str()
+                .as_bytes(),
+        ),
+        "workspace_root": encode_supervisor_bytes(b"."),
+        "cwd": encode_supervisor_bytes(b"."),
+        "timeout_ms": "00000000000000001000",
+        "path": std::env::var_os("PATH")
+            .map(|value| encode_supervisor_bytes(value.as_os_str().as_bytes())),
+        "home": std::env::var_os("HOME")
+            .map(|value| encode_supervisor_bytes(value.as_os_str().as_bytes())),
+        "ci": std::env::var_os("CI")
+            .map(|value| encode_supervisor_bytes(value.as_os_str().as_bytes()))
     });
     let supervisor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .arg("__command-supervisor")
@@ -1258,6 +1316,1629 @@ fn unparseable_coverage_is_unverified_and_does_not_fail_stop() {
         "unverified"
     );
     assert_eq!(record["rules"]["failed"], 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn nested_workspace_commands_and_coverage_use_repository_relative_effective_cwds() {
+    let repo = TempRepo::new();
+    repo.write(
+        "workspace/src/required-check",
+        "#!/bin/sh\ntouch command-marker\nexit 0\n",
+    );
+    repo.write(
+        "workspace/tests/coverage-check",
+        "#!/bin/sh\ntouch coverage-marker\necho 'line coverage: 100% branch coverage: 100%'\n",
+    );
+    for path in [
+        repo.path().join("workspace/src/required-check"),
+        repo.path().join("workspace/tests/coverage-check"),
+    ] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("nested fixture executable");
+    }
+    repo.write("workspace/src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "workspace",
+                "language": "shell",
+                "root": "workspace",
+                "commands": [{
+                    "argv": ["./required-check"],
+                    "cwd": "workspace/src",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": [{
+                    "argv": ["./coverage-check"],
+                    "cwd": "workspace/tests",
+                    "timeout_seconds": 30,
+                    "scope": "unit",
+                    "line_threshold_percent": 80,
+                    "branch_threshold_percent": 80
+                }]
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let output = run_full_stop(&repo, "nested-workspace", false);
+
+    assert!(output.status.success(), "nested workspace should pass");
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"][0]["cwd"], "workspace/src");
+    assert_eq!(record["commands"][0]["exit_code"], 0);
+    assert_eq!(record["coverage"][0]["cwd"], "workspace/tests");
+    assert_eq!(record["coverage"][0]["status"], "passed");
+    assert_eq!(record["coverage"][0]["line_percent"], 100.0);
+    assert_eq!(record["coverage"][0]["branch_percent"], 100.0);
+    assert!(repo.path().join("workspace/src/command-marker").is_file());
+    assert!(
+        repo.path()
+            .join("workspace/tests/coverage-marker")
+            .is_file()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn doctor_and_stop_accept_parent_relative_executable_paths() {
+    let repo = TempRepo::new();
+    repo.write(
+        "workspace/bin/check",
+        "#!/bin/sh\ntouch ../relative-path-marker\nexit 0\n",
+    );
+    std::fs::set_permissions(
+        repo.path().join("workspace/bin/check"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("parent-relative executable fixture");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": ["../bin/check"], "cwd": "workspace/src",
+                    "timeout_seconds": 30, "tier": "full", "purpose": "test",
+                    "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(doctor.status.success());
+    assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
+
+    let stop = run_full_stop(&repo, "parent-relative-executable", false);
+    assert!(stop.status.success());
+    assert!(repo.exists("workspace/relative-path-marker"));
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_accepts_final_symlinks_for_absolute_and_coverage_paths() {
+    let repo = TempRepo::new();
+    for path in ["workspace/bin/real-command", "workspace/bin/real-coverage"] {
+        repo.write(path, "#!/bin/sh\nexit 0\n");
+        std::fs::set_permissions(
+            repo.path().join(path),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .expect("final symlink target executable");
+    }
+    let absolute_command = repo.path().join("workspace/bin/absolute-command");
+    let bare_command = repo.path().join("workspace/bin/bare-command");
+    let coverage_link = repo.path().join("workspace/bin/coverage-link");
+    std::os::unix::fs::symlink(
+        repo.path().join("workspace/bin/real-command"),
+        &absolute_command,
+    )
+    .expect("absolute executable symlink");
+    std::os::unix::fs::symlink(
+        repo.path().join("workspace/bin/real-command"),
+        &bare_command,
+    )
+    .expect("bare executable symlink");
+    std::os::unix::fs::symlink(
+        repo.path().join("workspace/bin/real-coverage"),
+        &coverage_link,
+    )
+    .expect("coverage executable symlink");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    std::fs::create_dir_all(repo.path().join("workspace/tests")).expect("coverage cwd fixture");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [
+                    {"argv": [absolute_command.to_string_lossy()], "cwd": "workspace/src",
+                        "timeout_seconds": 30, "tier": "full", "purpose": "test",
+                        "source": "fixture", "confidence": "high"},
+                    {"argv": ["bare-command"], "cwd": "workspace/src",
+                        "timeout_seconds": 30, "tier": "full", "purpose": "test",
+                        "source": "fixture", "confidence": "high"}
+                ],
+                "coverage": [{"argv": ["../bin/coverage-link"], "cwd": "workspace/tests",
+                    "timeout_seconds": 30, "scope": "unit"}]
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .env("PATH", repo.path().join("workspace/bin"))
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(doctor.status.success());
+    let stdout = String::from_utf8(doctor.stdout).expect("doctor output is UTF-8");
+    assert!(stdout.contains("config doctor: clean"));
+    assert!(!stdout.contains("MISSING"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn replacing_cwd_during_command_invalidates_fresh_passing_evidence() {
+    let repo = TempRepo::new();
+    repo.write(
+        "workspace/checks/check",
+        "#!/bin/sh\nset -eu\ncurrent=$(pwd)\nparent=$(dirname \"$current\")\nmv \"$current\" \"$parent/checks-old\"\nmkdir \"$parent/checks\"\nprintf x > \"$parent/postrun-runs\"\n",
+    );
+    let command = repo.path().join("workspace/checks/check");
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+        .expect("post-run command executable");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": [command], "cwd": "workspace/checks",
+                    "timeout_seconds": 30, "tier": "full", "purpose": "test",
+                    "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let output = run_full_stop(&repo, "postrun-cwd-replacement", false);
+    assert!(output.status.success());
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"][0]["exit_code"], Value::Null);
+    assert!(record["results"].as_array().is_some_and(|results| {
+        results
+            .iter()
+            .any(|result| result["status"] == "unverified")
+    }));
+    assert_eq!(repo.read("workspace/postrun-runs"), "x");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn replacing_nested_cwd_rejects_reuse_of_successful_evidence() {
+    let repo = TempRepo::new();
+    let outside = std::env::temp_dir().join(format!("lgtm-reuse-cwd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir(&outside).expect("outside fixture");
+    std::fs::create_dir_all(repo.path().join("workspace/checks")).expect("nested cwd fixture");
+    repo.write(
+        "workspace/bin/check",
+        "#!/bin/sh\nprintf x > ../command-runs\nexit 0\n",
+    );
+    std::fs::set_permissions(
+        repo.path().join("workspace/bin/check"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("reuse executable fixture");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    let executable = repo.path().join("workspace/bin/check");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": [executable.to_string_lossy()], "cwd": "workspace/checks",
+                    "timeout_seconds": 30, "tier": "full", "purpose": "test",
+                    "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    assert!(
+        run_post_tool_use(&repo, "cwd-reuse", "workspace/src/app.rs")
+            .status
+            .success()
+    );
+    let first = run_pre_tool_use_command(&repo, "cwd-reuse", "git commit -m first");
+    assert!(first.status.success());
+    assert!(
+        first.stdout.is_empty(),
+        "successful evidence should authorize first run"
+    );
+    assert_eq!(repo.read("workspace/command-runs"), "x");
+
+    std::fs::remove_dir_all(repo.path().join("workspace/checks")).expect("remove nested cwd");
+    std::os::unix::fs::symlink(&outside, repo.path().join("workspace/checks"))
+        .expect("replace nested cwd with symlink");
+    let second = run_pre_tool_use_command(&repo, "cwd-reuse", "git commit -m retry");
+    assert!(second.status.success());
+    assert!(
+        !second.stdout.is_empty(),
+        "invalidated evidence must deny reuse"
+    );
+    assert_eq!(
+        repo.read("workspace/command-runs"),
+        "x",
+        "outside cwd must not execute"
+    );
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"][0]["exit_code"], Value::Null);
+    assert!(record["results"].as_array().is_some_and(|results| {
+        results
+            .iter()
+            .any(|result| result["status"] == "unverified")
+    }));
+    let _ = std::fs::remove_dir_all(outside);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn replacing_nested_cwds_with_normal_directories_forces_fresh_results() {
+    let repo = TempRepo::new();
+    for path in ["workspace/checks", "workspace/coverage"] {
+        std::fs::create_dir_all(repo.path().join(path)).expect("nested cwd fixture");
+    }
+    repo.write(
+        "workspace/checks/check",
+        "#!/bin/sh\nprintf x >> ../command-runs\nexit 0\n",
+    );
+    repo.write(
+        "workspace/coverage/coverage",
+        "#!/bin/sh\nprintf x >> ../coverage-runs\necho 'line coverage: 100% branch coverage: 100%'\nexit 0\n",
+    );
+    for path in [
+        repo.path().join("workspace/checks/check"),
+        repo.path().join("workspace/coverage/coverage"),
+    ] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("initial cwd executable");
+    }
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": ["./check"], "cwd": "workspace/checks",
+                    "timeout_seconds": 30, "tier": "full", "purpose": "test",
+                    "source": "fixture", "confidence": "high"}],
+                "coverage": [{"argv": ["./coverage"], "cwd": "workspace/coverage",
+                    "timeout_seconds": 30, "scope": "unit"}]
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    assert!(
+        run_post_tool_use(&repo, "cwd-identity", "workspace/src/app.rs")
+            .status
+            .success()
+    );
+    let first = run_pre_tool_use_command(&repo, "cwd-identity", "git commit -m first");
+    assert!(first.status.success());
+    assert!(
+        first.stdout.is_empty(),
+        "initial passing gate should authorize"
+    );
+    assert_eq!(repo.read("workspace/command-runs"), "x");
+    assert_eq!(repo.read("workspace/coverage-runs"), "x");
+
+    std::fs::rename(
+        repo.path().join("workspace/checks"),
+        repo.path().join("workspace/checks-old"),
+    )
+    .expect("rename command cwd");
+    std::fs::rename(
+        repo.path().join("workspace/coverage"),
+        repo.path().join("workspace/coverage-old"),
+    )
+    .expect("rename coverage cwd");
+    for path in ["workspace/checks", "workspace/coverage"] {
+        std::fs::create_dir_all(repo.path().join(path)).expect("replacement cwd");
+    }
+    repo.write("workspace/checks/check", "#!/bin/sh\nexit 7\n");
+    repo.write(
+        "workspace/coverage/coverage",
+        "#!/bin/sh\necho 'line coverage: 0% branch coverage: 0%'\nexit 7\n",
+    );
+    for path in [
+        repo.path().join("workspace/checks/check"),
+        repo.path().join("workspace/coverage/coverage"),
+    ] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("replacement cwd executable");
+    }
+
+    let second = run_pre_tool_use_command(&repo, "cwd-identity", "git commit -m retry");
+    assert!(second.status.success());
+    assert!(
+        !second.stdout.is_empty(),
+        "replacement results must deny reuse"
+    );
+    assert_eq!(
+        repo.read("workspace/command-runs"),
+        "x",
+        "old command cwd was not rerun"
+    );
+    assert_eq!(
+        repo.read("workspace/coverage-runs"),
+        "x",
+        "old coverage cwd was not rerun"
+    );
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"][0]["exit_code"], 7);
+    assert_eq!(record["coverage"][0]["status"], "unverified");
+    assert!(record["results"].as_array().is_some_and(|results| {
+        results.iter().any(|result| {
+            result["rule_id"] == COVERAGE_RULE_ID
+                && result["status"] == "failed"
+                && result["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("coverage"))
+        })
+    }));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn replacing_only_command_cwd_forces_fresh_command_evidence() {
+    let repo = TempRepo::new();
+    std::fs::create_dir_all(repo.path().join("workspace/checks")).expect("nested cwd fixture");
+    repo.write(
+        "workspace/checks/check",
+        "#!/bin/sh\nprintf x >> ../command-runs\nexit 0\n",
+    );
+    std::fs::set_permissions(
+        repo.path().join("workspace/checks/check"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("command fixture executable");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": ["./check"], "cwd": "workspace/checks",
+                    "timeout_seconds": 30, "tier": "full", "purpose": "test",
+                    "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    assert!(
+        run_post_tool_use(&repo, "command-cwd-identity", "workspace/src/app.rs")
+            .status
+            .success()
+    );
+    let first = run_pre_tool_use_command(&repo, "command-cwd-identity", "git commit -m first");
+    assert!(first.status.success());
+    assert!(first.stdout.is_empty(), "initial command should authorize");
+    assert_eq!(repo.read("workspace/command-runs"), "x");
+
+    std::fs::rename(
+        repo.path().join("workspace/checks"),
+        repo.path().join("workspace/checks-old"),
+    )
+    .expect("rename command cwd");
+    std::fs::create_dir_all(repo.path().join("workspace/checks")).expect("replacement cwd");
+    repo.write("workspace/checks/check", "#!/bin/sh\nexit 7\n");
+    std::fs::set_permissions(
+        repo.path().join("workspace/checks/check"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("replacement executable");
+
+    let second = run_pre_tool_use_command(&repo, "command-cwd-identity", "git commit -m retry");
+    assert!(second.status.success());
+    assert!(
+        !second.stdout.is_empty(),
+        "replacement command must deny reuse"
+    );
+    assert_eq!(
+        repo.read("workspace/command-runs"),
+        "x",
+        "stale command was not rerun"
+    );
+    assert_eq!(latest_evidence(&repo)["commands"][0]["exit_code"], 7);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn replacing_only_coverage_cwd_forces_fresh_coverage_evidence() {
+    let repo = TempRepo::new();
+    std::fs::create_dir_all(repo.path().join("workspace/coverage"))
+        .expect("nested coverage cwd fixture");
+    repo.write(
+        "workspace/coverage/coverage",
+        "#!/bin/sh\nprintf x >> ../coverage-runs\necho 'line coverage: 100% branch coverage: 100%'\nexit 0\n",
+    );
+    std::fs::set_permissions(
+        repo.path().join("workspace/coverage/coverage"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("coverage fixture executable");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [],
+                "coverage": [{"argv": ["./coverage"], "cwd": "workspace/coverage",
+                    "timeout_seconds": 30, "scope": "unit"}]
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    assert!(
+        run_post_tool_use(&repo, "coverage-cwd-identity", "workspace/src/app.rs")
+            .status
+            .success()
+    );
+    let first = run_pre_tool_use_command(&repo, "coverage-cwd-identity", "git commit -m first");
+    assert!(first.status.success());
+    assert!(
+        first.stdout.is_empty(),
+        "initial coverage should authorize: {}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+    assert_eq!(repo.read("workspace/coverage-runs"), "x");
+
+    std::fs::rename(
+        repo.path().join("workspace/coverage"),
+        repo.path().join("workspace/coverage-old"),
+    )
+    .expect("rename coverage cwd");
+    std::fs::create_dir_all(repo.path().join("workspace/coverage")).expect("replacement cwd");
+    repo.write(
+        "workspace/coverage/coverage",
+        "#!/bin/sh\necho 'line coverage: 0% branch coverage: 0%'\nexit 7\n",
+    );
+    std::fs::set_permissions(
+        repo.path().join("workspace/coverage/coverage"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("replacement coverage executable");
+
+    let second = run_pre_tool_use_command(&repo, "coverage-cwd-identity", "git commit -m retry");
+    assert!(second.status.success());
+    assert!(
+        !second.stdout.is_empty(),
+        "replacement coverage must deny reuse"
+    );
+    assert_eq!(
+        repo.read("workspace/coverage-runs"),
+        "x",
+        "stale coverage was not rerun"
+    );
+    assert_eq!(
+        latest_evidence(&repo)["coverage"][0]["status"],
+        "unverified"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn doctor_and_stop_accept_long_relative_executable_paths() {
+    let repo = TempRepo::new();
+    let components: Vec<String> = (0..129).map(|index| format!("d{index}")).collect();
+    let executable = format!("{}/check", components.join("/"));
+    repo.write(
+        &format!("workspace/{executable}"),
+        "#!/bin/sh\nprintf x >> ../long-command-runs\nexit 0\n",
+    );
+    std::fs::set_permissions(
+        repo.path().join(format!("workspace/{executable}")),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("long executable permissions");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": [executable], "cwd": "workspace",
+                    "timeout_seconds": 30, "tier": "full", "purpose": "test",
+                    "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(doctor.status.success());
+    assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
+    assert!(
+        run_post_tool_use(&repo, "long-executable", "workspace/src/app.rs")
+            .status
+            .success()
+    );
+    let authorized_stop = run_full_stop(&repo, "long-executable", false);
+    assert!(authorized_stop.status.success());
+    assert_eq!(repo.read("long-command-runs"), "x");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn non_utf8_path_survives_doctor_and_supervisor_execution() {
+    let repo = TempRepo::new();
+    let home = OsString::from_vec(b"non-utf8-home-\xfe".to_vec());
+    let path_component = OsString::from_vec(b"non-utf8-bin-\xff".to_vec());
+    let path_directory = repo.path().join(&path_component);
+    std::fs::create_dir_all(&path_directory).expect("non-UTF-8 PATH directory");
+    std::fs::write(
+        path_directory.join("check"),
+        "#!/bin/sh\nprintf '%s' \"$HOME\" > non-utf8-home-marker\nprintf x > non-utf8-path-marker\nexit 0\n",
+    )
+    .expect("non-UTF-8 PATH executable");
+    std::fs::set_permissions(
+        path_directory.join("check"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("non-UTF-8 PATH executable permissions");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": ".",
+                "commands": [{"argv": ["check"], "cwd": ".",
+                    "timeout_seconds": 30, "tier": "full", "purpose": "test",
+                    "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let path = OsString::from_vec(path_directory.as_os_str().as_bytes().to_vec());
+    let doctor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .env("PATH", &path)
+        .env("HOME", &home)
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(doctor.status.success());
+    assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
+
+    assert!(
+        run_post_tool_use(&repo, "non-utf8-path", "workspace/src/app.rs")
+            .status
+            .success()
+    );
+    let stop = run_full_stop_with_path_and_home(
+        &repo,
+        "non-utf8-path",
+        false,
+        Some(&path),
+        Some(home.as_os_str()),
+    );
+    assert!(stop.status.success(), "Stop stderr: {:?}", stop.stderr);
+    assert_eq!(repo.read("non-utf8-path-marker"), "x");
+    assert_eq!(
+        std::fs::read(repo.path().join("non-utf8-home-marker")).expect("HOME marker reads"),
+        home.as_os_str().as_bytes(),
+    );
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"][0]["exit_code"], 0);
+    assert!(record["commands"][0]["cwd_identity"].as_str().is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn non_utf8_ci_survives_doctor_and_supervisor_execution() {
+    let repo = TempRepo::new();
+    let ci = OsString::from_vec(b"ci-value-\xfe".to_vec());
+    let path_directory = repo.path().join("workspace/bin");
+    std::fs::create_dir_all(&path_directory).expect("CI PATH directory");
+    repo.write(
+        "workspace/bin/check",
+        "#!/bin/sh\nprintf '%s' \"$CI\" > ci-marker\nexit 0\n",
+    );
+    std::fs::set_permissions(
+        path_directory.join("check"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("CI executable permissions");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": ".",
+                "commands": [{"argv": ["check"], "cwd": ".", "timeout_seconds": 30,
+                    "tier": "full", "purpose": "test", "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .env("PATH", &path_directory)
+        .env("CI", &ci)
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(doctor.status.success());
+    assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
+
+    let stop = run_full_stop_with_environment(
+        &repo,
+        "non-utf8-ci",
+        false,
+        Some(path_directory.as_os_str()),
+        None,
+        Some(ci.as_os_str()),
+    );
+    assert!(stop.status.success(), "Stop stderr: {:?}", stop.stderr);
+    assert_eq!(
+        std::fs::read(repo.path().join("ci-marker")).expect("CI marker reads"),
+        ci.as_os_str().as_bytes(),
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sibling_workspace_root_selection_reuses_only_touched_workspace_evidence() {
+    let repo = TempRepo::new();
+    repo.write("workspace/app2/src/app.rs", "pub fn value() -> u8 { 1 }\n");
+
+    let selected_command_marker = repo.path().join("selected-command-runs");
+    let selected_coverage_marker = repo.path().join("selected-coverage-runs");
+    let other_command_marker = repo.path().join("other-command-runs");
+    let other_coverage_marker = repo.path().join("other-coverage-runs");
+    for root in ["app", "app2"] {
+        repo.write(
+            &format!("workspace/{root}/checks/check"),
+            "#!/bin/sh\nprintf x >> \"$1\"\nexit 0\n",
+        );
+        repo.write(
+            &format!("workspace/{root}/coverage/report"),
+            "#!/bin/sh\nprintf x >> \"$1\"\necho 'line coverage: 100% branch coverage: 100%'\n",
+        );
+        for path in [
+            repo.path().join(format!("workspace/{root}/checks/check")),
+            repo.path()
+                .join(format!("workspace/{root}/coverage/report")),
+        ] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .expect("sibling fixture executable");
+        }
+    }
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [
+                {
+                    "id": "app",
+                    "language": "shell",
+                    "root": "workspace/app",
+                    "commands": [{
+                        "argv": ["./check", selected_command_marker.to_string_lossy()],
+                        "cwd": "workspace/app/checks",
+                        "timeout_seconds": 30,
+                        "tier": "full",
+                        "purpose": "test",
+                        "source": "fixture",
+                        "confidence": "high"
+                    }],
+                    "coverage": [{
+                        "argv": ["./report", selected_coverage_marker.to_string_lossy()],
+                        "cwd": "workspace/app/coverage",
+                        "timeout_seconds": 30,
+                        "scope": "unit",
+                        "line_threshold_percent": 80,
+                        "branch_threshold_percent": 80
+                    }]
+                },
+                {
+                    "id": "app2",
+                    "language": "shell",
+                    "root": "workspace/app2",
+                    "commands": [{
+                        "argv": ["./check", other_command_marker.to_string_lossy()],
+                        "cwd": "workspace/app2/checks",
+                        "timeout_seconds": 30,
+                        "tier": "full",
+                        "purpose": "test",
+                        "source": "fixture",
+                        "confidence": "high"
+                    }],
+                    "coverage": [{
+                        "argv": ["./report", other_coverage_marker.to_string_lossy()],
+                        "cwd": "workspace/app2/coverage",
+                        "timeout_seconds": 30,
+                        "scope": "unit",
+                        "line_threshold_percent": 80,
+                        "branch_threshold_percent": 80
+                    }]
+                }
+            ],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    assert!(
+        run_post_tool_use(
+            &repo,
+            "sibling-workspace-reuse",
+            "workspace/app2/src/app.rs"
+        )
+        .status
+        .success()
+    );
+    let first = run_pre_tool_use_command(&repo, "sibling-workspace-reuse", "git commit -m first");
+    assert!(
+        first.status.success(),
+        "first precommit: {:?}",
+        first.stderr
+    );
+    assert!(
+        first.stdout.is_empty(),
+        "first stdout={} stderr={}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(!repo.exists("selected-command-runs"));
+    assert!(!repo.exists("selected-coverage-runs"));
+    assert_eq!(repo.read("other-command-runs"), "x");
+    assert_eq!(repo.read("other-coverage-runs"), "x");
+
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"].as_array().map(Vec::len), Some(1));
+    assert_eq!(record["commands"][0]["workspace_id"], "app2");
+    assert_eq!(record["commands"][0]["cwd"], "workspace/app2/checks");
+    assert_eq!(record["coverage"].as_array().map(Vec::len), Some(1));
+    assert_eq!(record["coverage"][0]["workspace_id"], "app2");
+    assert_eq!(record["coverage"][0]["cwd"], "workspace/app2/coverage");
+
+    let second = run_pre_tool_use_command(&repo, "sibling-workspace-reuse", "git commit -m second");
+    assert!(
+        second.status.success(),
+        "second precommit: {:?}",
+        second.stderr
+    );
+    assert!(second.stdout.is_empty());
+    assert!(!repo.exists("selected-command-runs"));
+    assert!(!repo.exists("selected-coverage-runs"));
+    assert_eq!(repo.read("other-command-runs"), "x");
+    assert_eq!(repo.read("other-coverage-runs"), "x");
+}
+
+#[test]
+fn workspace_root_containment_rejects_root_and_sibling_cwds() {
+    let repo = TempRepo::new();
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    let invalid_configs = [
+        json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": ["true"], "cwd": ".", "timeout_seconds": 30,
+                    "tier": "full", "purpose": "test", "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        }),
+        json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [],
+                "coverage": [{"argv": ["true"], "cwd": "other", "timeout_seconds": 30,
+                    "scope": "unit"}]
+            }], "disabled_rules": [], "severity_overrides": {}
+        }),
+    ];
+    for config in invalid_configs {
+        repo.write(".lgtm/config.json", &config.to_string());
+        let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+            .args(["config", "validate"])
+            .current_dir(repo.path())
+            .output()
+            .expect("config validation starts");
+        assert!(!output.status.success());
+        let diagnostic = String::from_utf8(output.stderr).expect("diagnostic is UTF-8");
+        assert!(
+            diagnostic.contains("cwd must equal or descend"),
+            "diagnostic: {diagnostic}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[cfg(target_os = "linux")]
+#[test]
+fn config_doctor_checks_commands_from_their_effective_cwd() {
+    let repo = TempRepo::new();
+    repo.write("workspace/src/tool", "#!/bin/sh\nexit 0\n");
+    std::fs::set_permissions(
+        repo.path().join("workspace/src/tool"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("doctor fixture executable");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": ["./tool"], "cwd": "workspace/src", "timeout_seconds": 30,
+                    "tier": "full", "purpose": "test", "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("doctor output is UTF-8");
+    assert!(stdout.contains("config doctor: clean"));
+    assert!(!stdout.contains("MISSING"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn searchable_only_cwd_passes_doctor_and_supervised_stop() {
+    let repo = TempRepo::new();
+    repo.write("workspace/app.rs", "fn app() {}\n");
+    std::fs::create_dir_all(repo.path().join("workspace/target/cwd"))
+        .expect("searchable cwd exists");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": ["/bin/true"], "cwd": "workspace/target/cwd", "timeout_seconds": 30,
+                    "tier": "full", "purpose": "test", "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    std::fs::set_permissions(
+        repo.path().join("workspace/target/cwd"),
+        std::fs::Permissions::from_mode(0o111),
+    )
+    .expect("searchable cwd permissions");
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(doctor.status.success());
+    assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
+
+    assert!(
+        run_post_tool_use(&repo, "searchable-only-cwd", "workspace/app.rs")
+            .status
+            .success()
+    );
+    let stop = run_full_stop(&repo, "searchable-only-cwd", false);
+    assert!(
+        stop.status.success(),
+        "stop stderr: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"][0]["exit_code"], 0);
+    assert!(record["commands"][0]["cwd_identity"].as_str().is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn config_doctor_accepts_executable_symlink_runtime_can_run() {
+    let repo = TempRepo::new();
+    repo.write(
+        "workspace/src/real-tool",
+        "#!/bin/sh\ntouch runtime-marker\nexit 0\n",
+    );
+    std::fs::set_permissions(
+        repo.path().join("workspace/src/real-tool"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("doctor executable fixture");
+    std::os::unix::fs::symlink(
+        repo.path().join("workspace/src/real-tool"),
+        repo.path().join("workspace/src/tool"),
+    )
+    .expect("doctor executable symlink");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": ["./tool"], "cwd": "workspace/src", "timeout_seconds": 30,
+                    "tier": "full", "purpose": "test", "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(doctor.status.success());
+    assert!(
+        String::from_utf8(doctor.stdout)
+            .expect("doctor output is UTF-8")
+            .contains("config doctor: clean")
+    );
+    let stop = run_full_stop(&repo, "doctor-executable-symlink", false);
+    assert!(stop.status.success());
+    assert!(repo.exists("workspace/src/runtime-marker"));
+}
+
+#[cfg(unix)]
+#[test]
+fn config_doctor_rejects_absolute_and_bare_commands_with_symlinked_cwd() {
+    let repo = TempRepo::new();
+    let outside = std::env::temp_dir().join(format!(
+        "lgtm-outside-doctor-{}",
+        repo.path()
+            .file_name()
+            .expect("temporary repository name")
+            .to_string_lossy()
+    ));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir(&outside).expect("outside fixture");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    std::os::unix::fs::symlink(&outside, repo.path().join("workspace/cwd-link"))
+        .expect("doctor cwd symlink");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [
+                    {"argv": ["/bin/true"], "cwd": "workspace/cwd-link", "timeout_seconds": 30,
+                        "tier": "full", "purpose": "test", "source": "fixture", "confidence": "high"},
+                    {"argv": ["true"], "cwd": "workspace/cwd-link", "timeout_seconds": 30,
+                        "tier": "full", "purpose": "test", "source": "fixture", "confidence": "high"}
+                ],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("doctor output is UTF-8");
+    assert_eq!(stdout.matches("MISSING").count(), 2);
+    assert!(!stdout.contains("config doctor: clean"));
+    let _ = std::fs::remove_dir_all(outside);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn doctor_and_stop_resolve_relative_path_from_effective_cwd() {
+    let repo = TempRepo::new();
+    repo.write(
+        "workspace/tests/bin/check",
+        "#!/bin/sh\nprintf nested > ../relative-path-marker\nexit 0\n",
+    );
+    repo.write(
+        "bin/check",
+        "#!/bin/sh\nprintf decoy > decoy-marker\nexit 0\n",
+    );
+    for path in [
+        repo.path().join("workspace/tests/bin/check"),
+        repo.path().join("bin/check"),
+    ] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("relative PATH executable permissions");
+    }
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": ["check"], "cwd": "workspace/tests",
+                    "timeout_seconds": 30, "tier": "full", "purpose": "relative PATH",
+                    "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .env("PATH", "./bin")
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(doctor.status.success());
+    assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
+
+    let stop = run_full_stop_with_path_and_home(
+        &repo,
+        "relative-path",
+        false,
+        Some(std::ffi::OsStr::new("./bin")),
+        None,
+    );
+    assert!(stop.status.success());
+    assert_eq!(repo.read("workspace/relative-path-marker"), "nested");
+    assert!(!repo.exists("decoy-marker"));
+}
+
+#[cfg(unix)]
+#[test]
+fn config_doctor_does_not_use_process_cwd_for_relative_command_or_coverage_paths() {
+    let repo = TempRepo::new();
+    repo.write("workspace/checks/command", "#!/bin/sh\nexit 0\n");
+    repo.write("workspace/coverage/tool", "#!/bin/sh\nexit 0\n");
+    repo.write("workspace/src/command", "decoy\n");
+    repo.write("workspace/src/coverage", "decoy\n");
+    for path in [
+        repo.path().join("workspace/checks/command"),
+        repo.path().join("workspace/coverage/tool"),
+    ] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("doctor fixture executable");
+    }
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": ["workspace/src/command"], "cwd": "workspace/checks",
+                    "timeout_seconds": 30, "tier": "full", "purpose": "test",
+                    "source": "fixture", "confidence": "high"}],
+                "coverage": [{"argv": ["workspace/src/coverage"], "cwd": "workspace/coverage",
+                    "timeout_seconds": 30, "scope": "unit"}]
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("doctor output is UTF-8");
+    assert_eq!(stdout.matches("MISSING").count(), 2);
+    assert!(!stdout.contains("config doctor: clean"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mode_zero_cwd_is_missing_to_doctor_and_stop() {
+    let repo = TempRepo::new();
+    let cwd = repo.path().join("workspace/locked");
+    std::fs::create_dir_all(&cwd).expect("locked cwd fixture");
+    repo.write(
+        "workspace/bin/absolute",
+        "#!/bin/sh\nprintf x > absolute-marker\nexit 0\n",
+    );
+    repo.write(
+        "workspace/bin/bare",
+        "#!/bin/sh\nprintf x > bare-marker\nexit 0\n",
+    );
+    for path in [
+        repo.path().join("workspace/bin/absolute"),
+        repo.path().join("workspace/bin/bare"),
+    ] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("locked cwd executable permissions");
+    }
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [
+                    {"argv": [repo.path().join("workspace/bin/absolute")], "cwd": "workspace/locked",
+                        "timeout_seconds": 30, "tier": "full", "purpose": "absolute",
+                        "source": "fixture", "confidence": "high"},
+                    {"argv": ["bare"], "cwd": "workspace/locked",
+                        "timeout_seconds": 30, "tier": "full", "purpose": "bare",
+                        "source": "fixture", "confidence": "high"}
+                ],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    std::fs::set_permissions(&cwd, std::fs::Permissions::from_mode(0o000))
+        .expect("remove locked cwd search permission");
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .env("PATH", repo.path().join("workspace/bin"))
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(doctor.status.success());
+    let doctor_stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert_eq!(doctor_stdout.matches("MISSING").count(), 2);
+    assert!(!doctor_stdout.contains("config doctor: clean"));
+
+    let stop = run_full_stop_with_path_and_home(
+        &repo,
+        "mode-zero-cwd",
+        false,
+        Some(repo.path().join("workspace/bin").as_os_str()),
+        None,
+    );
+    assert!(stop.status.success());
+    assert!(!repo.exists("absolute-marker"));
+    assert!(!repo.exists("bare-marker"));
+    std::fs::set_permissions(cwd, std::fs::Permissions::from_mode(0o700))
+        .expect("restore locked cwd permissions");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn symlinked_command_and_coverage_cwds_fail_closed_before_outside_execution() {
+    let repo = TempRepo::new();
+    let outside = std::env::temp_dir().join(format!("lgtm-outside-cwd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir(&outside).expect("outside fixture");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write("workspace/bin/command", "#!/bin/sh\ntouch command-marker\n");
+    repo.write(
+        "workspace/bin/coverage",
+        "#!/bin/sh\ntouch coverage-marker\necho 'line coverage: 100% branch coverage: 100%'\n",
+    );
+    for path in [
+        repo.path().join("workspace/bin/command"),
+        repo.path().join("workspace/bin/coverage"),
+    ] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("symlink cwd executable");
+    }
+    std::os::unix::fs::symlink(&outside, repo.path().join("workspace/command-link"))
+        .expect("command cwd symlink");
+    std::os::unix::fs::symlink(&outside, repo.path().join("workspace/coverage-link"))
+        .expect("coverage cwd symlink");
+    let command_marker = outside.join("command-marker");
+    let coverage_marker = outside.join("coverage-marker");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": [repo.path().join("workspace/bin/command")],
+                    "cwd": "workspace/command-link", "timeout_seconds": 30, "tier": "full",
+                    "purpose": "test", "source": "fixture", "confidence": "high"}],
+                "coverage": [{"argv": [repo.path().join("workspace/bin/coverage")],
+                    "cwd": "workspace/coverage-link", "timeout_seconds": 30, "scope": "unit"}]
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let output = run_full_stop(&repo, "symlinked-cwd", false);
+    assert!(output.status.success());
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"].as_array().expect("commands").len(), 1);
+    assert_eq!(record["commands"][0]["exit_code"], Value::Null);
+    assert_eq!(record["coverage"][0]["status"], "unverified");
+    assert!(!command_marker.exists());
+    assert!(!coverage_marker.exists());
+    let messages = record["results"].as_array().expect("results");
+    assert!(messages.iter().any(|result| {
+        result["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("containment could not be proven"))
+    }));
+    let _ = std::fs::remove_dir_all(outside);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn symlinked_coverage_cwd_is_unverified_without_running_coverage() {
+    let repo = TempRepo::new();
+    let outside = std::env::temp_dir().join(format!(
+        "lgtm-outside-coverage-{}",
+        repo.path()
+            .file_name()
+            .expect("temporary repository name")
+            .to_string_lossy()
+    ));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir(&outside).expect("outside fixture");
+    repo.write("workspace/src/app.rs", "fn app() {}\n");
+    repo.write(
+        "workspace/bin/coverage",
+        "#!/bin/sh\ntouch coverage-marker\necho 'line coverage: 100% branch coverage: 100%'\n",
+    );
+    let coverage = repo.path().join("workspace/bin/coverage");
+    std::fs::set_permissions(&coverage, std::fs::Permissions::from_mode(0o700))
+        .expect("coverage fixture executable");
+    std::os::unix::fs::symlink(&outside, repo.path().join("workspace/coverage-link"))
+        .expect("coverage cwd symlink");
+    let outside_marker = outside.join("coverage-marker");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [],
+                "coverage": [{"argv": [coverage], "cwd": "workspace/coverage-link",
+                    "timeout_seconds": 30, "scope": "unit"}]
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "symlinked-coverage-cwd", "workspace/src/app.rs")
+            .status
+            .success()
+    );
+
+    let output = run_full_stop(&repo, "symlinked-coverage-cwd", false);
+    assert!(output.status.success());
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"].as_array().expect("commands").len(), 0);
+    assert_eq!(record["coverage"][0]["status"], "unverified");
+    assert!(!outside_marker.exists());
+    assert!(
+        record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("containment"))
+            })
+        }),
+        "coverage evidence must include a containment finding"
+    );
+    let _ = std::fs::remove_dir_all(outside);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn retargeted_workspace_alias_remains_selected_and_cannot_reuse_evidence() {
+    let repo = TempRepo::new();
+    for target in ["workspace-a", "workspace-b"] {
+        repo.write(&format!("{target}/src/app.rs"), "fn app() {}\n");
+    }
+    repo.write("workspace-a/bin/command", "#!/bin/sh\nexit 0\n");
+    let command = repo.path().join("workspace-a/bin/command");
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
+        .expect("workspace command executable");
+    std::os::unix::fs::symlink(
+        repo.path().join("workspace-a"),
+        repo.path().join("workspace"),
+    )
+    .expect("workspace alias points to A");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": [command], "cwd": "workspace", "timeout_seconds": 30,
+                    "tier": "full", "purpose": "test", "source": "fixture", "confidence": "high"}],
+                "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "retargeted-workspace", "workspace/src/app.rs")
+            .status
+            .success()
+    );
+    std::fs::remove_file(repo.path().join("workspace")).expect("remove old alias");
+    std::os::unix::fs::symlink(
+        repo.path().join("workspace-b"),
+        repo.path().join("workspace"),
+    )
+    .expect("workspace alias retargets to B");
+
+    for _ in 0..2 {
+        let output = run_full_stop(&repo, "retargeted-workspace", false);
+        assert!(output.status.success());
+        let record = latest_evidence(&repo);
+        assert_eq!(record["commands"].as_array().expect("commands").len(), 1);
+        assert_eq!(record["commands"][0]["exit_code"], Value::Null);
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("containment could not be proven"))
+            })
+        }));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn config_doctor_rejects_empty_symlinked_workspace_root() {
+    let repo = TempRepo::new();
+    std::fs::create_dir_all(repo.path().join("workspace-real")).expect("workspace root");
+    std::os::unix::fs::symlink(
+        repo.path().join("workspace-real"),
+        repo.path().join("workspace"),
+    )
+    .expect("workspace root symlink");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [], "coverage": []
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["config", "doctor"])
+        .current_dir(repo.path())
+        .output()
+        .expect("config doctor starts");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("doctor output is UTF-8");
+    assert!(stdout.contains("STALE workspace=workspace root=workspace"));
+    assert!(!stdout.contains("config doctor: clean"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn symlinked_workspace_root_selects_obligations_then_fails_closed() {
+    let repo = TempRepo::new();
+    repo.write("workspace-real/src/app.rs", "fn app() {}\n");
+    repo.write(
+        "workspace-real/bin/command",
+        "#!/bin/sh\ntouch command-marker\n",
+    );
+    repo.write(
+        "workspace-real/bin/coverage",
+        "#!/bin/sh\ntouch coverage-marker\necho 'line coverage: 100% branch coverage: 100%'\n",
+    );
+    for path in [
+        repo.path().join("workspace-real/bin/command"),
+        repo.path().join("workspace-real/bin/coverage"),
+    ] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("workspace fixture executable");
+    }
+    std::os::unix::fs::symlink(
+        repo.path().join("workspace-real"),
+        repo.path().join("workspace"),
+    )
+    .expect("workspace root symlink");
+    let command = repo.path().join("workspace-real/bin/command");
+    let coverage = repo.path().join("workspace-real/bin/coverage");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [{"argv": [command], "cwd": "workspace", "timeout_seconds": 30,
+                    "tier": "full", "purpose": "test", "source": "fixture", "confidence": "high"}],
+                "coverage": [{"argv": [coverage], "cwd": "workspace", "timeout_seconds": 30,
+                    "scope": "unit"}]
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "symlinked-workspace-root", "workspace/src/app.rs")
+            .status
+            .success()
+    );
+
+    let output = run_full_stop(&repo, "symlinked-workspace-root", false);
+    assert!(output.status.success());
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"].as_array().expect("commands").len(), 1);
+    assert_eq!(record["commands"][0]["exit_code"], Value::Null);
+    assert_eq!(record["coverage"][0]["status"], "unverified");
+    assert!(!repo.exists("workspace-real/command-marker"));
+    assert!(!repo.exists("workspace-real/coverage-marker"));
+    assert!(record["results"].as_array().is_some_and(|results| {
+        results.iter().any(|result| {
+            result["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("containment could not be proven"))
+        })
+    }));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn symlinked_workspace_root_selects_coverage_without_commands() {
+    let repo = TempRepo::new();
+    repo.write("workspace-real/src/app.rs", "fn app() {}\n");
+    repo.write(
+        "workspace-real/bin/coverage",
+        "#!/bin/sh\ntouch coverage-marker\necho 'line coverage: 100% branch coverage: 100%'\n",
+    );
+    let coverage = repo.path().join("workspace-real/bin/coverage");
+    std::fs::set_permissions(&coverage, std::fs::Permissions::from_mode(0o700))
+        .expect("coverage fixture executable");
+    std::os::unix::fs::symlink(
+        repo.path().join("workspace-real"),
+        repo.path().join("workspace"),
+    )
+    .expect("workspace root symlink");
+    let outside_marker = repo.path().join("workspace-real/coverage-marker");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "workspace", "language": "shell", "root": "workspace",
+                "commands": [],
+                "coverage": [{"argv": [coverage], "cwd": "workspace", "timeout_seconds": 30,
+                    "scope": "unit"}]
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(
+            &repo,
+            "symlinked-workspace-root-coverage",
+            "workspace/src/app.rs"
+        )
+        .status
+        .success()
+    );
+
+    let output = run_full_stop(&repo, "symlinked-workspace-root-coverage", false);
+    assert!(output.status.success());
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"].as_array().expect("commands").len(), 0);
+    assert_eq!(record["coverage"].as_array().expect("coverage").len(), 1);
+    assert_eq!(record["coverage"][0]["status"], "unverified");
+    assert!(!outside_marker.exists());
+    assert!(
+        record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("containment"))
+            })
+        }),
+        "coverage containment result: {record}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn outside_workspace_root_alias_is_selected_and_not_reusable() {
+    let repo = TempRepo::new();
+    let outside = std::env::temp_dir().join(format!(
+        "lgtm-outside-workspace-root-{}",
+        repo.path()
+            .file_name()
+            .expect("temporary repository name")
+            .to_string_lossy()
+    ));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(outside.join("src")).expect("outside workspace fixture");
+    std::fs::write(outside.join("src/app.rs"), "fn app() {}\n").expect("outside source");
+    std::fs::write(
+        outside.join("command"),
+        "#!/bin/sh\ntouch command-marker\nexit 0\n",
+    )
+    .expect("outside command");
+    std::fs::write(
+        outside.join("coverage"),
+        "#!/bin/sh\ntouch coverage-marker\necho 'line coverage: 100% branch coverage: 100%'\n",
+    )
+    .expect("outside coverage");
+    for path in [outside.join("command"), outside.join("coverage")] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("outside executable");
+    }
+    std::fs::create_dir(repo.path().join("workspace")).expect("workspace alias parent");
+    std::fs::remove_dir(repo.path().join("workspace")).expect("workspace alias placeholder");
+    std::os::unix::fs::symlink(&outside, repo.path().join("workspace"))
+        .expect("outside workspace root symlink");
+    repo.write("src/app.rs", "fn touched() {}\n");
+    let command = outside.join("command");
+    let coverage = outside.join("coverage");
+    let command_marker = outside.join("command-marker");
+    let coverage_marker = outside.join("coverage-marker");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2", "profile": "default", "workspaces": [{
+                "id": "outside", "language": "shell", "root": "workspace",
+                "commands": [{"argv": [command], "cwd": "workspace", "timeout_seconds": 30,
+                    "tier": "full", "purpose": "test", "source": "fixture", "confidence": "high"}],
+                "coverage": [{"argv": [coverage], "cwd": "workspace", "timeout_seconds": 30,
+                    "scope": "unit"}]
+            }], "disabled_rules": [], "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    assert!(
+        run_post_tool_use(&repo, "outside-workspace-root", "src/app.rs")
+            .status
+            .success()
+    );
+
+    let output = run_full_stop(&repo, "outside-workspace-root", false);
+    assert!(output.status.success());
+    let record = latest_evidence(&repo);
+    assert_eq!(record["commands"].as_array().expect("commands").len(), 1);
+    assert_eq!(record["commands"][0]["exit_code"], Value::Null);
+    assert_eq!(record["coverage"].as_array().expect("coverage").len(), 1);
+    assert_eq!(record["coverage"][0]["status"], "unverified");
+    assert!(!command_marker.exists());
+    assert!(!coverage_marker.exists());
+    assert!(record["results"].as_array().is_some_and(|results| {
+        results.iter().any(|result| {
+            result["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("containment could not be proven"))
+        })
+    }));
+    let second = run_pre_tool_use_command(&repo, "outside-workspace-root", "git commit -m retry");
+    assert!(second.status.success());
+    assert!(
+        !second.stdout.is_empty(),
+        "failed evidence must not authorize reuse"
+    );
+    let _ = std::fs::remove_dir_all(outside);
 }
 
 #[test]

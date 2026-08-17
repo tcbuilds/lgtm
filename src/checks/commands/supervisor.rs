@@ -1,5 +1,10 @@
+use std::ffi::{OsStr, OsString};
 use std::io::Read;
-use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -8,20 +13,28 @@ use serde::{Deserialize, Serialize};
 
 const REQUEST_ENV: &str = "LGTM_INTERNAL_COMMAND_SUPERVISOR_REQUEST";
 const MAX_CAPTURE_BYTES: u64 = 256 * 1024;
+// Request paths and PATH/HOME/CI are hex-encoded so Unix byte strings remain
+// lossless without expanding each byte into a JSON array element. Keep every
+// field and the complete JSON envelope below Linux's per-environment-entry
+// limit, even when all fields are near their configured bounds.
+const MAX_REQUEST_PATH_BYTES: usize = 8 * 1024;
+const MAX_REQUEST_ENV_BYTES: usize = 8 * 1024;
+const MAX_REQUEST_ENVELOPE_BYTES: usize = 96 * 1024;
 #[cfg(not(test))]
 const MAX_RESPONSE_BYTES: usize = (MAX_CAPTURE_BYTES as usize * 4) + 16 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const QUIESCENCE: Duration = Duration::from_millis(20);
 const CLEANUP_RESERVE: Duration = Duration::from_millis(50);
+const REQUEST_TIMEOUT_RESERVE_MS: u64 = 50;
 #[cfg(not(test))]
-const PARENT_RESERVE: Duration = Duration::from_millis(50);
+const PARENT_RESERVE: Duration = Duration::from_millis(REQUEST_TIMEOUT_RESERVE_MS);
 
 pub fn platform_id() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 #[cfg(target_os = "linux")]
-pub const CONTAINMENT_VERSION: &str = "linux-isolated-subreaper-v2";
+pub const CONTAINMENT_VERSION: &str = "linux-isolated-subreaper-v3";
 #[cfg(not(target_os = "linux"))]
 pub const CONTAINMENT_VERSION: &str = "unavailable-v1";
 
@@ -38,13 +51,16 @@ pub(crate) struct Captured {
     pub(crate) code: Option<i32>,
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
+    pub(crate) cwd_identity: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 struct SupervisorRequest {
     argv: Vec<String>,
+    repository_root: String,
+    workspace_root: String,
     cwd: String,
-    timeout_ms: u64,
+    timeout_ms: String,
     path: Option<String>,
     home: Option<String>,
     ci: Option<String>,
@@ -56,6 +72,8 @@ struct SupervisorResponse {
     code: Option<i32>,
     stdout_hex: String,
     stderr_hex: String,
+    #[serde(default)]
+    cwd_identity: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -70,34 +88,42 @@ enum SupervisorOutcome {
 
 pub(crate) fn run_with_deadline(
     argv: &[String],
+    repository_root: &Path,
+    workspace_root: &Path,
     cwd: &Path,
     deadline: Instant,
 ) -> Result<Captured, ContainedRunError> {
     #[cfg(all(target_os = "linux", not(test)))]
     {
-        run_via_supervisor(argv, cwd, deadline)
+        run_via_supervisor(argv, repository_root, workspace_root, cwd, deadline)
     }
     // Unit tests share one process and cannot exec the normal CLI entry point.
     // The production boundary is covered by integration tests through the real
     // binary; unit tests retain bounded process-group behavior only.
     #[cfg(all(target_os = "linux", test))]
     {
-        let command = configured_command(argv, cwd);
+        let command = configured_command(argv, &repository_root.join(cwd));
         let captured =
             crate::checks::gitleaks::runner::run_details_with_deadline(command, deadline)
                 .ok_or(ContainedRunError::CouldNotRun)?;
         if captured.process_group_survived {
             return Err(ContainedRunError::ContainmentViolation);
         }
+        let cwd_capability =
+            crate::fsutil::open_directory_capability(repository_root, workspace_root, cwd)
+                .map_err(|_| ContainedRunError::ContainmentUnproven)?;
+        let cwd_identity = crate::fsutil::directory_identity(&cwd_capability)
+            .map_err(|_| ContainedRunError::ContainmentUnproven)?;
         Ok(Captured {
             code: captured.code,
             stdout: captured.stdout,
             stderr: captured.stderr,
+            cwd_identity: Some(cwd_identity),
         })
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (argv, cwd, deadline);
+        let _ = (argv, repository_root, workspace_root, cwd, deadline);
         Err(ContainedRunError::ContainmentUnavailable)
     }
 }
@@ -105,6 +131,8 @@ pub(crate) fn run_with_deadline(
 #[cfg(all(target_os = "linux", not(test)))]
 fn run_via_supervisor(
     argv: &[String],
+    repository_root: &Path,
+    workspace_root: &Path,
     cwd: &Path,
     deadline: Instant,
 ) -> Result<Captured, ContainedRunError> {
@@ -116,15 +144,9 @@ fn run_via_supervisor(
     if timeout_ms == 0 {
         return Err(ContainedRunError::CouldNotRun);
     }
-    let request = SupervisorRequest {
-        argv: argv.to_vec(),
-        cwd: cwd.to_string_lossy().into_owned(),
-        timeout_ms,
-        path: std::env::var("PATH").ok(),
-        home: std::env::var("HOME").ok(),
-        ci: std::env::var("CI").ok(),
-    };
-    let serialized = serde_json::to_string(&request).map_err(|_| ContainedRunError::CouldNotRun)?;
+    let request = build_request(argv, repository_root, workspace_root, cwd, timeout_ms)
+        .map_err(|_| ContainedRunError::CouldNotRun)?;
+    let serialized = serialize_request(&request).map_err(|_| ContainedRunError::CouldNotRun)?;
     let executable = std::env::current_exe().map_err(|_| ContainedRunError::CouldNotRun)?;
     let mut command = Command::new(executable);
     command
@@ -156,6 +178,7 @@ fn run_via_supervisor(
             code: response.code,
             stdout,
             stderr,
+            cwd_identity: response.cwd_identity,
         }),
         SupervisorOutcome::CouldNotRun => Err(ContainedRunError::CouldNotRun),
         SupervisorOutcome::ContainmentUnavailable => Err(ContainedRunError::ContainmentUnavailable),
@@ -180,7 +203,10 @@ pub fn run_from_environment() -> ExitCode {
 
 #[cfg(target_os = "linux")]
 fn run_supervisor(request: SupervisorRequest) -> SupervisorResponse {
-    if request.argv.is_empty() || request.timeout_ms == 0 || direct_children().is_err() {
+    let Some(timeout_ms) = request.timeout_ms.parse::<u64>().ok() else {
+        return unproven_response();
+    };
+    if request.argv.is_empty() || timeout_ms == 0 || direct_children().is_err() {
         return unproven_response();
     }
     let mut original_subreaper = 0;
@@ -208,16 +234,27 @@ fn run_supervisor(request: SupervisorRequest) -> SupervisorResponse {
     }
 
     let deadline = Instant::now()
-        .checked_add(Duration::from_millis(request.timeout_ms))
+        .checked_add(Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
     let Some(execution_deadline) = deadline.checked_sub(CLEANUP_RESERVE) else {
         return unproven_response();
     };
-    let mut command = command_from_request(&request);
-    prepare_command(&mut command);
+    let (mut command, cwd_capability) = match command_from_request(&request) {
+        Ok(command) => command,
+        Err(_) => return unproven_response(),
+    };
+    let Ok(cwd_identity) = crate::fsutil::directory_identity(&cwd_capability) else {
+        return unproven_response();
+    };
+    prepare_command(&mut command, cwd_capability.as_raw_fd());
     let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(_) => return response(SupervisorOutcome::CouldNotRun, None, Vec::new(), Vec::new()),
+        Err(_) => {
+            let mut response =
+                response(SupervisorOutcome::CouldNotRun, None, Vec::new(), Vec::new());
+            response.cwd_identity = Some(cwd_identity);
+            return response;
+        }
     };
     let pid = child.id();
     let stdout = drain_bounded(child.stdout.take());
@@ -249,12 +286,23 @@ fn run_supervisor(request: SupervisorRequest) -> SupervisorResponse {
         Cleanup::Clean if direct_reaped => SupervisorOutcome::CouldNotRun,
         Cleanup::Clean | Cleanup::Unproven => SupervisorOutcome::ContainmentUnproven,
     };
-    response(
+    let identity_still_current =
+        request_cwd_identity(&request).is_some_and(|identity| identity == cwd_identity);
+    let outcome = if identity_still_current {
+        outcome
+    } else {
+        SupervisorOutcome::ContainmentUnproven
+    };
+    let mut response = response(
         outcome,
-        status.and_then(|status| status.code()),
+        identity_still_current
+            .then(|| status.and_then(|status| status.code()))
+            .flatten(),
         captured_stdout.unwrap_or_default(),
         captured_stderr.unwrap_or_default(),
-    )
+    );
+    response.cwd_identity = Some(cwd_identity);
+    response
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -275,22 +323,41 @@ fn configured_command(argv: &[String], cwd: &Path) -> Command {
     command
 }
 
-fn command_from_request(request: &SupervisorRequest) -> Command {
+fn request_cwd_identity(request: &SupervisorRequest) -> Option<String> {
+    let repository_root = decode_path(&request.repository_root)?;
+    let workspace_root = decode_path(&request.workspace_root)?;
+    let cwd = decode_path(&request.cwd)?;
+    let capability =
+        crate::fsutil::open_directory_capability(&repository_root, &workspace_root, &cwd).ok()?;
+    crate::fsutil::directory_identity(&capability).ok()
+}
+
+fn command_from_request(
+    request: &SupervisorRequest,
+) -> Result<(Command, std::fs::File), ContainedRunError> {
+    let repository_root =
+        decode_path(&request.repository_root).ok_or(ContainedRunError::ContainmentUnproven)?;
+    let workspace_root =
+        decode_path(&request.workspace_root).ok_or(ContainedRunError::ContainmentUnproven)?;
+    let cwd = decode_path(&request.cwd).ok_or(ContainedRunError::ContainmentUnproven)?;
+    let cwd_capability =
+        crate::fsutil::open_directory_capability(&repository_root, &workspace_root, &cwd)
+            .map_err(|_| ContainedRunError::ContainmentUnproven)?;
     let mut command = Command::new(&request.argv[0]);
-    command
-        .args(&request.argv[1..])
-        .current_dir(&request.cwd)
-        .env_clear();
+    command.args(&request.argv[1..]).env_clear();
     if let Some(path) = &request.path {
+        let path = decode_environment(path).ok_or(ContainedRunError::ContainmentUnproven)?;
         command.env("PATH", path);
     }
     if let Some(home) = &request.home {
+        let home = decode_environment(home).ok_or(ContainedRunError::ContainmentUnproven)?;
         command.env("HOME", home);
     }
     if let Some(ci) = &request.ci {
+        let ci = decode_environment(ci).ok_or(ContainedRunError::ContainmentUnproven)?;
         command.env("CI", ci);
     }
-    command
+    Ok((command, cwd_capability))
 }
 
 #[cfg(test)]
@@ -310,12 +377,14 @@ fn apply_environment(command: &mut Command) {
     }
 }
 
-fn prepare_command(command: &mut Command) {
+#[cfg(target_os = "linux")]
+fn prepare_command(command: &mut Command, cwd_fd: std::os::fd::RawFd) {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     set_own_process_group(command);
+    set_current_directory(command, cwd_fd);
 }
 
 fn wait_bounded(
@@ -476,6 +545,119 @@ fn direct_children() -> Result<Vec<libc::pid_t>, ()> {
         .collect()
 }
 
+fn build_request(
+    argv: &[String],
+    repository_root: &Path,
+    workspace_root: &Path,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> Result<SupervisorRequest, ()> {
+    if argv.is_empty() || argv.iter().any(|argument| argument.contains('\0')) {
+        return Err(());
+    }
+    Ok(SupervisorRequest {
+        argv: argv.to_vec(),
+        repository_root: encode_path(repository_root).ok_or(())?,
+        workspace_root: encode_path(workspace_root).ok_or(())?,
+        cwd: encode_path(cwd).ok_or(())?,
+        timeout_ms: format!("{timeout_ms:020}"),
+        path: encode_environment("PATH")?,
+        home: encode_environment("HOME")?,
+        ci: encode_environment("CI")?,
+    })
+}
+
+#[cfg(test)]
+fn request_is_transportable_with_environment(
+    argv: &[String],
+    repository_root: &Path,
+    workspace_root: &Path,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> bool {
+    build_request(argv, repository_root, workspace_root, cwd, timeout_ms)
+        .and_then(|request| serialize_request(&request))
+        .is_ok()
+}
+
+fn serialize_request(request: &SupervisorRequest) -> Result<String, ()> {
+    let serialized = serde_json::to_string(request).map_err(|_| ())?;
+    (serialized.len() <= MAX_REQUEST_ENVELOPE_BYTES)
+        .then_some(serialized)
+        .ok_or(())
+}
+
+pub fn request_is_transportable(
+    argv: &[String],
+    repository_root: &Path,
+    workspace_root: &Path,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> bool {
+    let timeout_ms = timeout_ms.saturating_sub(REQUEST_TIMEOUT_RESERVE_MS);
+    build_request(argv, repository_root, workspace_root, cwd, timeout_ms)
+        .and_then(|request| serialize_request(&request))
+        .is_ok()
+}
+
+fn encode_path(path: &Path) -> Option<String> {
+    #[cfg(unix)]
+    let bytes = path.as_os_str().as_bytes();
+    #[cfg(not(unix))]
+    let bytes = path.to_str()?.as_bytes();
+    (bytes.len() <= MAX_REQUEST_PATH_BYTES && !bytes.contains(&0)).then(|| encode_hex(bytes))
+}
+
+fn encode_environment(name: &str) -> Result<Option<String>, ()> {
+    let Some(value) = std::env::var_os(name) else {
+        return Ok(None);
+    };
+    encode_environment_value(value.as_os_str()).map(Some)
+}
+
+fn encode_environment_value(value: &OsStr) -> Result<String, ()> {
+    #[cfg(unix)]
+    let bytes = value.as_bytes();
+    #[cfg(not(unix))]
+    let bytes = value.to_str().ok_or(())?.as_bytes();
+    if bytes.len() > MAX_REQUEST_ENV_BYTES {
+        return Err(());
+    }
+    Ok(encode_hex(bytes))
+}
+
+fn decode_environment(value: &str) -> Option<OsString> {
+    let bytes = decode_hex(value)?;
+    if bytes.len() > MAX_REQUEST_ENV_BYTES {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        Some(OsString::from_vec(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        String::from_utf8(bytes).ok().map(OsString::from)
+    }
+}
+
+fn decode_path(value: &str) -> Option<PathBuf> {
+    let bytes = decode_hex(value)?;
+    if bytes.len() > MAX_REQUEST_PATH_BYTES {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        Some(PathBuf::from(OsString::from_vec(bytes)))
+    }
+    #[cfg(not(unix))]
+    {
+        String::from_utf8(bytes)
+            .ok()
+            .map(|value| PathBuf::from(OsString::from(value)))
+    }
+}
+
 fn response(
     outcome: SupervisorOutcome,
     code: Option<i32>,
@@ -487,6 +669,7 @@ fn response(
         code,
         stdout_hex: encode_hex(&stdout),
         stderr_hex: encode_hex(&stderr),
+        cwd_identity: None,
     }
 }
 
@@ -545,6 +728,21 @@ fn set_own_process_group(command: &mut Command) {
 #[cfg(not(unix))]
 fn set_own_process_group(_command: &mut Command) {}
 
+#[cfg(target_os = "linux")]
+fn set_current_directory(command: &mut Command, cwd_fd: std::os::fd::RawFd) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: cwd_fd is retained by the parent until spawn completes and is a
+    // directory opened with O_DIRECTORY|O_NOFOLLOW.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fchdir(cwd_fd) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 #[cfg(unix)]
 fn kill_process_group(pid: u32) {
     // SAFETY: negative pid selects the configured command's process group.
@@ -566,5 +764,54 @@ mod tests {
         assert_eq!(decode_hex(&encode_hex(&bytes)), Some(bytes.to_vec()));
         assert!(decode_hex("0").is_none());
         assert!(decode_hex("xx").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_transport_round_trips_non_utf8_bytes() {
+        let path = PathBuf::from(OsString::from_vec(b"repo-\xff/checks".to_vec()));
+        let encoded = encode_path(&path).expect("bounded path encoding");
+        assert_eq!(decode_path(&encoded), Some(path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn environment_transport_accepts_exact_limit_and_rejects_one_byte_over() {
+        let exact = OsString::from_vec(vec![b'x'; MAX_REQUEST_ENV_BYTES]);
+        let over = OsString::from_vec(vec![b'x'; MAX_REQUEST_ENV_BYTES + 1]);
+        assert!(encode_environment_value(&exact).is_ok());
+        assert!(encode_environment_value(&over).is_err());
+    }
+
+    #[test]
+    fn transport_preflight_rejects_nul_arguments() {
+        assert!(!request_is_transportable_with_environment(
+            &["check".to_string(), "\0".to_string()],
+            Path::new("."),
+            Path::new("."),
+            Path::new("."),
+            1_000,
+        ));
+    }
+
+    #[test]
+    fn transport_preflight_uses_fixed_timeout_wire_width() {
+        let argv = vec!["check".to_string(), "x".repeat(90_000)];
+        assert_eq!(
+            request_is_transportable_with_environment(
+                &argv,
+                Path::new("."),
+                Path::new("."),
+                Path::new("."),
+                1,
+            ),
+            request_is_transportable_with_environment(
+                &argv,
+                Path::new("."),
+                Path::new("."),
+                Path::new("."),
+                u64::MAX,
+            )
+        );
     }
 }

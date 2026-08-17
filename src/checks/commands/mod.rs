@@ -19,7 +19,7 @@ pub use runner::{
 };
 #[doc(hidden)]
 pub use supervisor::run_from_environment as run_command_supervisor;
-pub use supervisor::{CONTAINMENT_VERSION, platform_id};
+pub use supervisor::{CONTAINMENT_VERSION, platform_id, request_is_transportable};
 
 #[cfg(test)]
 mod tests;

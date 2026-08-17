@@ -9,6 +9,7 @@ use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::discovery::{CommandSpec, Workspace};
+use crate::fsutil::MAX_DIRECTORY_COMPONENTS;
 
 pub const VERSION: &str = "2";
 pub const SCHEMA_JSON: &str = include_str!("../policy/config-v2.schema.json");
@@ -121,9 +122,16 @@ pub fn validate(config: &ConfigV2) -> Result<(), ConfigV2Error> {
                 )));
             }
             validate_relative_path(&command.cwd, "command cwd")?;
+            validate_cwd_within_workspace(&workspace.root, &command.cwd, "command")?;
             if !(1..=3600).contains(&command.timeout_seconds) {
                 return Err(ConfigV2Error::Invalid(format!(
                     "workspace `{}` has an invalid timeout",
+                    workspace.id
+                )));
+            }
+            if command.argv.iter().any(|arg| arg.contains('\0')) {
+                return Err(ConfigV2Error::Invalid(format!(
+                    "workspace `{}` command contains a NUL byte",
                     workspace.id
                 )));
             }
@@ -142,9 +150,16 @@ pub fn validate(config: &ConfigV2) -> Result<(), ConfigV2Error> {
                 )));
             }
             validate_relative_path(&coverage.cwd, "coverage cwd")?;
+            validate_cwd_within_workspace(&workspace.root, &coverage.cwd, "coverage")?;
             if !(1..=3600).contains(&coverage.timeout_seconds) {
                 return Err(ConfigV2Error::Invalid(format!(
                     "workspace `{}` has an invalid coverage timeout",
+                    workspace.id
+                )));
+            }
+            if coverage.argv.iter().any(|arg| arg.contains('\0')) {
+                return Err(ConfigV2Error::Invalid(format!(
+                    "workspace `{}` coverage command contains a NUL byte",
                     workspace.id
                 )));
             }
@@ -386,6 +401,11 @@ impl fmt::Write for SanitizedBoundedString {
 }
 
 fn validate_relative_path(path: &Path, label: &str) -> Result<(), ConfigV2Error> {
+    if path.to_string_lossy().contains('\0') {
+        return Err(ConfigV2Error::Invalid(format!(
+            "{label} must not contain NUL bytes"
+        )));
+    }
     if path.is_absolute()
         || path
             .components()
@@ -395,7 +415,37 @@ fn validate_relative_path(path: &Path, label: &str) -> Result<(), ConfigV2Error>
             "{label} must be repository-relative"
         )));
     }
+    let component_count = path
+        .components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .count();
+    if component_count > MAX_DIRECTORY_COMPONENTS {
+        return Err(ConfigV2Error::Invalid(format!(
+            "{label} exceeds the maximum of {MAX_DIRECTORY_COMPONENTS} path components"
+        )));
+    }
     Ok(())
+}
+
+fn validate_cwd_within_workspace(
+    workspace_root: &Path,
+    cwd: &Path,
+    kind: &str,
+) -> Result<(), ConfigV2Error> {
+    let workspace_components: Vec<_> = workspace_root
+        .components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .collect();
+    let cwd_components: Vec<_> = cwd
+        .components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .collect();
+    if cwd_components.starts_with(&workspace_components) {
+        return Ok(());
+    }
+    Err(ConfigV2Error::Invalid(format!(
+        "workspace {kind} cwd must equal or descend from workspace root"
+    )))
 }
 
 #[cfg(test)]
@@ -403,6 +453,7 @@ mod tests {
     use super::*;
     use crate::discovery::CoverageSpec;
     use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn migrates_v1_commands_to_structured_argv() {
@@ -433,6 +484,70 @@ mod tests {
     }
 
     #[test]
+    fn accepts_workspace_root_and_nested_command_and_coverage_cwds() {
+        let mut configured = workspace(
+            0,
+            vec![command_spec(), command_spec()],
+            vec![coverage_spec()],
+        );
+        configured.root = Path::new("services/api").to_path_buf();
+        configured.commands[0].cwd = Path::new("services/api").to_path_buf();
+        configured.commands[1].cwd = Path::new("services/api/src").to_path_buf();
+        configured.coverage[0].cwd = Path::new("services/api/tests").to_path_buf();
+        assert!(validate(&config(vec![configured])).is_ok());
+    }
+
+    #[test]
+    fn accepts_128_path_components_and_rejects_129_for_each_workspace_path() {
+        let deep_path = |count| {
+            (0..count).fold(PathBuf::new(), |mut path, index| {
+                path.push(format!("component-{index}"));
+                path
+            })
+        };
+        let accepted_path = deep_path(MAX_DIRECTORY_COMPONENTS);
+        let mut accepted = workspace(0, vec![command_spec()], vec![coverage_spec()]);
+        accepted.root = accepted_path.clone();
+        accepted.commands[0].cwd = accepted_path.clone();
+        accepted.coverage[0].cwd = accepted_path;
+        assert!(validate(&config(vec![accepted])).is_ok());
+
+        for path_kind in ["workspace root", "command cwd", "coverage cwd"] {
+            let too_deep = deep_path(MAX_DIRECTORY_COMPONENTS + 1);
+            let mut configured = workspace(0, vec![command_spec()], vec![coverage_spec()]);
+            match path_kind {
+                "workspace root" => configured.root = too_deep,
+                "command cwd" => configured.commands[0].cwd = too_deep,
+                "coverage cwd" => configured.coverage[0].cwd = too_deep,
+                _ => unreachable!("table case is fixed"),
+            }
+            let error = validate(&config(vec![configured])).expect_err("129 components");
+            assert!(
+                error.to_string().contains(&format!(
+                    "{path_kind} exceeds the maximum of {MAX_DIRECTORY_COMPONENTS}"
+                )),
+                "{path_kind}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_command_or_coverage_cwds_outside_workspace_root() {
+        for (command_cwd, coverage_cwd) in [
+            (Path::new("."), Path::new("services/api")),
+            (Path::new("services/api"), Path::new("services/other")),
+            (Path::new("services/api2"), Path::new("services/api")),
+        ] {
+            let mut configured = workspace(0, vec![command_spec()], vec![coverage_spec()]);
+            configured.root = Path::new("services/api").to_path_buf();
+            configured.commands[0].cwd = command_cwd.to_path_buf();
+            configured.coverage[0].cwd = coverage_cwd.to_path_buf();
+            let error = validate(&config(vec![configured])).expect_err("outside cwd");
+            assert!(error.to_string().contains("cwd must equal or descend"));
+        }
+    }
+
+    #[test]
     fn refuses_unsupported_v1_severity_during_migration() {
         let value = json!({
             "severity_overrides": {"regression-test-required": "critical"},
@@ -444,6 +559,52 @@ mod tests {
                 .to_string()
                 .contains("severity_overrides values must be one of: error, warning, info")
         );
+    }
+
+    #[test]
+    fn rejects_nul_bytes_in_command_and_coverage_argv() {
+        let mut command_config = config(vec![workspace(0, vec![command_spec()], Vec::new())]);
+        command_config.workspaces[0].commands[0].argv = vec!["true\0".to_string()];
+        assert!(
+            validate(&command_config)
+                .expect_err("NUL command argument must be rejected")
+                .to_string()
+                .contains("NUL byte")
+        );
+
+        let mut coverage_config = config(vec![workspace(0, Vec::new(), vec![coverage_spec()])]);
+        coverage_config.workspaces[0].coverage[0].argv = vec!["true\0".to_string()];
+        assert!(
+            validate(&coverage_config)
+                .expect_err("NUL coverage argument must be rejected")
+                .to_string()
+                .contains("NUL byte")
+        );
+
+        for (label, path_kind) in [("root", 0_u8), ("command cwd", 1), ("coverage cwd", 2)] {
+            let mut path_config = config(vec![workspace(
+                0,
+                vec![command_spec()],
+                vec![coverage_spec()],
+            )]);
+            match path_kind {
+                0 => path_config.workspaces[0].root = std::path::PathBuf::from("workspace\0"),
+                1 => {
+                    path_config.workspaces[0].commands[0].cwd =
+                        std::path::PathBuf::from("workspace\0")
+                }
+                _ => {
+                    path_config.workspaces[0].coverage[0].cwd =
+                        std::path::PathBuf::from("workspace\0")
+                }
+            }
+            assert!(
+                validate(&path_config)
+                    .expect_err(&format!("NUL {label} must be rejected"))
+                    .to_string()
+                    .contains("NUL bytes")
+            );
+        }
     }
 
     #[test]

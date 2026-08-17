@@ -70,6 +70,7 @@ fn aggregate_budget_stops_structured_and_coverage_in_order() {
     let structured = vec![
         StructuredCommand {
             argv: vec![slow],
+            workspace_root: ".".into(),
             cwd: ".".into(),
             workspace_id: "root".to_string(),
             tier: "full".to_string(),
@@ -77,6 +78,7 @@ fn aggregate_budget_stops_structured_and_coverage_in_order() {
         },
         StructuredCommand {
             argv: vec![later],
+            workspace_root: ".".into(),
             cwd: ".".into(),
             workspace_id: "root".to_string(),
             tier: "full".to_string(),
@@ -86,6 +88,7 @@ fn aggregate_budget_stops_structured_and_coverage_in_order() {
     let coverage = vec![CoverageCommand {
         workspace_id: "root".to_string(),
         argv: vec![coverage_tool],
+        workspace_root: ".".into(),
         cwd: ".".into(),
         timeout: std::time::Duration::from_secs(30),
         scope: "unit".to_string(),
@@ -128,6 +131,7 @@ fn coverage_only_cutoff_exhausts_the_aggregate_budget() {
             "coverage-only",
             &format!("touch {}; exec /bin/sleep 1", started.display()),
         )],
+        workspace_root: ".".into(),
         cwd: ".".into(),
         timeout: std::time::Duration::from_secs(30),
         scope: "unit".to_string(),
@@ -152,6 +156,7 @@ fn aggregate_budget_preserves_successful_structured_and_coverage_runs() {
     let fixture = Fixture::create();
     let structured = StructuredCommand {
         argv: vec![fixture.script("pass", 0)],
+        workspace_root: ".".into(),
         cwd: ".".into(),
         workspace_id: "root".to_string(),
         tier: "full".to_string(),
@@ -162,6 +167,7 @@ fn aggregate_budget_preserves_successful_structured_and_coverage_runs() {
         argv: vec![
             fixture.script_body("coverage", "echo 'line coverage: 95% branch coverage: 95%'"),
         ],
+        workspace_root: ".".into(),
         cwd: ".".into(),
         timeout: std::time::Duration::from_secs(30),
         scope: "unit".to_string(),
@@ -309,6 +315,7 @@ fn structured_commands_isolate_identically_named_workspace_tools() {
     let commands = vec![
         StructuredCommand {
             argv: vec![backend_tool.to_string_lossy().into_owned()],
+            workspace_root: "backend".into(),
             cwd: "backend".into(),
             workspace_id: "backend".to_string(),
             tier: "full".to_string(),
@@ -316,6 +323,7 @@ fn structured_commands_isolate_identically_named_workspace_tools() {
         },
         StructuredCommand {
             argv: vec![frontend_tool.to_string_lossy().into_owned()],
+            workspace_root: "frontend".into(),
             cwd: "frontend".into(),
             workspace_id: "frontend".to_string(),
             tier: "full".to_string(),
@@ -387,6 +395,7 @@ fn configured_coverage_requires_each_configured_metric() {
     let command = CoverageCommand {
         workspace_id: "backend".to_string(),
         argv: vec![tool],
+        workspace_root: ".".into(),
         cwd: ".".into(),
         timeout: std::time::Duration::from_secs(30),
         scope: "unit".to_string(),
@@ -406,6 +415,7 @@ fn configured_coverage_records_metrics_and_threshold_status() {
     let command = CoverageCommand {
         workspace_id: "backend".to_string(),
         argv: vec![tool],
+        workspace_root: ".".into(),
         cwd: ".".into(),
         timeout: std::time::Duration::from_secs(30),
         scope: "unit".to_string(),
@@ -414,6 +424,7 @@ fn configured_coverage_records_metrics_and_threshold_status() {
     };
     let evidence = run_coverage(&fixture.root, &[command]);
     assert_eq!(evidence[0].status, "passed");
+    assert_eq!(evidence[0].cwd.as_deref(), Some("."));
     assert_eq!(evidence[0].line_percent, Some(85.0));
     assert_eq!(evidence[0].branch_percent, Some(90.0));
 }
@@ -539,7 +550,7 @@ fn passing_coverage_projects_to_passed_required_repository_command() {
     assert!(
         results[0]
             .message
-            .contains("coverage workspace=backend scope=unit tool=coverage")
+            .contains("coverage workspace=backend scope=unit tool=coverage cwd=backend")
     );
     assert_eq!(results[0].remediation, None);
 }
@@ -675,6 +686,8 @@ fn coverage_results_include_workspace_scope_and_tool_identity() {
     let results = coverage_results(&[CoverageEvidence {
         workspace_id: "api".to_string(),
         status: "failed".to_string(),
+        cwd: Some("services/api".to_string()),
+        cwd_identity: None,
         tool: Some("cargo-llvm-cov".to_string()),
         scope: Some("integration".to_string()),
         line_percent: Some(72.0),
@@ -719,6 +732,8 @@ fn coverage_evidence(status: &str) -> CoverageEvidence {
     CoverageEvidence {
         workspace_id: "backend".to_string(),
         status: status.to_string(),
+        cwd: Some("backend".to_string()),
+        cwd_identity: None,
         tool: Some("coverage".to_string()),
         scope: Some("unit".to_string()),
         line_percent: None,
@@ -735,6 +750,7 @@ fn coverage_command(
     CoverageCommand {
         workspace_id: "backend".to_string(),
         argv: vec![tool],
+        workspace_root: ".".into(),
         cwd: ".".into(),
         timeout: std::time::Duration::from_secs(30),
         scope: "unit".to_string(),
