@@ -6,6 +6,9 @@ use serde_json::json;
 use crate::checks::EnforcementResult;
 
 pub(super) const MAX_EVIDENCE_BYTES: u64 = 5 * 1024 * 1024;
+pub(super) const MAX_EVIDENCE_RECORDS: usize = 16 * 1024;
+pub(super) const MAX_MUST_KEEP_RECORDS: usize = 128;
+const MAX_COMPACT_FIELD_CHARS: usize = 4 * 1024;
 
 /// Append one enforcement result as a JSONL record to
 /// `.lgtm/evidence/current-task.results.jsonl` under `root`.
@@ -17,10 +20,10 @@ pub(super) const MAX_EVIDENCE_BYTES: u64 = 5 * 1024 * 1024;
 /// interleave a rotation with an append and lose or corrupt records. When
 /// rotation is required, it is committed via a staged temp file renamed over the
 /// ledger (an atomic replace), so a reader — or a crash mid-rotation — never sees
-/// a half-written ledger, and it preserves every `failed`/`unverified` record
-/// from the current session (dropping oldest `passed` records first) so a burst
-/// of clean edits can never evict a caught violation the Stop gate must still
-/// see.
+/// a half-written ledger, and it preserves a bounded set of recent
+/// `failed`/`unverified` records from the current session (dropping older
+/// records first) so a burst of clean edits cannot erase the actionable signal
+/// the Stop gate must still see.
 pub(super) fn append_evidence(
     root: &Path,
     session_id: Option<&str>,
@@ -31,14 +34,7 @@ pub(super) fn append_evidence(
     std::fs::create_dir_all(&dir).map_err(|error| format!("mkdir ({error})"))?;
     let path = dir.join("current-task.results.jsonl");
 
-    let record = json!({
-        "session_id": session_id,
-        "edited_file": edited_file,
-        "result": result,
-    });
-    let mut line =
-        serde_json::to_string(&record).map_err(|error| format!("serialize ({error})"))?;
-    line.push('\n');
+    let line = serialize_record(session_id, edited_file, result)?;
 
     // Hold an exclusive advisory lock across the rotate + append so concurrent
     // hooks serialize on the ledger. The lock lives on a sibling `.lock` file
@@ -169,8 +165,8 @@ impl Drop for EvidenceLock {
 const EVIDENCE_READ_BOUND: u64 = MAX_EVIDENCE_BYTES * 2;
 
 /// Rotate the ledger if appending `incoming` bytes would push it past
-/// [`MAX_EVIDENCE_BYTES`], preserving every must-keep record and committing the
-/// result atomically.
+/// [`MAX_EVIDENCE_BYTES`], preserving a bounded recent failure signal and
+/// committing the result atomically.
 ///
 /// Must be called with the evidence lock held. Reads the existing file bounded by
 /// [`EVIDENCE_READ_BOUND`] (a runaway ledger cannot exhaust memory). When the
@@ -196,7 +192,11 @@ fn rotate_for_incoming(path: &Path, session_id: Option<&str>, incoming: u64) -> 
         }
         return Ok(());
     }
-    if existing.len() as u64 + incoming <= MAX_EVIDENCE_BYTES {
+    let record_cap_reached = existing
+        .lines()
+        .nth(MAX_EVIDENCE_RECORDS.saturating_sub(1))
+        .is_some();
+    if existing.len() as u64 + incoming <= MAX_EVIDENCE_BYTES && !record_cap_reached {
         return Ok(());
     }
 
@@ -205,54 +205,75 @@ fn rotate_for_incoming(path: &Path, session_id: Option<&str>, incoming: u64) -> 
     replace_ledger(path, &kept)
 }
 
-/// Select the records to keep so the result fits `budget` bytes while never
-/// dropping a must-keep record.
+/// Select the records to keep so the result fits `budget` bytes while retaining
+/// a bounded, recent failure signal.
 ///
 /// A must-keep record is a `failed` or `unverified` result belonging to
-/// `session_id`: those are the caught violations and unverified concerns the Stop
-/// gate must still see, so rotation preserves them unconditionally even if that
-/// means the kept set exceeds `budget`. Every other record is droppable and is
-/// kept newest-first only while the running total stays within the budget the
-/// must-keep records leave. The returned string preserves the original relative
-/// order of the kept records (must-keep and droppable interleaved as they
-/// appeared), each newline-terminated.
+/// `session_id`. The newest records are preferred, but both their byte budget and
+/// [`MAX_MUST_KEEP_RECORDS`] cap apply. Every other record is droppable and is
+/// kept newest-first only after the protected records have been selected. The
+/// returned string preserves the original relative order of the survivors.
 pub(super) fn trim_records(existing: &str, session_id: Option<&str>, budget: usize) -> String {
-    let records: Vec<&str> = existing.lines().collect();
+    let has_excess_records = existing
+        .lines()
+        .nth(MAX_EVIDENCE_RECORDS.saturating_sub(1))
+        .is_some();
+    let marker = has_excess_records.then(|| compact_truncation_record(session_id));
+    let marker_present = marker.as_ref().is_some_and(|line| line.len() <= budget);
+    let marker = marker.filter(|line| line.len() <= budget);
+    let mut remaining = budget.saturating_sub(marker.as_ref().map_or(0, String::len));
+    let marker_slots = if marker_present { 1 } else { 0 };
+    let record_limit = MAX_EVIDENCE_RECORDS
+        .saturating_sub(marker_slots)
+        .saturating_sub(1);
+    let mut recent: Vec<&str> = existing.lines().rev().take(record_limit).collect();
+    recent.reverse();
+    let mut selected: Vec<(usize, &str, Option<String>)> = Vec::new();
+    let mut must_keep_count = 0;
+    let must_keep_limit = MAX_MUST_KEEP_RECORDS.saturating_sub(marker_slots);
 
-    // First pass: total the bytes the must-keep records consume so the droppable
-    // budget is whatever remains.
-    let mut must_keep_bytes = 0usize;
-    let mut is_must_keep = Vec::with_capacity(records.len());
-    for record in &records {
-        let keep = is_must_keep_record(record, session_id);
-        if keep {
-            must_keep_bytes = must_keep_bytes.saturating_add(record.len() + 1);
-        }
-        is_must_keep.push(keep);
-    }
-
-    let droppable_budget = budget.saturating_sub(must_keep_bytes);
-
-    // Second pass, newest-first over droppable records: admit each while it fits
-    // the droppable budget, marking the rest for eviction. Must-keep records are
-    // always admitted.
-    let mut admitted = vec![false; records.len()];
-    let mut used = 0usize;
-    for index in (0..records.len()).rev() {
-        if is_must_keep[index] {
-            admitted[index] = true;
+    // Process only the newest bounded window. A single large actionable record
+    // is compacted before admission so its status, session, and path identity
+    // remain available to Stop.
+    for index in (0..recent.len()).rev() {
+        if !is_must_keep_record(recent[index], session_id) || must_keep_count >= must_keep_limit {
             continue;
         }
-        let size = records[index].len() + 1;
-        if used + size <= droppable_budget {
-            used += size;
-            admitted[index] = true;
+        let size = recent[index].len() + 1;
+        let compact = if size > remaining {
+            compact_existing_record(recent[index])
+        } else {
+            None
+        };
+        let admitted_size = compact.as_ref().map_or(size, String::len);
+        if admitted_size <= remaining {
+            remaining -= admitted_size;
+            selected.push((index, recent[index], compact));
+            must_keep_count += 1;
         }
     }
 
-    let mut kept = String::new();
-    for (index, record) in records.iter().enumerate() {
-        if admitted[index] {
+    // Fill only the remaining bytes with recent clean or unrelated records.
+    for index in (0..recent.len()).rev() {
+        if is_must_keep_record(recent[index], session_id) {
+            continue;
+        }
+        let size = recent[index].len() + 1;
+        if size <= remaining {
+            remaining -= size;
+            selected.push((index, recent[index], None));
+        }
+    }
+
+    selected.sort_unstable_by_key(|(index, _, _)| *index);
+    let mut kept = String::with_capacity(budget.saturating_sub(remaining));
+    if let Some(marker) = marker {
+        kept.push_str(&marker);
+    }
+    for (_, record, compact) in selected {
+        if let Some(compact) = compact {
+            kept.push_str(&compact);
+        } else {
             kept.push_str(record);
             kept.push('\n');
         }
@@ -260,14 +281,151 @@ pub(super) fn trim_records(existing: &str, session_id: Option<&str>, budget: usi
     kept
 }
 
+fn compact_truncation_record(session_id: Option<&str>) -> String {
+    let mut marker = serde_json::to_string(&json!({
+        "session_id": session_id,
+        "edited_file": null,
+        "result": {
+            "rule_id": "current-task-evidence",
+            "status": "unverified",
+            "severity": "error",
+            "message": "Older current-task evidence records were dropped at the bounded retention limit.",
+            "locations": [],
+            "remediation": null,
+            "evidence": {
+                "check": "evidence.current-task",
+                "tool_version": null,
+                "finding_descriptions": []
+            }
+        },
+        "truncated": true
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+    marker.push('\n');
+    marker
+}
+
+fn compact_existing_record(line: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    let result = value.get("result")?;
+    let locations = result
+        .get("locations")
+        .and_then(|value| value.as_array())
+        .and_then(|locations| locations.first())
+        .and_then(|location| {
+            let file = location.get("file")?.as_str()?;
+            Some(vec![json!({
+                "file": compact_text(file),
+                "line": location.get("line").cloned().unwrap_or(serde_json::Value::Null)
+            })])
+        })
+        .unwrap_or_default();
+    let compact = json!({
+        "session_id": value.get("session_id").cloned().unwrap_or(serde_json::Value::Null),
+        "edited_file": value
+            .get("edited_file")
+            .and_then(|value| value.as_str())
+            .map(compact_text),
+        "result": {
+            "rule_id": result
+                .get("rule_id")
+                .and_then(|value| value.as_str())
+                .map(compact_text)
+                .unwrap_or_else(|| "unknown".to_string()),
+            "status": result
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unverified"),
+            "severity": result
+                .get("severity")
+                .and_then(|value| value.as_str())
+                .unwrap_or("error"),
+            "message": "Evidence record exceeded the rotation budget; details were truncated.",
+            "locations": locations,
+            "remediation": null,
+            "evidence": {
+                "check": result
+                    .get("evidence")
+                    .and_then(|evidence| evidence.get("check"))
+                    .and_then(|value| value.as_str())
+                    .map(compact_text)
+                    .unwrap_or_else(|| "unknown".to_string()),
+                "tool_version": null,
+                "finding_descriptions": []
+            }
+        },
+        "truncated": true
+    });
+    let mut compact_line = serde_json::to_string(&compact).ok()?;
+    compact_line.push('\n');
+    Some(compact_line)
+}
+
+fn serialize_record(
+    session_id: Option<&str>,
+    edited_file: Option<&str>,
+    result: &EnforcementResult,
+) -> Result<String, String> {
+    let record = json!({
+        "session_id": session_id,
+        "edited_file": edited_file,
+        "result": result,
+    });
+    let mut line =
+        serde_json::to_string(&record).map_err(|error| format!("serialize ({error})"))?;
+    line.push('\n');
+    if line.len() as u64 <= MAX_EVIDENCE_BYTES {
+        return Ok(line);
+    }
+
+    // Preserve the session, status, rule, and edited path when a single result
+    // is too large to fit. Stop needs that bounded identity and signal; it does
+    // not need unbounded tool descriptions or locations to decide safely.
+    let compact = json!({
+        "session_id": session_id,
+        "edited_file": edited_file.map(compact_text),
+        "result": {
+            "rule_id": compact_text(&result.rule_id),
+            "status": result.status,
+            "severity": result.severity,
+            "message": "Evidence record exceeded the ledger bound; details were truncated.",
+            "locations": [],
+            "remediation": null,
+            "evidence": {
+                "check": compact_text(&result.evidence.check),
+                "tool_version": null,
+                "finding_descriptions": []
+            }
+        },
+        "truncated": true
+    });
+    let mut compact_line =
+        serde_json::to_string(&compact).map_err(|error| format!("serialize compact ({error})"))?;
+    compact_line.push('\n');
+    Ok(compact_line)
+}
+
+fn compact_text(value: &str) -> String {
+    if value.chars().count() <= MAX_COMPACT_FIELD_CHARS {
+        return value.to_string();
+    }
+    let mut compact: String = value
+        .chars()
+        .take(MAX_COMPACT_FIELD_CHARS.saturating_sub(1))
+        .collect();
+    compact.push('…');
+    compact
+}
+
 /// True when a serialized ledger line is a `failed` or `unverified` record
-/// belonging to `session_id`, which rotation must never evict.
+/// belonging to `session_id`, making it a candidate for bounded retention.
 ///
 /// A line that does not parse, or whose session id does not match, is not
 /// must-keep: only well-formed records of the current session that carry a caught
-/// violation or an unverified concern are protected. A `None` `session_id` (the
-/// hook received no session) protects records whose stored `session_id` is also
-/// null, so an unsessioned run still cannot evict its own violations.
+/// violation or an unverified concern are eligible for the bounded recent
+/// signal. A `None` `session_id` (the hook received no session) matches records
+/// whose stored `session_id` is also null, so an unsessioned run gets the same
+/// bounded retention policy.
 pub(super) fn is_must_keep_record(line: &str, session_id: Option<&str>) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
         return false;

@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde_json::Value;
 
-use super::evidence::{MAX_EVIDENCE_BYTES, append_evidence, is_must_keep_record, trim_records};
+use super::evidence::{
+    MAX_EVIDENCE_BYTES, MAX_EVIDENCE_RECORDS, MAX_MUST_KEEP_RECORDS, append_evidence,
+    is_must_keep_record, trim_records,
+};
 use super::input::{HookInput, ToolInput, edited_file};
 use super::target::{resolve_target, unverified_target};
 
@@ -381,6 +384,15 @@ fn evidence_lock_deadline_skips_persistence_when_contended() {
 
 /// Build one serialized ledger line for the given session and status.
 fn record_line(session: Option<&str>, status: Status, message: &str) -> String {
+    record_line_with_path(session, None, status, message)
+}
+
+fn record_line_with_path(
+    session: Option<&str>,
+    edited_file: Option<&str>,
+    status: Status,
+    message: &str,
+) -> String {
     let result = EnforcementResult {
         rule_id: "no-committed-secrets".to_string(),
         status,
@@ -394,8 +406,12 @@ fn record_line(session: Option<&str>, status: Status, message: &str) -> String {
             finding_descriptions: Vec::new(),
         },
     };
-    serde_json::to_string(&json!({ "session_id": session, "result": result }))
-        .expect("record serializes")
+    serde_json::to_string(&json!({
+        "session_id": session,
+        "edited_file": edited_file,
+        "result": result
+    }))
+    .expect("record serializes")
 }
 
 #[test]
@@ -519,6 +535,10 @@ fn append_after_rotation_keeps_failed_and_stays_bounded() {
 
     let contents = std::fs::read_to_string(&path).expect("ledger readable");
     assert!(
+        std::fs::metadata(&path).expect("ledger metadata").len() <= MAX_EVIDENCE_BYTES,
+        "rotation must keep the ledger within the hard cap"
+    );
+    assert!(
         contents.contains("planted leak"),
         "rotation must preserve the failed record of the current session"
     );
@@ -526,4 +546,370 @@ fn append_after_rotation_keeps_failed_and_stays_bounded() {
         contents.contains("newest"),
         "the new record must be appended after rotation"
     );
+}
+
+#[test]
+fn append_crossing_under_cap_rotates_and_stays_bounded() {
+    let temp = TempDir::new();
+    let dir = temp.path.join(".lgtm").join("evidence");
+    std::fs::create_dir_all(&dir).expect("dir creatable");
+    let path = dir.join("current-task.results.jsonl");
+    let session = Some("sess-boundary");
+    let pass_line = format!(
+        "{}\n",
+        record_line_with_path(session, Some("src/app.py"), Status::Passed, "boundary")
+    );
+    let failed_line = format!(
+        "{}\n",
+        record_line_with_path(session, Some("src/app.py"), Status::Failed, "boundary")
+    );
+    let cap = MAX_EVIDENCE_BYTES as usize;
+    let mut seed = String::new();
+    while seed.len() + pass_line.len() + failed_line.len() <= cap {
+        seed.push_str(&pass_line);
+    }
+    seed.push_str(&pass_line);
+    assert!(
+        seed.len() <= cap,
+        "under-cap seed must fit before the append"
+    );
+    assert!(
+        seed.len() + failed_line.len() > cap,
+        "the real append must cross the cap"
+    );
+    assert!(
+        seed.lines().count() > 1,
+        "seed must contain multiple JSONL records"
+    );
+    assert!(
+        seed.lines()
+            .all(|line| serde_json::from_str::<Value>(line).is_ok()),
+        "under-cap seed must be valid JSONL"
+    );
+    std::fs::write(&path, seed).expect("under-cap seed writable");
+
+    let result = EnforcementResult {
+        rule_id: "no-committed-secrets".to_string(),
+        status: Status::Failed,
+        severity: crate::policy::Severity::Error,
+        message: "boundary".to_string(),
+        locations: Vec::new(),
+        remediation: None,
+        evidence: crate::checks::ResultEvidence {
+            check: "gitleaks.detect".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    };
+    append_evidence(&temp.path, session, Some("src/app.py"), &result)
+        .expect("under-cap crossing append must succeed");
+
+    let contents = std::fs::read_to_string(&path).expect("rotated ledger readable");
+    assert!(contents.len() as u64 <= MAX_EVIDENCE_BYTES);
+    assert!(contents.lines().count() > 1);
+    assert!(
+        contents
+            .lines()
+            .all(|line| serde_json::from_str::<Value>(line).is_ok())
+    );
+    let last: Value = serde_json::from_str(contents.lines().next_back().expect("new record"))
+        .expect("new record remains valid JSON");
+    assert_eq!(last["result"]["status"], "failed");
+    assert_eq!(last["edited_file"], "src/app.py");
+}
+
+#[test]
+fn repeated_current_session_failures_keep_recent_identity_within_bounds() {
+    let temp = TempDir::new();
+    let dir = temp.path.join(".lgtm").join("evidence");
+    std::fs::create_dir_all(&dir).expect("dir creatable");
+    let path = dir.join("current-task.results.jsonl");
+    let sample = record_line_with_path(
+        Some("sess-failure-burst"),
+        Some("src/failure-0.py"),
+        Status::Failed,
+        "failure-0",
+    );
+    let target_records = MAX_EVIDENCE_BYTES as usize / sample.len() + MAX_MUST_KEEP_RECORDS + 32;
+    let mut seed = String::new();
+    for index in 0..target_records {
+        seed.push_str(&record_line_with_path(
+            Some("sess-failure-burst"),
+            Some(&format!("src/failure-{index}.py")),
+            Status::Failed,
+            &format!("failure-{index}"),
+        ));
+        seed.push('\n');
+        if seed.len() as u64 > MAX_EVIDENCE_BYTES {
+            break;
+        }
+    }
+    assert!(seed.len() as u64 > MAX_EVIDENCE_BYTES);
+    assert!((seed.len() as u64) < MAX_EVIDENCE_BYTES * 2);
+    let oldest = "src/failure-0.py";
+    let newest_seed = format!("src/failure-{}.py", seed.lines().count() - 1);
+    std::fs::write(&path, seed).expect("seed writable");
+
+    let result = EnforcementResult {
+        rule_id: "no-committed-secrets".to_string(),
+        status: Status::Unverified,
+        severity: crate::policy::Severity::Error,
+        message: "newest failure signal".to_string(),
+        locations: Vec::new(),
+        remediation: None,
+        evidence: crate::checks::ResultEvidence {
+            check: "gitleaks.detect".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    };
+    append_evidence(
+        &temp.path,
+        Some("sess-failure-burst"),
+        Some("src/latest.py"),
+        &result,
+    )
+    .expect("append must succeed");
+
+    let contents = std::fs::read_to_string(&path).expect("ledger readable");
+    assert!(contents.len() as u64 <= MAX_EVIDENCE_BYTES);
+    let values: Vec<Value> = contents
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("survivors remain valid JSON"))
+        .collect();
+    let failure_like = values
+        .iter()
+        .filter(|value| {
+            matches!(
+                value["result"]["status"].as_str(),
+                Some("failed" | "unverified")
+            )
+        })
+        .count();
+    assert!(failure_like <= MAX_MUST_KEEP_RECORDS + 1);
+    assert!(
+        values
+            .iter()
+            .any(|value| value["edited_file"] == newest_seed),
+        "newest bounded failure identity must survive"
+    );
+    assert!(
+        values
+            .iter()
+            .any(|value| value["edited_file"] == "src/latest.py"),
+        "newly appended failure identity must survive"
+    );
+    assert!(
+        values.iter().all(|value| value["edited_file"] != oldest),
+        "oldest failure must be evicted once the bounded signal is full"
+    );
+}
+
+#[test]
+fn oversized_must_keep_survivor_is_compacted_and_retained() {
+    let temp = TempDir::new();
+    let dir = temp.path.join(".lgtm").join("evidence");
+    std::fs::create_dir_all(&dir).expect("dir creatable");
+    let path = dir.join("current-task.results.jsonl");
+    let pass_line = record_line_with_path(
+        Some("sess-large-failure"),
+        Some("src/clean.py"),
+        Status::Passed,
+        "clean",
+    );
+    let empty_failure = record_line_with_path(
+        Some("sess-large-failure"),
+        Some("src/violating.py"),
+        Status::Failed,
+        "",
+    );
+    let message_len =
+        MAX_EVIDENCE_BYTES as usize - empty_failure.len() - pass_line.len().div_ceil(2);
+    let large_failure = record_line_with_path(
+        Some("sess-large-failure"),
+        Some("src/violating.py"),
+        Status::Failed,
+        &"x".repeat(message_len),
+    );
+    let seed = format!("{large_failure}\n");
+    assert!(seed.len() as u64 <= MAX_EVIDENCE_BYTES);
+    assert!(seed.len() + pass_line.len() + 1 > MAX_EVIDENCE_BYTES as usize);
+    std::fs::write(&path, seed).expect("large failure ledger writable");
+
+    let result = EnforcementResult {
+        rule_id: "no-committed-secrets".to_string(),
+        status: Status::Passed,
+        severity: crate::policy::Severity::Error,
+        message: "clean".to_string(),
+        locations: Vec::new(),
+        remediation: None,
+        evidence: crate::checks::ResultEvidence {
+            check: "gitleaks.detect".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    };
+    append_evidence(
+        &temp.path,
+        Some("sess-large-failure"),
+        Some("src/clean.py"),
+        &result,
+    )
+    .expect("append after large failure must succeed");
+
+    let contents = std::fs::read_to_string(&path).expect("ledger readable");
+    assert!(contents.len() as u64 <= MAX_EVIDENCE_BYTES);
+    let values: Vec<Value> = contents
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("retained records remain valid JSON"))
+        .collect();
+    let retained = values
+        .iter()
+        .find(|value| value["edited_file"] == "src/violating.py")
+        .expect("large failed identity remains retained");
+    assert_eq!(retained["result"]["status"], "failed");
+    assert_eq!(retained["truncated"], true);
+    assert_eq!(
+        values.last().expect("pass append survives")["edited_file"],
+        "src/clean.py"
+    );
+}
+
+#[test]
+fn near_cap_current_failure_survives_small_append_with_identity() {
+    let temp = TempDir::new();
+    let dir = temp.path.join(".lgtm").join("evidence");
+    std::fs::create_dir_all(&dir).expect("dir creatable");
+    let path = dir.join("current-task.results.jsonl");
+    let session_id = "s".repeat(4 * 1024 + 1);
+    let session = Some(session_id.as_str());
+    let failure_prefix = record_line_with_path(session, Some("src/failure.py"), Status::Failed, "");
+    let filler = record_line(session, Status::Passed, "filler");
+    let message_len = MAX_EVIDENCE_BYTES as usize - failure_prefix.len() - filler.len() - 1;
+    let failure = record_line_with_path(
+        session,
+        Some("src/failure.py"),
+        Status::Failed,
+        &"x".repeat(message_len),
+    );
+    assert!(failure.len() as u64 <= MAX_EVIDENCE_BYTES);
+    std::fs::write(&path, format!("{failure}\n")).expect("near-cap ledger writable");
+
+    let result = EnforcementResult {
+        rule_id: "no-committed-secrets".to_string(),
+        status: Status::Passed,
+        severity: crate::policy::Severity::Error,
+        message: "small append".to_string(),
+        locations: Vec::new(),
+        remediation: None,
+        evidence: crate::checks::ResultEvidence {
+            check: "gitleaks.detect".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    };
+    append_evidence(&temp.path, session, Some("src/clean.py"), &result)
+        .expect("small append must succeed");
+
+    let contents = std::fs::read_to_string(&path).expect("ledger readable");
+    assert!(contents.len() as u64 <= MAX_EVIDENCE_BYTES);
+    let values: Vec<Value> = contents
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("retained records remain valid JSON"))
+        .collect();
+    let retained = values
+        .iter()
+        .find(|value| value["result"]["status"] == "failed")
+        .expect("current-session failure remains retained");
+    assert_eq!(retained["session_id"], session_id);
+    assert_eq!(retained["edited_file"], "src/failure.py");
+    assert_eq!(retained["truncated"], true);
+    assert_eq!(retained["result"]["rule_id"], "no-committed-secrets");
+}
+
+#[test]
+fn rotation_bounds_total_record_count_and_marks_dropped_records() {
+    let temp = TempDir::new();
+    let dir = temp.path.join(".lgtm").join("evidence");
+    std::fs::create_dir_all(&dir).expect("dir creatable");
+    let path = dir.join("current-task.results.jsonl");
+    let mut seed = String::new();
+    for index in 0..MAX_EVIDENCE_RECORDS {
+        seed.push_str(&record_line(
+            Some("sess-record-cap"),
+            Status::Passed,
+            &format!("pass-{index}"),
+        ));
+        seed.push('\n');
+    }
+    std::fs::write(&path, seed).expect("record-cap ledger writable");
+    let result = EnforcementResult {
+        rule_id: "no-committed-secrets".to_string(),
+        status: Status::Passed,
+        severity: crate::policy::Severity::Error,
+        message: "record-cap append".to_string(),
+        locations: Vec::new(),
+        remediation: None,
+        evidence: crate::checks::ResultEvidence {
+            check: "gitleaks.detect".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    };
+    append_evidence(
+        &temp.path,
+        Some("sess-record-cap"),
+        Some("src/app.py"),
+        &result,
+    )
+    .expect("record-cap append must succeed");
+
+    let contents = std::fs::read_to_string(&path).expect("ledger readable");
+    assert!(contents.lines().count() <= MAX_EVIDENCE_RECORDS);
+    assert!(contents.lines().any(|line| {
+        let value: Value = serde_json::from_str(line).expect("retained records remain valid JSON");
+        value["truncated"] == true && value["session_id"] == "sess-record-cap"
+    }));
+}
+
+#[test]
+fn oversized_single_result_is_compacted_without_exceeding_the_cap() {
+    let temp = TempDir::new();
+    let result = EnforcementResult {
+        rule_id: "no-committed-secrets".to_string(),
+        status: Status::Failed,
+        severity: crate::policy::Severity::Error,
+        message: "x".repeat(MAX_EVIDENCE_BYTES as usize + 1),
+        locations: Vec::new(),
+        remediation: None,
+        evidence: crate::checks::ResultEvidence {
+            check: "gitleaks.detect".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    };
+    append_evidence(
+        &temp.path,
+        Some("sess-compact"),
+        Some("src/app.py"),
+        &result,
+    )
+    .expect("oversized result is compacted");
+
+    let path = temp.path.join(".lgtm/evidence/current-task.results.jsonl");
+    assert!(
+        std::fs::metadata(&path).expect("ledger metadata").len() <= MAX_EVIDENCE_BYTES,
+        "a single oversized result must not exceed the ledger cap"
+    );
+    let value: Value = serde_json::from_str(
+        std::fs::read_to_string(path)
+            .expect("ledger readable")
+            .trim(),
+    )
+    .expect("compact record is valid JSON");
+    assert_eq!(value["truncated"], true);
+    assert_eq!(value["session_id"], "sess-compact");
+    assert_eq!(value["edited_file"], "src/app.py");
+    assert_eq!(value["result"]["rule_id"], "no-committed-secrets");
+    assert_eq!(value["result"]["status"], "failed");
 }
