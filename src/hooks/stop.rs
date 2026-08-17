@@ -1065,6 +1065,9 @@ fn validate_edit_record_shape(value: &serde_json::Value) -> Result<(), ()> {
         .get("locations")
         .and_then(serde_json::Value::as_array)
         .ok_or(())?;
+    if locations.len() > MAX_TOUCHED_PATHS {
+        return Err(());
+    }
     for location in locations {
         validate_ledger_object_shape(location, &["file", "line"], &["file"])?;
         let location = location.as_object().ok_or(())?;
@@ -2348,6 +2351,20 @@ mod tests {
     }
 
     #[test]
+    fn present_empty_current_task_ledger_is_unverified_not_no_edits() {
+        let fixture = TestTempDir::new("empty-ledger");
+        write_ledger(&fixture.path, b"");
+        let (code, output) = run_stop_fixture(&fixture.path, "empty-session");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            output.contains("current-task evidence is empty"),
+            "{output}"
+        );
+        assert!(output.contains("lgtm: action required"), "{output}");
+        assert!(!output.contains("lgtm: passed"), "{output}");
+    }
+
+    #[test]
     fn current_task_ledger_nonregular_input_is_unverified_not_no_edits() {
         let fixture = TestTempDir::new("nonregular");
         let ledger = fixture
@@ -3025,6 +3042,76 @@ mod tests {
             TOUCHED_PATH_RESOLUTION_ATTEMPTS.with(|attempts| attempts.get()),
             512,
             "the 513th raw candidate must not reach canonical resolution"
+        );
+    }
+
+    #[test]
+    fn current_task_ledger_rejects_over_limit_stored_locations() {
+        let fixture = TestTempDir::new("over-limit-locations");
+        let locations: Vec<_> = (0..=MAX_TOUCHED_PATHS)
+            .map(|index| {
+                serde_json::json!({
+                    "file": format!("src/existing-{index}.py"),
+                    "line": 1
+                })
+            })
+            .collect();
+        let record = serde_json::json!({
+            "session_id": "over-limit-session",
+            "edited_file": "src/existing.py",
+            "result": {
+                "rule_id": "no-committed-secrets",
+                "status": "failed",
+                "severity": "error",
+                "message": "finding",
+                "locations": locations,
+                "evidence": {"check": "gitleaks.detect"}
+            }
+        });
+        write_ledger(&fixture.path, format!("{record}\n").as_bytes());
+
+        let (code, output) = run_stop_fixture(&fixture.path, "over-limit-session");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            output.contains("current-task evidence contains invalid record schema"),
+            "{output}"
+        );
+        assert!(output.contains("lgtm: action required"), "{output}");
+        assert!(!output.contains("lgtm: passed"), "{output}");
+    }
+
+    #[test]
+    fn current_task_ledger_accepts_exact_stored_location_bound() {
+        let locations: Vec<_> = (0..MAX_TOUCHED_PATHS)
+            .map(|index| {
+                serde_json::json!({
+                    "file": format!("src/existing-{index}.py"),
+                    "line": 1
+                })
+            })
+            .collect();
+        let record = serde_json::json!({
+            "session_id": "exact-location-session",
+            "edited_file": "src/existing.py",
+            "result": {
+                "rule_id": "no-committed-secrets",
+                "status": "failed",
+                "severity": "error",
+                "message": "finding",
+                "locations": locations,
+                "evidence": {"check": "gitleaks.detect"}
+            }
+        });
+
+        let parsed = match parse_edit_record(&record.to_string()) {
+            Ok(record) => record,
+            Err(_) => panic!("exact stored location bound remains schema-valid"),
+        };
+        assert_eq!(parsed.result.locations.len(), MAX_TOUCHED_PATHS);
+        assert_eq!(parsed.result.locations[0].file, "src/existing-0.py");
+        assert_eq!(
+            parsed.result.locations[MAX_TOUCHED_PATHS - 1].file,
+            format!("src/existing-{}.py", MAX_TOUCHED_PATHS - 1)
         );
     }
 

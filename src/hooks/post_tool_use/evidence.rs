@@ -307,6 +307,9 @@ fn validate_record_shape(value: &serde_json::Value) -> Result<(), String> {
         .get("locations")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| "existing ledger result locations is not an array".to_string())?;
+    if locations.len() > MAX_RECORDED_PATHS {
+        return Err("existing ledger result has too many locations".to_string());
+    }
     for location in locations {
         validate_object_shape(
             location,
@@ -443,7 +446,8 @@ fn rotate_for_incoming(
     incoming: u64,
 ) -> Result<bool, String> {
     let existing = match read_existing_ledger(path)? {
-        ExistingLedger::Missing | ExistingLedger::Empty => return Ok(false),
+        ExistingLedger::Missing => return Ok(false),
+        ExistingLedger::Empty => return Err("existing ledger is empty".to_string()),
         ExistingLedger::Readable(existing) => existing,
     };
     validate_recent_records(&existing)?;

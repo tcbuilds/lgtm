@@ -162,6 +162,43 @@ fn evidence_record_is_appended_and_well_formed() {
 }
 
 #[test]
+fn present_empty_ledger_is_preserved_and_rejected() {
+    let temp = TempDir::new();
+    let path = temp
+        .path
+        .join(".lgtm")
+        .join("evidence")
+        .join("current-task.results.jsonl");
+    std::fs::create_dir_all(path.parent().expect("ledger parent")).expect("ledger directory");
+    std::fs::write(&path, b"").expect("empty ledger writable");
+
+    let result = EnforcementResult {
+        rule_id: "no-committed-secrets".to_string(),
+        status: Status::Passed,
+        severity: crate::policy::Severity::Error,
+        message: "clean".to_string(),
+        locations: Vec::new(),
+        remediation: None,
+        evidence: crate::checks::ResultEvidence {
+            check: "gitleaks.detect".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    };
+    let outcome = append_evidence(
+        &temp.path,
+        Some("empty-session"),
+        Some("src/app.py"),
+        &result,
+    );
+    assert!(outcome.is_err(), "a present empty ledger must fail closed");
+    assert_eq!(
+        std::fs::read(&path).expect("empty ledger remains readable"),
+        b""
+    );
+}
+
+#[test]
 fn unterminated_existing_jsonl_is_delimited_before_append() {
     let temp = TempDir::new();
     let path = temp
@@ -1226,6 +1263,121 @@ fn present_invalid_ledgers_are_preserved_and_rejected() {
         assert!(outcome.is_err(), "{label} ledger must reject append");
         assert_eq!(std::fs::read(&path).expect("ledger remains readable"), old);
     }
+}
+
+#[test]
+fn present_over_limit_locations_are_preserved_and_rejected() {
+    let temp = TempDir::new();
+    let path = temp.path.join(".lgtm/evidence/current-task.results.jsonl");
+    std::fs::create_dir_all(path.parent().expect("ledger parent")).expect("ledger directory");
+    let locations: Vec<_> = (0..=MAX_RECORDED_PATHS)
+        .map(|index| json!({"file": format!("src/existing-{index}.py"), "line": 1}))
+        .collect();
+    let old = format!(
+        "{}\n",
+        json!({
+            "session_id": "over-limit-session",
+            "edited_file": "src/existing.py",
+            "result": {
+                "rule_id": "no-committed-secrets",
+                "status": "failed",
+                "severity": "error",
+                "message": "finding",
+                "locations": locations,
+                "evidence": {"check": "gitleaks.detect"}
+            }
+        })
+    )
+    .into_bytes();
+    std::fs::write(&path, &old).expect("over-limit ledger writable");
+
+    let result = EnforcementResult {
+        rule_id: "no-committed-secrets".to_string(),
+        status: Status::Passed,
+        severity: crate::policy::Severity::Error,
+        message: "clean".to_string(),
+        locations: Vec::new(),
+        remediation: None,
+        evidence: crate::checks::ResultEvidence {
+            check: "gitleaks.detect".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    };
+    let outcome = append_evidence(
+        &temp.path,
+        Some("over-limit-session"),
+        Some("src/new.py"),
+        &result,
+    );
+    assert!(
+        outcome.is_err(),
+        "over-limit stored locations must fail closed"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("over-limit ledger remains readable"),
+        old
+    );
+}
+
+#[test]
+fn existing_exact_location_bound_is_appendable_and_preserves_identities() {
+    let temp = TempDir::new();
+    let path = temp.path.join(".lgtm/evidence/current-task.results.jsonl");
+    std::fs::create_dir_all(path.parent().expect("ledger parent")).expect("ledger directory");
+    let locations: Vec<_> = (0..MAX_RECORDED_PATHS)
+        .map(|index| json!({"file": format!("src/existing-{index}.py"), "line": 1}))
+        .collect();
+    let existing = json!({
+        "session_id": "exact-location-session",
+        "edited_file": "src/existing.py",
+        "result": {
+            "rule_id": "no-committed-secrets",
+            "status": "passed",
+            "severity": "error",
+            "message": "clean",
+            "locations": locations,
+            "evidence": {"check": "gitleaks.detect"}
+        }
+    });
+    std::fs::write(&path, format!("{existing}\n")).expect("exact-bound ledger writable");
+
+    let result = EnforcementResult {
+        rule_id: "no-committed-secrets".to_string(),
+        status: Status::Passed,
+        severity: crate::policy::Severity::Error,
+        message: "incoming".to_string(),
+        locations: Vec::new(),
+        remediation: None,
+        evidence: crate::checks::ResultEvidence {
+            check: "gitleaks.detect".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    };
+    append_evidence(
+        &temp.path,
+        Some("exact-location-session"),
+        Some("src/new.py"),
+        &result,
+    )
+    .expect("exact location bound must remain appendable");
+
+    let values: Vec<Value> = std::fs::read_to_string(&path)
+        .expect("exact-bound ledger readable")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("exact-bound record remains valid JSON"))
+        .collect();
+    assert_eq!(values.len(), 2);
+    let locations = values[0]["result"]["locations"]
+        .as_array()
+        .expect("stored locations array");
+    assert_eq!(locations.len(), MAX_RECORDED_PATHS);
+    for (index, location) in locations.iter().enumerate() {
+        assert_eq!(location["file"], json!(format!("src/existing-{index}.py")));
+        assert_eq!(location["line"], json!(1));
+    }
+    assert_eq!(values[1]["edited_file"], json!("src/new.py"));
 }
 
 #[test]
