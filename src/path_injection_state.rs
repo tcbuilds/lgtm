@@ -761,6 +761,9 @@ mod tests {
         }
     }
 
+    // Same-process flock contention is Linux-specific; macOS coverage uses
+    // the persistent-store integration tests instead.
+    #[cfg(target_os = "linux")]
     #[test]
     fn lock_retry_observes_contention_before_release() {
         let root = std::env::temp_dir().join(format!(

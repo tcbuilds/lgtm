@@ -1851,6 +1851,9 @@ mod tests {
             let path = std::env::temp_dir()
                 .join(format!("lgtm-stop-{label}-{}-{unique}", std::process::id()));
             std::fs::create_dir_all(&path).expect("temporary root creatable");
+            // Keep fixture paths aligned with canonical file paths on macOS,
+            // where the temporary directory is reached through `/var`.
+            let path = std::fs::canonicalize(path).expect("temporary root canonicalizable");
             Self { path }
         }
     }
