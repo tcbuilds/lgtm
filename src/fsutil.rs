@@ -355,6 +355,9 @@ fn is_symlink_open_rejection(_error: &io::Error) -> bool {
 mod tests {
     use super::*;
 
+    // Descriptor-relative containment is the Linux production path; non-Linux
+    // command execution deliberately reports containment unavailable.
+    #[cfg(target_os = "linux")]
     #[test]
     fn directory_capability_rejects_escape_and_symlink_components() {
         let root = std::env::temp_dir().join(format!("lgtm-fsutil-{}", std::process::id()));
