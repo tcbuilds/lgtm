@@ -33,6 +33,9 @@ fn unsupported_success_claim_blocks_stop() {
     assert!(stderr.contains("evidence-claims-honest"));
 }
 
+// Production command containment is available on Linux; macOS must surface
+// configured commands as unavailable rather than claim that they passed.
+#[cfg(target_os = "linux")]
 #[test]
 fn matching_required_command_claim_passes_honesty_check() {
     let repo = TempRepo::new();

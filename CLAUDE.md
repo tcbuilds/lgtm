@@ -34,6 +34,6 @@ Run the applicable gates before reporting work complete. Use `cargo run --locked
 
 ## Release Workflow
 
-`.github/workflows/release.yml` builds public x86_64 Linux musl and macOS archives when a `v*` tag is pushed. The tag must exactly match `v` plus the package version in `Cargo.toml`; the current package version is `0.8.4`. The workflow runs tests, packages binaries, publishes SHA-256 files, and creates the GitHub release.
+`.github/workflows/release.yml` builds public x86_64 Linux musl and macOS archives when a `v*` tag is pushed. The tag must exactly match `v` plus the package version in `Cargo.toml`; the current package version is `0.8.5`. The workflow runs tests, packages binaries, publishes SHA-256 files, and creates the GitHub release.
 
 Do not change versions, create tags, or publish releases without explicit authorization. Every release commit must add `doc/releases/vX.Y.Z.md` with concise user-visible changes, affected users, upgrade guidance, and any migration or compatibility impact; the release workflow rejects a tag without this file and uses it as the GitHub release description. Validate installer changes with `shellcheck` and `scripts/test-install.sh`. `scripts/install.sh` anonymously downloads public release assets and verifies their checksum before installation.
