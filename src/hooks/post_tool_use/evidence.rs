@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use serde_json::json;
@@ -6,6 +6,21 @@ use serde_json::json;
 use crate::checks::EnforcementResult;
 
 pub(super) const MAX_EVIDENCE_BYTES: u64 = 5 * 1024 * 1024;
+pub(super) const MAX_EVIDENCE_RECORDS: usize = 16 * 1024;
+pub(super) const MAX_MUST_KEEP_RECORDS: usize = 128;
+const MAX_COMPACT_FIELD_CHARS: usize = 4 * 1024;
+const CURRENT_TASK_DETAIL_TRUNCATION_MESSAGE: &str =
+    "Evidence record exceeded the ledger bound; details were truncated.";
+const CURRENT_TASK_PERSISTENCE_MESSAGE: &str =
+    "Current-task evidence could not be persisted within the bounded ledger limit.";
+// Only a bounded number of marker-shaped lines may reach JSON parsing while
+// searching records outside the retained window. The canonical serialization
+// is checked separately so marker-like noise cannot hide a real older marker.
+const MAX_PERSISTENCE_MARKER_CANDIDATES: usize = 8;
+const PERSISTENCE_MARKER_MESSAGE_SIGNATURE: &str =
+    "\"message\":\"Current-task evidence could not be persisted within the bounded ledger limit.\"";
+const PERSISTENCE_MARKER_FLAG_SIGNATURE: &str = "\"persistence_failed\":true";
+pub(super) const MAX_RECORDED_PATHS: usize = 512;
 
 /// Append one enforcement result as a JSONL record to
 /// `.lgtm/evidence/current-task.results.jsonl` under `root`.
@@ -17,10 +32,10 @@ pub(super) const MAX_EVIDENCE_BYTES: u64 = 5 * 1024 * 1024;
 /// interleave a rotation with an append and lose or corrupt records. When
 /// rotation is required, it is committed via a staged temp file renamed over the
 /// ledger (an atomic replace), so a reader — or a crash mid-rotation — never sees
-/// a half-written ledger, and it preserves every `failed`/`unverified` record
-/// from the current session (dropping oldest `passed` records first) so a burst
-/// of clean edits can never evict a caught violation the Stop gate must still
-/// see.
+/// a half-written ledger, and it preserves a bounded set of recent
+/// `failed`/`unverified` records from the current session (dropping older
+/// records first) so a burst of clean edits cannot erase the actionable signal
+/// the Stop gate must still see.
 pub(super) fn append_evidence(
     root: &Path,
     session_id: Option<&str>,
@@ -31,14 +46,10 @@ pub(super) fn append_evidence(
     std::fs::create_dir_all(&dir).map_err(|error| format!("mkdir ({error})"))?;
     let path = dir.join("current-task.results.jsonl");
 
-    let record = json!({
-        "session_id": session_id,
-        "edited_file": edited_file,
-        "result": result,
-    });
-    let mut line =
-        serde_json::to_string(&record).map_err(|error| format!("serialize ({error})"))?;
-    line.push('\n');
+    let (line, rotation_session) = match serialize_record(session_id, edited_file, result) {
+        Ok(line) => (line, session_id),
+        Err(_) => (compact_persistence_failure_record(), None),
+    };
 
     // Hold an exclusive advisory lock across the rotate + append so concurrent
     // hooks serialize on the ledger. The lock lives on a sibling `.lock` file
@@ -47,7 +58,7 @@ pub(super) fn append_evidence(
     let lock_path = dir.join("current-task.results.lock");
     let _lock = EvidenceLock::acquire(&lock_path)?;
 
-    rotate_for_incoming(&path, session_id, line.len() as u64)?;
+    let needs_delimiter = rotate_for_incoming(&path, rotation_session, line.len() as u64)?;
 
     use std::fs::OpenOptions;
     let mut file = OpenOptions::new()
@@ -55,7 +66,14 @@ pub(super) fn append_evidence(
         .append(true)
         .open(&path)
         .map_err(|error| format!("open ({error})"))?;
-    file.write_all(line.as_bytes())
+    // Coalesce the delimiter and record so an interrupted append cannot leave a
+    // second write to interleave between the JSONL framing bytes and the record.
+    let mut append = Vec::with_capacity(line.len() + (if needs_delimiter { 1 } else { 0 }));
+    if needs_delimiter {
+        append.push(b'\n');
+    }
+    append.extend_from_slice(line.as_bytes());
+    file.write_all(&append)
         .map_err(|error| format!("write ({error})"))?;
     Ok(())
 }
@@ -161,16 +179,254 @@ impl Drop for EvidenceLock {
 
 /// The read bound applied when loading the ledger to rotate it. It is larger
 /// than [`MAX_EVIDENCE_BYTES`] so a ledger that has grown to or just past the cap
-/// is still readable and trimmable: reading with exactly the cap would treat an
-/// at-or-over-cap file as absent (per [`crate::fsutil::read_optional_bounded`])
-/// and never rotate it. A file larger than even this bound is pathological (hand
-/// written, not produced by this appender) and is treated as absent, which drops
-/// it and starts the ledger fresh — still bounded, never unbounded.
+/// is still readable and trimmable without allowing an unbounded allocation.
 const EVIDENCE_READ_BOUND: u64 = MAX_EVIDENCE_BYTES * 2;
 
+enum ExistingLedger {
+    Missing,
+    Empty,
+    Readable(String),
+}
+
+#[derive(serde::Deserialize)]
+struct StoredEvidenceRecord {
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    edited_file: Option<String>,
+    result: EnforcementResult,
+    #[serde(default)]
+    truncated: bool,
+    #[serde(default)]
+    persistence_failed: bool,
+}
+
+fn validate_object_shape(
+    value: &serde_json::Value,
+    allowed: &[&str],
+    required: &[&str],
+    context: &str,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{context} is not an object"))?;
+    if let Some(field) = object
+        .keys()
+        .find(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err(format!("{context} contains unknown field `{field}`"));
+    }
+    if let Some(field) = required
+        .iter()
+        .find(|field| !object.keys().any(|key| key == *field))
+    {
+        return Err(format!("{context} is missing required field `{field}`"));
+    }
+    Ok(())
+}
+
+fn marker_shape(record: &StoredEvidenceRecord) -> bool {
+    record.edited_file.is_none()
+        && record.result.rule_id == "current-task-evidence"
+        && record.result.status == crate::checks::Status::Unverified
+        && record.result.severity == crate::policy::Severity::Error
+        && record.result.locations.is_empty()
+        && record.result.remediation.is_none()
+        && record.result.evidence.check == "evidence.current-task"
+        && record.result.evidence.tool_version.is_none()
+        && record.result.evidence.finding_descriptions.is_empty()
+}
+
+fn persistence_marker(record: &StoredEvidenceRecord) -> bool {
+    record.truncated
+        && marker_shape(record)
+        && record.session_id.is_none()
+        && record.persistence_failed
+        && record.result.message
+            == "Current-task evidence could not be persisted within the bounded ledger limit."
+}
+
+fn validate_record_shape(value: &serde_json::Value) -> Result<(), String> {
+    validate_object_shape(
+        value,
+        &[
+            "session_id",
+            "edited_file",
+            "result",
+            "truncated",
+            "persistence_failed",
+        ],
+        &["session_id", "result"],
+        "existing ledger record",
+    )?;
+    let session_id = value
+        .get("session_id")
+        .ok_or_else(|| "existing ledger record is missing a session id".to_string())?;
+    if !session_id.is_null()
+        && session_id
+            .as_str()
+            .is_none_or(|session_id| session_id.is_empty())
+    {
+        return Err("existing ledger session id is empty or invalid".to_string());
+    }
+    let result = value
+        .get("result")
+        .ok_or_else(|| "existing ledger record is missing a result".to_string())?;
+    validate_object_shape(
+        result,
+        &[
+            "rule_id",
+            "status",
+            "severity",
+            "message",
+            "locations",
+            "remediation",
+            "evidence",
+        ],
+        &[
+            "rule_id",
+            "status",
+            "severity",
+            "message",
+            "locations",
+            "evidence",
+        ],
+        "existing ledger result",
+    )?;
+    let result_object = result
+        .as_object()
+        .ok_or_else(|| "existing ledger result is not an object".to_string())?;
+    if result_object
+        .get("rule_id")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(|rule_id| rule_id.is_empty())
+    {
+        return Err("existing ledger result rule id is empty".to_string());
+    }
+    let locations = result
+        .get("locations")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "existing ledger result locations is not an array".to_string())?;
+    if locations.len() > MAX_RECORDED_PATHS {
+        return Err("existing ledger result has too many locations".to_string());
+    }
+    for location in locations {
+        validate_object_shape(
+            location,
+            &["file", "line"],
+            &["file"],
+            "existing ledger result location",
+        )?;
+        let location = location
+            .as_object()
+            .ok_or_else(|| "existing ledger result location is not an object".to_string())?;
+        if !location["file"].is_string()
+            || location
+                .get("line")
+                .is_some_and(|line| !line.is_null() && line.as_u64().is_none_or(|line| line == 0))
+        {
+            return Err("existing ledger result location has invalid fields".to_string());
+        }
+    }
+    let evidence = result
+        .get("evidence")
+        .ok_or_else(|| "existing ledger result is missing evidence".to_string())?;
+    validate_object_shape(
+        evidence,
+        &["check", "tool_version", "finding_descriptions"],
+        &["check"],
+        "existing ledger result evidence",
+    )?;
+    let evidence = evidence
+        .as_object()
+        .ok_or_else(|| "existing ledger result evidence is not an object".to_string())?;
+    if evidence
+        .get("check")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(|check| check.is_empty())
+    {
+        return Err("existing ledger result evidence check is empty".to_string());
+    }
+    Ok(())
+}
+
+fn parse_stored_record(value: serde_json::Value) -> Result<StoredEvidenceRecord, String> {
+    validate_record_shape(&value)?;
+    let has_persistence_metadata = value.get("persistence_failed").is_some();
+    let record = serde_json::from_value::<StoredEvidenceRecord>(value)
+        .map_err(|error| format!("existing ledger has invalid evidence schema ({error})"))?;
+    if marker_shape(&record) && !record.truncated && !record.persistence_failed {
+        return Err("existing ledger marker is missing truncation metadata".to_string());
+    }
+    if marker_shape(&record)
+        && record.truncated
+        && !record.persistence_failed
+        && record.result.message
+            == "Older current-task evidence records were dropped at the bounded retention limit."
+        && has_persistence_metadata
+    {
+        return Err(
+            "existing ledger retention marker has unexpected persistence metadata".to_string(),
+        );
+    }
+    if (record.persistence_failed
+        || record.result.message
+            == "Current-task evidence could not be persisted within the bounded ledger limit.")
+        && !persistence_marker(&record)
+    {
+        return Err("existing ledger has invalid persistence marker metadata".to_string());
+    }
+    Ok(record)
+}
+
+fn read_existing_ledger(path: &Path) -> Result<ExistingLedger, String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ExistingLedger::Missing);
+        }
+        Err(error) => return Err(format!("inspect existing ledger ({error})")),
+    };
+    if !metadata.file_type().is_file() {
+        return Err("existing ledger is not a regular file".to_string());
+    }
+    let Some(file) = crate::fsutil::open_regular_file(path)
+        .map_err(|error| format!("open existing ledger ({error})"))?
+    else {
+        return Err("existing ledger became unavailable".to_string());
+    };
+    let mut bytes = Vec::new();
+    file.take(EVIDENCE_READ_BOUND.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read existing ledger ({error})"))?;
+    if bytes.len() as u64 > EVIDENCE_READ_BOUND {
+        return Err("existing ledger exceeds the readable size bound".to_string());
+    }
+    let raw =
+        String::from_utf8(bytes).map_err(|_| "existing ledger is not valid UTF-8".to_string())?;
+    if raw.is_empty() {
+        Ok(ExistingLedger::Empty)
+    } else {
+        Ok(ExistingLedger::Readable(raw))
+    }
+}
+
+/// Validate the bounded recent record window before append or rotation so a
+/// malformed present ledger is preserved and surfaced rather than silently
+/// treated as usable evidence. Older records are outside the retained window
+/// and are surfaced by the retention marker when the record cap forces rotation.
+fn validate_recent_records(existing: &str) -> Result<(), String> {
+    for line in existing.lines().rev().take(MAX_EVIDENCE_RECORDS) {
+        let value = serde_json::from_str::<serde_json::Value>(line)
+            .map_err(|error| format!("existing ledger contains malformed JSON ({error})"))?;
+        let _ = parse_stored_record(value)?;
+    }
+    Ok(())
+}
+
 /// Rotate the ledger if appending `incoming` bytes would push it past
-/// [`MAX_EVIDENCE_BYTES`], preserving every must-keep record and committing the
-/// result atomically.
+/// [`MAX_EVIDENCE_BYTES`], preserving a bounded recent failure signal and
+/// committing the result atomically.
 ///
 /// Must be called with the evidence lock held. Reads the existing file bounded by
 /// [`EVIDENCE_READ_BOUND`] (a runaway ledger cannot exhaust memory). When the
@@ -181,97 +437,527 @@ const EVIDENCE_READ_BOUND: u64 = MAX_EVIDENCE_BYTES * 2;
 /// sessions) are droppable oldest-first. It keeps all must-keep records plus as
 /// many of the newest droppable records as fit the remaining budget, then writes
 /// the survivors through a staged temp file renamed over the ledger so the
-/// replace is atomic. A ledger larger than the read bound — or one that cannot be
-/// classified — is treated as absent and reset the same atomic way, and even that
-/// reset path preserves nothing only because nothing was readable; the caller's
-/// fresh append then re-seeds the ledger.
-fn rotate_for_incoming(path: &Path, session_id: Option<&str>, incoming: u64) -> Result<(), String> {
-    let existing = crate::fsutil::read_optional_bounded(path, EVIDENCE_READ_BOUND);
-    if existing.is_empty() {
-        // Either the ledger is genuinely absent, or it exceeded the read bound
-        // and is unreadable. Atomically reset any on-disk file so a
-        // pathologically large ledger does not survive the append.
-        if path.exists() {
-            replace_ledger(path, "")?;
-        }
-        return Ok(());
-    }
-    if existing.len() as u64 + incoming <= MAX_EVIDENCE_BYTES {
-        return Ok(());
+/// replace is atomic. A present ledger that is oversized, malformed, unreadable,
+/// or otherwise unavailable is preserved and reported as an error rather than
+/// silently reset and reseeded.
+fn rotate_for_incoming(
+    path: &Path,
+    session_id: Option<&str>,
+    incoming: u64,
+) -> Result<bool, String> {
+    let existing = match read_existing_ledger(path)? {
+        ExistingLedger::Missing => return Ok(false),
+        ExistingLedger::Empty => return Err("existing ledger is empty".to_string()),
+        ExistingLedger::Readable(existing) => existing,
+    };
+    validate_recent_records(&existing)?;
+    let record_cap_reached = existing
+        .lines()
+        .nth(MAX_EVIDENCE_RECORDS.saturating_sub(1))
+        .is_some();
+    let needs_delimiter = !existing.ends_with('\n');
+    let delimiter_bytes = u64::from(needs_delimiter);
+    if existing
+        .len()
+        .saturating_add(incoming as usize)
+        .saturating_add(delimiter_bytes as usize) as u64
+        <= MAX_EVIDENCE_BYTES
+        && !record_cap_reached
+    {
+        return Ok(needs_delimiter);
     }
 
+    if incoming > MAX_EVIDENCE_BYTES {
+        return Err("incoming evidence record exceeds the maximum size".to_string());
+    }
     let budget = MAX_EVIDENCE_BYTES.saturating_sub(incoming) as usize;
-    let kept = trim_records(&existing, session_id, budget);
-    replace_ledger(path, &kept)
+    let kept = trim_records(&existing, session_id, budget)?;
+    replace_ledger(path, &kept)?;
+    Ok(false)
 }
 
-/// Select the records to keep so the result fits `budget` bytes while never
-/// dropping a must-keep record.
-///
-/// A must-keep record is a `failed` or `unverified` result belonging to
-/// `session_id`: those are the caught violations and unverified concerns the Stop
-/// gate must still see, so rotation preserves them unconditionally even if that
-/// means the kept set exceeds `budget`. Every other record is droppable and is
-/// kept newest-first only while the running total stays within the budget the
-/// must-keep records leave. The returned string preserves the original relative
-/// order of the kept records (must-keep and droppable interleaved as they
-/// appeared), each newline-terminated.
-pub(super) fn trim_records(existing: &str, session_id: Option<&str>, budget: usize) -> String {
-    let records: Vec<&str> = existing.lines().collect();
-
-    // First pass: total the bytes the must-keep records consume so the droppable
-    // budget is whatever remains.
-    let mut must_keep_bytes = 0usize;
-    let mut is_must_keep = Vec::with_capacity(records.len());
-    for record in &records {
-        let keep = is_must_keep_record(record, session_id);
-        if keep {
-            must_keep_bytes = must_keep_bytes.saturating_add(record.len() + 1);
+/// Select records that fit `budget` bytes while retaining a bounded, recent
+/// failure signal. Any omitted record causes a compact marker to be reserved;
+/// if that marker cannot fit, the caller must preserve the old ledger.
+pub(super) fn trim_records(
+    existing: &str,
+    session_id: Option<&str>,
+    budget: usize,
+) -> Result<String, String> {
+    let record_limit = MAX_EVIDENCE_RECORDS.saturating_sub(1);
+    let mut recent: Vec<&str> = existing.lines().rev().take(record_limit).collect();
+    recent.reverse();
+    let global_persistence_marker = find_global_persistence_marker(existing)?;
+    if let Some(marker) = global_persistence_marker
+        && !recent.contains(&marker)
+    {
+        recent.insert(0, marker);
+    }
+    let window_omitted = existing.lines().count() > recent.len();
+    let first = select_records(&recent, session_id, budget, 0);
+    if !window_omitted && !first.omitted {
+        if global_persistence_marker.is_some()
+            && !contains_persistence_failure_marker(&first.contents)
+        {
+            return Err(
+                "persistence failure marker cannot fit without losing its typed signal".to_string(),
+            );
         }
-        is_must_keep.push(keep);
+        return Ok(first.contents);
     }
 
-    let droppable_budget = budget.saturating_sub(must_keep_bytes);
+    let marker = compact_truncation_record(session_id);
+    if marker.len() > budget {
+        return Err(
+            "truncation marker cannot fit without exceeding the evidence bound".to_string(),
+        );
+    }
+    let remaining = budget - marker.len();
+    let selected = select_records(&recent, session_id, remaining, 1);
+    if global_persistence_marker.is_some()
+        && !contains_persistence_failure_marker(&selected.contents)
+    {
+        return Err(
+            "persistence failure marker cannot fit without losing its typed signal".to_string(),
+        );
+    }
+    let mut kept = String::with_capacity(marker.len() + selected.contents.len());
+    kept.push_str(&marker);
+    kept.push_str(&selected.contents);
+    if kept.len() > budget {
+        return Err("trimmed evidence exceeds the reserved evidence bound".to_string());
+    }
+    Ok(kept)
+}
 
-    // Second pass, newest-first over droppable records: admit each while it fits
-    // the droppable budget, marking the rest for eviction. Must-keep records are
-    // always admitted.
-    let mut admitted = vec![false; records.len()];
-    let mut used = 0usize;
-    for index in (0..records.len()).rev() {
-        if is_must_keep[index] {
-            admitted[index] = true;
+/// Find the newest valid global persistence marker without deserializing every
+/// older record. The cheap signatures reject ordinary lines before parsing; a
+/// small candidate budget bounds hostile marker-like input. A marker emitted by
+/// this producer is also compared with its canonical serialization, so an older
+/// valid marker remains discoverable even if newer noise consumes the candidate
+/// budget. Every parsed candidate still passes the existing typed validation.
+fn find_global_persistence_marker(existing: &str) -> Result<Option<&str>, String> {
+    let canonical = compact_persistence_failure_record();
+    let canonical = canonical.strip_suffix('\n').unwrap_or(canonical.as_str());
+    let mut parsed_candidates = 0;
+    let mut canonical_checked = false;
+    let mut over_budget = false;
+
+    for line in existing.lines().rev() {
+        let is_canonical = line == canonical;
+        let has_signature = line.contains(PERSISTENCE_MARKER_MESSAGE_SIGNATURE)
+            && line.contains(PERSISTENCE_MARKER_FLAG_SIGNATURE);
+        if !is_canonical && !has_signature {
             continue;
         }
-        let size = records[index].len() + 1;
-        if used + size <= droppable_budget {
-            used += size;
-            admitted[index] = true;
+        if is_canonical {
+            if canonical_checked {
+                continue;
+            }
+            canonical_checked = true;
         }
+
+        // Keep scanning cheaply after the small candidate budget is spent so a
+        // canonical older marker cannot be hidden by marker-like noise. There
+        // are at most MAX_PERSISTENCE_MARKER_CANDIDATES non-canonical parses,
+        // plus the first canonical line (which is itself bounded).
+        if !is_canonical {
+            if parsed_candidates >= MAX_PERSISTENCE_MARKER_CANDIDATES {
+                over_budget = true;
+                continue;
+            }
+            parsed_candidates += 1;
+        }
+
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if is_valid_persistence_failure_marker(value) {
+            return Ok(Some(line));
+        }
+    }
+    if over_budget {
+        Err("persistence marker search exceeded the bounded candidate budget".to_string())
+    } else {
+        Ok(None)
+    }
+}
+
+fn contains_persistence_failure_marker(contents: &str) -> bool {
+    contents.lines().any(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .is_some_and(|value| is_persistence_failure_record(&value))
+    })
+}
+
+struct RecordSelection {
+    contents: String,
+    omitted: bool,
+}
+
+fn select_records(
+    recent: &[&str],
+    session_id: Option<&str>,
+    budget: usize,
+    marker_slots: usize,
+) -> RecordSelection {
+    let record_limit = MAX_EVIDENCE_RECORDS
+        .saturating_sub(marker_slots)
+        .saturating_sub(1);
+    let must_keep_limit = MAX_MUST_KEEP_RECORDS.saturating_sub(marker_slots);
+    let mut remaining = budget;
+    let mut selected: Vec<(usize, &str, Option<String>)> = Vec::new();
+    let mut selected_indices = vec![false; recent.len()];
+    let mut must_keep_count = 0;
+    let mut omitted = recent.len() > record_limit;
+
+    // Preserve the newest global persistence marker before applying the bounded
+    // per-session failure budget. A later burst of failures must not erase the
+    // distinct signal that an earlier record could not be persisted.
+    let mut persistence_marker_selected = false;
+    for index in (0..recent.len()).rev() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(recent[index]) else {
+            continue;
+        };
+        if !is_persistence_failure_record(&value) {
+            continue;
+        }
+        if persistence_marker_selected {
+            omitted = true;
+            continue;
+        }
+        let size = recent[index].len() + 1;
+        let compact = if size > remaining || record_has_excess_paths(recent[index]) {
+            compact_existing_record(recent[index])
+        } else {
+            None
+        };
+        let admitted_size = compact.as_ref().map_or(size, String::len);
+        if admitted_size > remaining {
+            omitted = true;
+            continue;
+        }
+        remaining -= admitted_size;
+        selected_indices[index] = true;
+        selected.push((index, recent[index], compact));
+        persistence_marker_selected = true;
     }
 
-    let mut kept = String::new();
-    for (index, record) in records.iter().enumerate() {
-        if admitted[index] {
-            kept.push_str(record);
-            kept.push('\n');
+    for index in (0..recent.len()).rev() {
+        if !is_must_keep_record(recent[index], session_id)
+            || serde_json::from_str::<serde_json::Value>(recent[index])
+                .ok()
+                .is_some_and(|value| is_persistence_failure_record(&value))
+        {
+            continue;
+        }
+        if must_keep_count >= must_keep_limit {
+            omitted = true;
+            continue;
+        }
+        let size = recent[index].len() + 1;
+        let compact = if size > remaining || record_has_excess_paths(recent[index]) {
+            compact_existing_record(recent[index])
+        } else {
+            None
+        };
+        let admitted_size = compact.as_ref().map_or(size, String::len);
+        if admitted_size > remaining {
+            omitted = true;
+            continue;
+        }
+        remaining -= admitted_size;
+        selected_indices[index] = true;
+        selected.push((index, recent[index], compact));
+        must_keep_count += 1;
+    }
+
+    for index in (0..recent.len()).rev() {
+        if is_must_keep_record(recent[index], session_id) {
+            continue;
+        }
+        let size = recent[index].len() + 1;
+        let compact = record_has_excess_paths(recent[index])
+            .then(|| compact_existing_record(recent[index]))
+            .flatten();
+        let admitted_size = compact.as_ref().map_or(size, String::len);
+        if selected.len() >= record_limit || admitted_size > remaining {
+            omitted = true;
+            continue;
+        }
+        remaining -= admitted_size;
+        selected_indices[index] = true;
+        selected.push((index, recent[index], compact));
+    }
+
+    if selected.len() < recent.len() || selected_indices.iter().any(|selected| !selected) {
+        omitted = true;
+    }
+    selected.sort_unstable_by_key(|(index, _, _)| *index);
+    let mut contents = String::with_capacity(budget.saturating_sub(remaining));
+    for (_, record, compact) in selected {
+        if let Some(compact) = compact {
+            contents.push_str(&compact);
+        } else {
+            contents.push_str(record);
+            contents.push('\n');
         }
     }
-    kept
+    RecordSelection { contents, omitted }
+}
+
+fn compact_truncation_record(session_id: Option<&str>) -> String {
+    let mut marker = serde_json::to_string(&json!({
+        "session_id": session_id,
+        "edited_file": null,
+        "result": {
+            "rule_id": "current-task-evidence",
+            "status": "unverified",
+            "severity": "error",
+            "message": "Older current-task evidence records were dropped at the bounded retention limit.",
+            "locations": [],
+            "remediation": null,
+            "evidence": {
+                "check": "evidence.current-task",
+                "tool_version": null,
+                "finding_descriptions": []
+            }
+        },
+        "truncated": true
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+    marker.push('\n');
+    marker
+}
+
+fn compact_persistence_failure_record() -> String {
+    let mut marker = serde_json::to_string(&json!({
+        "session_id": null,
+        "edited_file": null,
+        "result": {
+            "rule_id": "current-task-evidence",
+            "status": "unverified",
+            "severity": "error",
+            "message": "Current-task evidence could not be persisted within the bounded ledger limit.",
+            "locations": [],
+            "remediation": null,
+            "evidence": {
+                "check": "evidence.current-task",
+                "tool_version": null,
+                "finding_descriptions": []
+            }
+        },
+        "truncated": true,
+        "persistence_failed": true
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+    marker.push('\n');
+    marker
+}
+
+fn record_has_excess_paths(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .and_then(|value| value.get("result").cloned())
+        .and_then(|result| result.get("locations").cloned())
+        .and_then(|locations| locations.as_array().map(Vec::len))
+        .is_some_and(|count| count > MAX_RECORDED_PATHS)
+}
+
+pub(super) fn compact_existing_record(line: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    let record = parse_stored_record(value).ok()?;
+    let retention_marker = marker_shape(&record)
+        && record.result.message
+            == "Older current-task evidence records were dropped at the bounded retention limit."
+        && !record.persistence_failed;
+    let is_persistence_marker = persistence_marker(&record);
+    let locations = record
+        .result
+        .locations
+        .first()
+        .map(|location| {
+            let mut compacted = json!({"file": compact_text(&location.file)});
+            if let Some(line) = location.line {
+                compacted["line"] = json!(line);
+            }
+            vec![compacted]
+        })
+        .unwrap_or_default();
+    let message = if is_persistence_marker {
+        "Current-task evidence could not be persisted within the bounded ledger limit."
+    } else if retention_marker {
+        "Older current-task evidence records were dropped at the bounded retention limit."
+    } else {
+        CURRENT_TASK_DETAIL_TRUNCATION_MESSAGE
+    };
+    let mut compact = json!({
+        "session_id": record.session_id,
+        "edited_file": record.edited_file.as_deref().map(compact_text),
+        "result": {
+            "rule_id": compact_text(&record.result.rule_id),
+            "status": record.result.status,
+            "severity": record.result.severity,
+            "message": message,
+            "locations": locations,
+            "remediation": null,
+            "evidence": {
+                "check": compact_text(&record.result.evidence.check),
+                "tool_version": null,
+                "finding_descriptions": []
+            }
+        },
+        "truncated": true
+    });
+    if is_persistence_marker {
+        compact["persistence_failed"] = json!(true);
+    }
+    // Keep this helper honest if the ledger shape changes: never return a
+    // compacted line that Stop could not deserialize as an EditRecord.
+    parse_stored_record(compact.clone()).ok()?;
+    let mut compact_line = serde_json::to_string(&compact).ok()?;
+    compact_line.push('\n');
+    Some(compact_line)
+}
+
+fn serialize_record(
+    session_id: Option<&str>,
+    edited_file: Option<&str>,
+    result: &EnforcementResult,
+) -> Result<String, String> {
+    let record = json!({
+        "session_id": session_id,
+        "edited_file": edited_file,
+        "result": result,
+    });
+    let mut line =
+        serde_json::to_string(&record).map_err(|error| format!("serialize ({error})"))?;
+    line.push('\n');
+    let marker_len = compact_truncation_record(session_id).len();
+    if line.len() as u64 <= MAX_EVIDENCE_BYTES
+        && line.len().saturating_add(marker_len) <= MAX_EVIDENCE_BYTES as usize
+        && result.locations.len() <= MAX_RECORDED_PATHS
+    {
+        return Ok(line);
+    }
+
+    // Preserve the session, status, rule, and edited path when a single result
+    // is too large to fit. Stop needs that bounded identity and signal; it does
+    // not need unbounded tool descriptions or locations to decide safely.
+    let compact = json!({
+        "session_id": session_id,
+        "edited_file": edited_file.map(compact_text),
+        "result": {
+            "rule_id": compact_text(&result.rule_id),
+            "status": result.status,
+            "severity": result.severity,
+            "message": CURRENT_TASK_DETAIL_TRUNCATION_MESSAGE,
+            "locations": [],
+            "remediation": null,
+            "evidence": {
+                "check": compact_text(&result.evidence.check),
+                "tool_version": null,
+                "finding_descriptions": []
+            }
+        },
+        "truncated": true
+    });
+    let mut compact_line =
+        serde_json::to_string(&compact).map_err(|error| format!("serialize compact ({error})"))?;
+    compact_line.push('\n');
+    if compact_line.len() as u64 > MAX_EVIDENCE_BYTES {
+        return Err("compact evidence record exceeds the maximum size".to_string());
+    }
+    Ok(compact_line)
+}
+
+fn compact_text(value: &str) -> String {
+    if value.chars().count() <= MAX_COMPACT_FIELD_CHARS {
+        return value.to_string();
+    }
+    let mut compact: String = value
+        .chars()
+        .take(MAX_COMPACT_FIELD_CHARS.saturating_sub(1))
+        .collect();
+    compact.push('…');
+    compact
 }
 
 /// True when a serialized ledger line is a `failed` or `unverified` record
-/// belonging to `session_id`, which rotation must never evict.
+/// belonging to `session_id`, making it a candidate for bounded retention.
 ///
 /// A line that does not parse, or whose session id does not match, is not
 /// must-keep: only well-formed records of the current session that carry a caught
-/// violation or an unverified concern are protected. A `None` `session_id` (the
-/// hook received no session) protects records whose stored `session_id` is also
-/// null, so an unsessioned run still cannot evict its own violations.
+/// violation or an unverified concern are eligible for the bounded recent
+/// signal. A `None` `session_id` (the hook received no session) matches records
+/// whose stored `session_id` is also null, so an unsessioned run gets the same
+/// bounded retention policy.
+fn is_persistence_failure_record(value: &serde_json::Value) -> bool {
+    let result = value.get("result").and_then(serde_json::Value::as_object);
+    let evidence = result
+        .and_then(|result| result.get("evidence"))
+        .and_then(serde_json::Value::as_object);
+    value
+        .get("session_id")
+        .is_some_and(serde_json::Value::is_null)
+        && value
+            .get("edited_file")
+            .is_some_and(serde_json::Value::is_null)
+        && value.get("truncated").and_then(serde_json::Value::as_bool) == Some(true)
+        && value
+            .get("persistence_failed")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        && result
+            .and_then(|result| result.get("rule_id"))
+            .and_then(serde_json::Value::as_str)
+            == Some("current-task-evidence")
+        && result
+            .and_then(|result| result.get("status"))
+            .and_then(serde_json::Value::as_str)
+            == Some("unverified")
+        && result
+            .and_then(|result| result.get("severity"))
+            .and_then(serde_json::Value::as_str)
+            == Some("error")
+        && result
+            .and_then(|result| result.get("message"))
+            .and_then(serde_json::Value::as_str)
+            == Some(CURRENT_TASK_PERSISTENCE_MESSAGE)
+        && result
+            .and_then(|result| result.get("locations"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+        && result
+            .and_then(|result| result.get("remediation"))
+            .is_some_and(serde_json::Value::is_null)
+        && evidence
+            .and_then(|evidence| evidence.get("check"))
+            .and_then(serde_json::Value::as_str)
+            == Some("evidence.current-task")
+        && evidence
+            .and_then(|evidence| evidence.get("tool_version"))
+            .is_some_and(serde_json::Value::is_null)
+        && evidence
+            .and_then(|evidence| evidence.get("finding_descriptions"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+}
+
+fn is_valid_persistence_failure_marker(value: serde_json::Value) -> bool {
+    parse_stored_record(value)
+        .ok()
+        .is_some_and(|record| persistence_marker(&record))
+}
+
 pub(super) fn is_must_keep_record(line: &str, session_id: Option<&str>) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
         return false;
     };
+    if is_persistence_failure_record(&value) {
+        return true;
+    }
     let record_session = value.get("session_id").and_then(|value| value.as_str());
     if record_session != session_id {
         return false;

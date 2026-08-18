@@ -1,6 +1,6 @@
 //! Stop hook: rerun required secret checks and enforce unresolved MUST failures.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -16,9 +16,25 @@ use crate::policy::Severity;
 
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024;
 const MAX_LEDGER_BYTES: u64 = 5 * 1024 * 1024;
+// Keep this in lockstep with PostToolUse rotation so Stop never parses an
+// unbounded number of newline-delimited records from a bounded ledger.
+const MAX_LEDGER_RECORDS: usize = 16 * 1024;
+const MAX_TOUCHED_PATHS: usize = 512;
 const MAX_TASK_EVIDENCE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_SUMMARY_MESSAGE_CHARS: usize = 512;
 const EVIDENCE_SCHEMA_JSON: &str = include_str!("../../schemas/evidence.schema.json");
+const CURRENT_TASK_RETENTION_MESSAGE: &str =
+    "Older current-task evidence records were dropped at the bounded retention limit.";
+const CURRENT_TASK_PERSISTENCE_MESSAGE: &str =
+    "Current-task evidence could not be persisted within the bounded ledger limit.";
+const CURRENT_TASK_RETENTION_REASON: &str = "current-task evidence was truncated at the bounded retention limit; repair or regenerate evidence";
+const CURRENT_TASK_RECORD_TRUNCATION_REASON: &str = "current-task evidence record details were truncated at a bounded limit; repair or regenerate evidence";
+const CURRENT_TASK_PERSISTENCE_REASON: &str = "current-task evidence could not be persisted within the bounded ledger limit; repair or regenerate evidence";
+
+#[cfg(test)]
+thread_local! {
+    static TOUCHED_PATH_RESOLUTION_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[derive(Debug, Default, Deserialize)]
 struct HookInput {
@@ -44,11 +60,27 @@ struct EditRecord {
     #[serde(default)]
     edited_file: Option<String>,
     result: EnforcementResult,
+    #[serde(default)]
+    truncated: bool,
+    #[serde(default)]
+    persistence_failed: bool,
 }
 
 struct TouchedPaths {
     files: Vec<String>,
     had_edits: bool,
+    ledger_issue: Option<String>,
+}
+
+enum CurrentTaskLedger {
+    Missing,
+    Readable(String),
+    Unverified(String),
+}
+
+enum LedgerRecordError {
+    Malformed,
+    Schema,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -279,11 +311,11 @@ fn run_inner_with_options(
             .validate_workspace(hook_input.workspace.as_deref())
             .err()
     });
-    let (paths, had_edits) = if hook_input.check {
-        (check_paths(&root)?, false)
+    let (paths, had_edits, ledger_issue) = if hook_input.check {
+        (check_paths(&root)?, false, None)
     } else {
         let touched = touched_paths(&root, hook_input.session_id.as_deref())?;
-        (touched.files, touched.had_edits)
+        (touched.files, touched.had_edits, touched.ledger_issue)
     };
     let configured = configured_executables(config_snapshot.settings.as_ref().ok());
     let claims_only = !hook_input.check
@@ -303,6 +335,9 @@ fn run_inner_with_options(
     } else {
         Vec::new()
     };
+    if let Some(reason) = ledger_issue.as_deref() {
+        results.push(current_task_ledger_unverified(reason));
+    }
     let touched: BTreeSet<String> = paths
         .iter()
         .filter_map(|path| relative_path(&root, path))
@@ -832,38 +867,428 @@ fn resolve_root(cwd: Option<&str>) -> Result<PathBuf, String> {
     crate::hooks::root::resolve(cwd)
 }
 
+fn read_current_task_ledger(path: &Path) -> CurrentTaskLedger {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return CurrentTaskLedger::Missing;
+        }
+        Err(_) => {
+            return CurrentTaskLedger::Unverified(
+                "current-task evidence could not be inspected".to_string(),
+            );
+        }
+    };
+    if !metadata.file_type().is_file() {
+        return CurrentTaskLedger::Unverified(
+            "current-task evidence is not a regular file".to_string(),
+        );
+    }
+
+    let file = match crate::fsutil::open_regular_file(path) {
+        Ok(Some(file)) => file,
+        Ok(None) => {
+            return CurrentTaskLedger::Unverified(
+                "current-task evidence became unavailable".to_string(),
+            );
+        }
+        Err(_) => {
+            return CurrentTaskLedger::Unverified(
+                "current-task evidence could not be read".to_string(),
+            );
+        }
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_LEDGER_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return CurrentTaskLedger::Unverified(
+            "current-task evidence could not be read".to_string(),
+        );
+    }
+    if bytes.len() as u64 > MAX_LEDGER_BYTES {
+        return CurrentTaskLedger::Unverified(
+            "current-task evidence exceeds the maximum size".to_string(),
+        );
+    }
+    match String::from_utf8(bytes) {
+        Ok(raw) if raw.is_empty() => {
+            CurrentTaskLedger::Unverified("current-task evidence is empty".to_string())
+        }
+        Ok(raw) => CurrentTaskLedger::Readable(raw),
+        Err(_) => {
+            CurrentTaskLedger::Unverified("current-task evidence is not valid UTF-8".to_string())
+        }
+    }
+}
+
+fn current_task_ledger_unverified(reason: &str) -> EnforcementResult {
+    EnforcementResult {
+        rule_id: "current-task-evidence".to_string(),
+        status: Status::Unverified,
+        severity: Severity::Error,
+        message: format!("Current-task edit evidence is unavailable: {reason}."),
+        locations: Vec::new(),
+        remediation: Some(
+            "Repair or regenerate current-task evidence, then retry Stop.".to_string(),
+        ),
+        evidence: ResultEvidence {
+            check: "evidence.current-task".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    }
+}
+
+fn resolve_touched_candidate(
+    root: &Path,
+    raw: &str,
+    candidates: &mut BTreeSet<String>,
+    resolved: &mut BTreeMap<String, Option<String>>,
+) -> Result<Option<String>, ()> {
+    if let Some(path) = resolved.get(raw) {
+        return Ok(path.clone());
+    }
+    if candidates.len() >= MAX_TOUCHED_PATHS {
+        return Err(());
+    }
+    candidates.insert(raw.to_string());
+    #[cfg(test)]
+    TOUCHED_PATH_RESOLUTION_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+    let path = canonical_contained_file(root, raw);
+    resolved.insert(raw.to_string(), path.clone());
+    Ok(path)
+}
+
+fn marker_shape(record: &EditRecord) -> bool {
+    record.edited_file.is_none()
+        && record.result.rule_id == "current-task-evidence"
+        && record.result.status == Status::Unverified
+        && record.result.severity == Severity::Error
+        && record.result.locations.is_empty()
+        && record.result.remediation.is_none()
+        && record.result.evidence.check == "evidence.current-task"
+        && record.result.evidence.tool_version.is_none()
+        && record.result.evidence.finding_descriptions.is_empty()
+}
+
+fn is_current_task_marker(record: &EditRecord) -> bool {
+    record.truncated && marker_shape(record)
+}
+
+fn is_retention_marker(record: &EditRecord) -> bool {
+    is_current_task_marker(record)
+        && record.result.message == CURRENT_TASK_RETENTION_MESSAGE
+        && !record.persistence_failed
+}
+
+fn is_persistence_failure_marker(record: &EditRecord) -> bool {
+    is_current_task_marker(record)
+        && record.session_id.is_none()
+        && record.result.message == CURRENT_TASK_PERSISTENCE_MESSAGE
+        && record.persistence_failed
+}
+
+fn validate_ledger_object_shape(
+    value: &serde_json::Value,
+    allowed: &[&str],
+    required: &[&str],
+) -> Result<(), ()> {
+    let object = value.as_object().ok_or(())?;
+    if object
+        .keys()
+        .any(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err(());
+    }
+    if required
+        .iter()
+        .any(|field| !object.keys().any(|key| key == *field))
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn validate_edit_record_shape(value: &serde_json::Value) -> Result<(), ()> {
+    validate_ledger_object_shape(
+        value,
+        &[
+            "session_id",
+            "edited_file",
+            "result",
+            "truncated",
+            "persistence_failed",
+        ],
+        &["session_id", "result"],
+    )?;
+    let session_id = value.get("session_id").ok_or(())?;
+    if !session_id.is_null()
+        && session_id
+            .as_str()
+            .is_none_or(|session_id| session_id.is_empty())
+    {
+        return Err(());
+    }
+    let result = value.get("result").ok_or(())?;
+    validate_ledger_object_shape(
+        result,
+        &[
+            "rule_id",
+            "status",
+            "severity",
+            "message",
+            "locations",
+            "remediation",
+            "evidence",
+        ],
+        &[
+            "rule_id",
+            "status",
+            "severity",
+            "message",
+            "locations",
+            "evidence",
+        ],
+    )?;
+    let result_object = result.as_object().ok_or(())?;
+    if result_object
+        .get("rule_id")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(|rule_id| rule_id.is_empty())
+    {
+        return Err(());
+    }
+    let locations = result
+        .get("locations")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(())?;
+    if locations.len() > MAX_TOUCHED_PATHS {
+        return Err(());
+    }
+    for location in locations {
+        validate_ledger_object_shape(location, &["file", "line"], &["file"])?;
+        let location = location.as_object().ok_or(())?;
+        if !location["file"].is_string()
+            || location
+                .get("line")
+                .is_some_and(|line| !line.is_null() && line.as_u64().is_none_or(|line| line == 0))
+        {
+            return Err(());
+        }
+    }
+    let evidence = result.get("evidence").ok_or(())?;
+    validate_ledger_object_shape(
+        evidence,
+        &["check", "tool_version", "finding_descriptions"],
+        &["check"],
+    )?;
+    let evidence = evidence.as_object().ok_or(())?;
+    if evidence
+        .get("check")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(|check| check.is_empty())
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn parse_edit_record(line: &str) -> Result<EditRecord, LedgerRecordError> {
+    let value = serde_json::from_str::<serde_json::Value>(line)
+        .map_err(|_| LedgerRecordError::Malformed)?;
+    validate_edit_record_shape(&value).map_err(|_| LedgerRecordError::Schema)?;
+    let has_persistence_metadata = value.get("persistence_failed").is_some();
+    let record =
+        serde_json::from_value::<EditRecord>(value).map_err(|_| LedgerRecordError::Schema)?;
+    if marker_shape(&record) && !record.truncated && !record.persistence_failed {
+        return Err(LedgerRecordError::Schema);
+    }
+    if marker_shape(&record)
+        && record.truncated
+        && !record.persistence_failed
+        && record.result.message == CURRENT_TASK_RETENTION_MESSAGE
+        && has_persistence_metadata
+    {
+        return Err(LedgerRecordError::Schema);
+    }
+    if (record.persistence_failed || record.result.message == CURRENT_TASK_PERSISTENCE_MESSAGE)
+        && !is_persistence_failure_marker(&record)
+    {
+        return Err(LedgerRecordError::Schema);
+    }
+    Ok(record)
+}
+
+fn truncation_reason(record: &EditRecord) -> &'static str {
+    if is_persistence_failure_marker(record) {
+        CURRENT_TASK_PERSISTENCE_REASON
+    } else if is_retention_marker(record) {
+        CURRENT_TASK_RETENTION_REASON
+    } else {
+        CURRENT_TASK_RECORD_TRUNCATION_REASON
+    }
+}
+
+/// Return the stable precedence of a typed loss marker. The parent-owned
+/// aggregation must not let a later, less-specific survivor hide an earlier
+/// persistence or retention signal.
+fn truncation_priority(record: &EditRecord) -> Option<u8> {
+    if is_persistence_failure_marker(record) {
+        Some(3)
+    } else if is_retention_marker(record) {
+        Some(2)
+    } else if record.truncated || record.persistence_failed {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+fn retain_truncation_issue(issue: &mut Option<(u8, &'static str)>, record: &EditRecord) {
+    let Some(priority) = truncation_priority(record) else {
+        return;
+    };
+    let replace = match *issue {
+        Some((current, _)) => priority > current,
+        None => true,
+    };
+    if replace {
+        *issue = Some((priority, truncation_reason(record)));
+    }
+}
+
+/// Keep malformed/schema/path-limit failures visible rather than letting a
+/// later record overwrite them. They all remain action-required; typed loss
+/// markers are aggregated separately with their explicit precedence.
+fn retain_structural_issue(issue: &mut Option<String>, reason: &str) {
+    if issue.is_none() {
+        *issue = Some(reason.to_string());
+    }
+}
+
 fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, String> {
     let ledger = root.join(".lgtm/evidence/current-task.results.jsonl");
-    let raw = crate::fsutil::read_optional_bounded(&ledger, MAX_LEDGER_BYTES);
     let mut paths = BTreeSet::new();
+    let mut raw_candidates = BTreeSet::new();
+    let mut resolved_candidates = BTreeMap::new();
     let mut had_edits = false;
-    for line in raw.lines() {
-        let record: EditRecord =
-            serde_json::from_str(line).map_err(|error| format!("parse result ledger ({error})"))?;
+    let mut structural_issue = None;
+    let mut truncation_issue = None;
+    let raw = match read_current_task_ledger(&ledger) {
+        CurrentTaskLedger::Missing => String::new(),
+        CurrentTaskLedger::Readable(raw) => raw,
+        CurrentTaskLedger::Unverified(reason) => {
+            return Ok(TouchedPaths {
+                files: Vec::new(),
+                had_edits: true,
+                ledger_issue: Some(reason),
+            });
+        }
+    };
+    'records: for (record_index, line) in raw.lines().enumerate() {
+        if record_index >= MAX_LEDGER_RECORDS {
+            had_edits = true;
+            retain_structural_issue(
+                &mut structural_issue,
+                "current-task evidence exceeds the bounded record limit; repair or regenerate evidence",
+            );
+            break;
+        }
+        let record = match parse_edit_record(line) {
+            Ok(record) => record,
+            Err(LedgerRecordError::Malformed) => {
+                had_edits = true;
+                retain_structural_issue(
+                    &mut structural_issue,
+                    "current-task evidence contains malformed records",
+                );
+                continue;
+            }
+            Err(LedgerRecordError::Schema) => {
+                had_edits = true;
+                retain_structural_issue(
+                    &mut structural_issue,
+                    "current-task evidence contains invalid record schema",
+                );
+                continue;
+            }
+        };
+        if record.truncated || record.persistence_failed {
+            had_edits = true;
+            retain_truncation_issue(&mut truncation_issue, &record);
+        }
         if record.session_id.as_deref() != session_id {
             continue;
         }
         had_edits = true;
-        if let Some(path) = record
-            .edited_file
-            .as_deref()
-            .and_then(|file| canonical_contained_file(root, file))
-        {
-            paths.insert(path);
-            continue;
+        if let Some(file) = record.edited_file.as_deref() {
+            let resolved = match resolve_touched_candidate(
+                root,
+                file,
+                &mut raw_candidates,
+                &mut resolved_candidates,
+            ) {
+                Ok(path) => path,
+                Err(()) => {
+                    retain_structural_issue(
+                        &mut structural_issue,
+                        "current-task evidence contains too many edited paths",
+                    );
+                    break 'records;
+                }
+            };
+            if let Some(path) = resolved {
+                if paths.len() < MAX_TOUCHED_PATHS || paths.contains(&path) {
+                    paths.insert(path);
+                } else {
+                    retain_structural_issue(
+                        &mut structural_issue,
+                        "current-task evidence contains too many edited paths",
+                    );
+                }
+                continue;
+            }
         }
         if record.result.rule_id != "no-committed-secrets" {
             continue;
         }
         for location in record.result.locations {
-            if let Some(path) = canonical_contained_file(root, &location.file) {
-                paths.insert(path);
+            let resolved = match resolve_touched_candidate(
+                root,
+                &location.file,
+                &mut raw_candidates,
+                &mut resolved_candidates,
+            ) {
+                Ok(path) => path,
+                Err(()) => {
+                    retain_structural_issue(
+                        &mut structural_issue,
+                        "current-task evidence contains too many edited paths",
+                    );
+                    break 'records;
+                }
+            };
+            if let Some(path) = resolved {
+                if paths.len() < MAX_TOUCHED_PATHS || paths.contains(&path) {
+                    paths.insert(path);
+                } else {
+                    retain_structural_issue(
+                        &mut structural_issue,
+                        "current-task evidence contains too many edited paths",
+                    );
+                    break;
+                }
             }
         }
     }
     Ok(TouchedPaths {
         files: paths.into_iter().collect(),
         had_edits,
+        ledger_issue: structural_issue
+            .or_else(|| truncation_issue.map(|(_, reason)| reason.to_string())),
     })
 }
 
@@ -1301,8 +1726,211 @@ fn write_block_decision(
 mod tests {
     use super::*;
 
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    struct TestTempDir {
+        path: PathBuf,
+    }
+
+    static TEST_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    impl TestTempDir {
+        fn new(label: &str) -> Self {
+            let unique = TEST_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("lgtm-stop-{label}-{}-{unique}", std::process::id()));
+            std::fs::create_dir_all(&path).expect("temporary root creatable");
+            Self { path }
+        }
+    }
+
+    impl Drop for TestTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn run_stop_fixture(root: &Path, session_id: &str) -> (ExitCode, String) {
+        let payload = serde_json::json!({
+            "cwd": root,
+            "session_id": session_id,
+        });
+        let mut input = std::io::Cursor::new(payload.to_string());
+        let mut output = Vec::new();
+        let code = run_inner_with_budget(
+            &mut input,
+            &mut output,
+            &ClaudeAdapter,
+            crate::adapter::HookEvent::Stop,
+            Duration::ZERO,
+        )
+        .expect("Stop fixture runs");
+        (
+            code,
+            String::from_utf8(output).expect("Stop fixture output is UTF-8"),
+        )
+    }
+
+    fn assert_stop_reports_unverified(root: &Path, session_id: &str) {
+        let (code, output) = run_stop_fixture(root, session_id);
+        assert_eq!(
+            code,
+            ExitCode::SUCCESS,
+            "Unverified is surfaced, not blocked"
+        );
+        assert!(output.contains("lgtm: action required"), "{output}");
+        assert!(
+            output.contains("UNVERIFIED current-task-evidence"),
+            "{output}"
+        );
+        assert!(!output.contains("lgtm: passed"), "{output}");
+    }
+
+    fn write_ledger(root: &Path, contents: &[u8]) {
+        let ledger = root.join(".lgtm/evidence/current-task.results.jsonl");
+        std::fs::create_dir_all(ledger.parent().expect("ledger parent"))
+            .expect("evidence directory");
+        std::fs::write(ledger, contents).expect("ledger fixture writable");
+    }
+
+    fn valid_ledger_line_with_message(
+        session_id: &str,
+        edited_file: &str,
+        status: &str,
+        message: &str,
+    ) -> String {
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "session_id": session_id,
+                "edited_file": edited_file,
+                "result": {
+                    "rule_id": "no-committed-secrets",
+                    "status": status,
+                    "severity": "error",
+                    "message": message,
+                    "locations": [],
+                    "remediation": null,
+                    "evidence": {
+                        "check": "gitleaks.detect",
+                        "tool_version": null,
+                        "finding_descriptions": []
+                    }
+                }
+            })
+        )
+    }
+
+    fn valid_ledger_line(session_id: &str, edited_file: &str, status: &str) -> String {
+        valid_ledger_line_with_message(session_id, edited_file, status, "finding")
+    }
+
+    fn exact_size_valid_ledger(target_bytes: usize) -> Vec<u8> {
+        let empty = valid_ledger_line_with_message("exact-session", "src/exact.py", "passed", "");
+        let message = "x".repeat(target_bytes - empty.len());
+        let line =
+            valid_ledger_line_with_message("exact-session", "src/exact.py", "passed", &message);
+        assert_eq!(line.len(), target_bytes, "exact ledger fixture size");
+        line.into_bytes()
+    }
+
+    fn write_path_cap_ledger(root: &Path, session_id: &str, count: usize) {
+        let ledger = root.join(".lgtm/evidence/current-task.results.jsonl");
+        std::fs::create_dir_all(ledger.parent().expect("ledger parent"))
+            .expect("evidence directory");
+        let mut records = String::new();
+        for index in 0..count {
+            let relative = format!("touched/{index}.py");
+            let path = root.join(&relative);
+            std::fs::create_dir_all(path.parent().expect("touched parent"))
+                .expect("touched directory");
+            std::fs::write(&path, "value = 1\n").expect("touched source");
+            records.push_str(&valid_ledger_line(session_id, &relative, "failed"));
+        }
+        std::fs::write(ledger, records).expect("path-cap ledger");
+    }
+
+    fn write_location_path_cap_ledger(root: &Path, session_id: &str, count: usize) {
+        let ledger = root.join(".lgtm/evidence/current-task.results.jsonl");
+        std::fs::create_dir_all(ledger.parent().expect("ledger parent"))
+            .expect("evidence directory");
+        let mut records = String::new();
+        for index in 0..count {
+            let relative = format!("located/{index}.py");
+            let path = root.join(&relative);
+            std::fs::create_dir_all(path.parent().expect("located parent"))
+                .expect("located directory");
+            std::fs::write(&path, "value = 1\n").expect("located source");
+            records.push_str(&format!(
+                "{}\n",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "edited_file": null,
+                    "result": {
+                        "rule_id": "no-committed-secrets",
+                        "status": "failed",
+                        "severity": "error",
+                        "message": "finding",
+                        "locations": [{"file": relative, "line": 1}],
+                        "remediation": null,
+                        "evidence": {
+                            "check": "gitleaks.detect",
+                            "tool_version": null,
+                            "finding_descriptions": []
+                        }
+                    }
+                })
+            ));
+        }
+        std::fs::write(ledger, records).expect("location path-cap ledger");
+    }
+
+    fn write_mixed_path_cap_ledger(root: &Path, session_id: &str) {
+        let ledger = root.join(".lgtm/evidence/current-task.results.jsonl");
+        std::fs::create_dir_all(ledger.parent().expect("ledger parent"))
+            .expect("evidence directory");
+        let mut records = String::new();
+        for index in 0..256 {
+            let relative = format!("mixed-edited/{index}.py");
+            let path = root.join(&relative);
+            std::fs::create_dir_all(path.parent().expect("mixed-edited parent"))
+                .expect("mixed-edited directory");
+            std::fs::write(&path, "value = 1\n").expect("mixed edited source");
+            records.push_str(&valid_ledger_line(session_id, &relative, "failed"));
+        }
+        for index in 0..257 {
+            let relative = format!("mixed-located/{index}.py");
+            let path = root.join(&relative);
+            std::fs::create_dir_all(path.parent().expect("mixed-located parent"))
+                .expect("mixed-located directory");
+            std::fs::write(&path, "value = 1\n").expect("mixed located source");
+            records.push_str(&format!(
+                "{}\n",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "edited_file": null,
+                    "result": {
+                        "rule_id": "no-committed-secrets",
+                        "status": "failed",
+                        "severity": "error",
+                        "message": "finding",
+                        "locations": [{"file": relative, "line": 1}],
+                        "remediation": null,
+                        "evidence": {
+                            "check": "gitleaks.detect",
+                            "tool_version": null,
+                            "finding_descriptions": []
+                        }
+                    }
+                })
+            ));
+        }
+        std::fs::write(ledger, records).expect("mixed path-cap ledger");
+    }
 
     fn stored_record(
         severity: Severity,
@@ -1428,6 +2056,1116 @@ mod tests {
         assert!(paths.iter().any(|path| path.ends_with("src/app.py")));
         assert!(!paths.iter().any(|path| path.contains("semgrep-python")));
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn current_task_ledger_invalid_inputs_are_unverified_not_no_edits() {
+        let cases = [
+            (
+                "malformed",
+                b"{not-json}\n".to_vec(),
+                "current-task evidence contains malformed records",
+            ),
+            (
+                "invalid-utf8",
+                vec![0xff, 0xfe],
+                "current-task evidence is not valid UTF-8",
+            ),
+            ("empty", Vec::new(), "current-task evidence is empty"),
+            (
+                "whitespace",
+                b" \n".to_vec(),
+                "current-task evidence contains malformed records",
+            ),
+            (
+                "schema-invalid",
+                serde_json::json!({
+                    "session_id": "schema-invalid",
+                    "edited_file": "src/app.py",
+                    "result": {
+                        "rule_id": "no-committed-secrets",
+                        "status": "failed",
+                        "severity": "error",
+                        "message": "missing locations",
+                        "evidence": {"check": "gitleaks.detect"}
+                    }
+                })
+                .to_string()
+                .into_bytes(),
+                "current-task evidence contains invalid record schema",
+            ),
+            (
+                "unknown-field",
+                format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "session_id": "other-session",
+                        "edited_file": "src/app.py",
+                        "unexpected": true,
+                        "result": {
+                            "rule_id": "no-committed-secrets",
+                            "status": "passed",
+                            "severity": "error",
+                            "message": "clean",
+                            "locations": [],
+                            "evidence": {"check": "gitleaks.detect"}
+                        }
+                    })
+                )
+                .into_bytes(),
+                "current-task evidence contains invalid record schema",
+            ),
+            (
+                "empty-check",
+                format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "session_id": "other-session",
+                        "edited_file": "src/app.py",
+                        "result": {
+                            "rule_id": "no-committed-secrets",
+                            "status": "passed",
+                            "severity": "error",
+                            "message": "clean",
+                            "locations": [],
+                            "evidence": {"check": ""}
+                        }
+                    })
+                )
+                .into_bytes(),
+                "current-task evidence contains invalid record schema",
+            ),
+            (
+                "empty-rule-id",
+                format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "session_id": "other-session",
+                        "edited_file": "src/app.py",
+                        "result": {
+                            "rule_id": "",
+                            "status": "passed",
+                            "severity": "error",
+                            "message": "clean",
+                            "locations": [],
+                            "evidence": {"check": "gitleaks.detect"}
+                        }
+                    })
+                )
+                .into_bytes(),
+                "current-task evidence contains invalid record schema",
+            ),
+            (
+                "line-zero",
+                format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "session_id": "other-session",
+                        "edited_file": "src/app.py",
+                        "result": {
+                            "rule_id": "no-committed-secrets",
+                            "status": "failed",
+                            "severity": "error",
+                            "message": "finding",
+                            "locations": [{"file": "src/app.py", "line": 0}],
+                            "evidence": {"check": "gitleaks.detect"}
+                        }
+                    })
+                )
+                .into_bytes(),
+                "current-task evidence contains invalid record schema",
+            ),
+        ];
+        for (label, contents, reason) in cases {
+            let fixture = TestTempDir::new(label);
+            write_ledger(&fixture.path, &contents);
+            assert_stop_reports_unverified(&fixture.path, label);
+            let (_, output) = run_stop_fixture(&fixture.path, label);
+            assert!(output.contains(reason), "{output}");
+        }
+    }
+
+    #[test]
+    fn current_task_ledger_location_line_null_is_valid_but_other_non_numeric_values_are_not() {
+        let make_record = |location: serde_json::Value| {
+            serde_json::json!({
+                "session_id": "line-session",
+                "edited_file": null,
+                "result": {
+                    "rule_id": "no-committed-secrets",
+                    "status": "failed",
+                    "severity": "error",
+                    "message": "finding",
+                    "locations": [location],
+                    "evidence": {"check": "gitleaks.detect"}
+                }
+            })
+        };
+
+        for (label, location) in [
+            ("line-absent", serde_json::json!({"file": "src/app.py"})),
+            (
+                "line-null",
+                serde_json::json!({"file": "src/app.py", "line": null}),
+            ),
+        ] {
+            let fixture = TestTempDir::new(label);
+            write_ledger(
+                &fixture.path,
+                format!("{}\n", make_record(location)).as_bytes(),
+            );
+            let touched = touched_paths(&fixture.path, Some("line-session"))
+                .expect("optional location line parses");
+            assert!(touched.had_edits);
+            assert!(
+                touched.ledger_issue.is_none(),
+                "{label} must remain Stop-usable: {:?}",
+                touched.ledger_issue
+            );
+        }
+
+        for (label, line) in [
+            ("line-zero", serde_json::json!(0)),
+            ("line-negative", serde_json::json!(-1)),
+            ("line-fractional", serde_json::json!(1.5)),
+            ("line-string", serde_json::json!("1")),
+            ("line-boolean", serde_json::json!(true)),
+            ("line-object", serde_json::json!({})),
+            ("line-array", serde_json::json!([])),
+        ] {
+            let fixture = TestTempDir::new(label);
+            let location = serde_json::json!({"file": "src/app.py", "line": line});
+            write_ledger(
+                &fixture.path,
+                format!("{}\n", make_record(location)).as_bytes(),
+            );
+            let touched = touched_paths(&fixture.path, Some("line-session"))
+                .expect("invalid line remains a surfaced ledger issue");
+            assert_eq!(
+                touched.ledger_issue.as_deref(),
+                Some("current-task evidence contains invalid record schema"),
+                "{label} must remain schema-invalid"
+            );
+            assert!(touched.had_edits);
+        }
+    }
+
+    #[test]
+    fn invalid_ledger_remediation_requires_repair_not_deletion() {
+        let result = current_task_ledger_unverified("malformed records");
+        let remediation = result.remediation.expect("invalid ledger remediation");
+        assert!(remediation.contains("Repair or regenerate"));
+        assert!(!remediation.contains("remove"));
+        assert!(!remediation.contains("delete"));
+    }
+
+    #[test]
+    fn current_task_ledger_record_limit_is_unverified_not_no_edits() {
+        let fixture = TestTempDir::new("record-limit");
+        let contents = valid_ledger_line("other-session", "src/ignored.py", "passed")
+            .repeat(MAX_LEDGER_RECORDS + 1);
+        write_ledger(&fixture.path, contents.as_bytes());
+        let (code, output) = run_stop_fixture(&fixture.path, "record-limit-session");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            output.contains("current-task evidence exceeds the bounded record limit"),
+            "{output}"
+        );
+        assert!(
+            output.contains("UNVERIFIED current-task-evidence"),
+            "{output}"
+        );
+        assert!(!output.contains("lgtm: passed"), "{output}");
+    }
+
+    #[test]
+    fn exact_stop_record_cap_is_accepted_but_one_over_is_unverified() {
+        let fixture = TestTempDir::new("record-cap-boundary");
+        let record = valid_ledger_line("other-session", "src/ignored.py", "passed");
+        let exact = record.repeat(MAX_LEDGER_RECORDS);
+        write_ledger(&fixture.path, exact.as_bytes());
+        let (code, output) = run_stop_fixture(&fixture.path, "record-cap-boundary-session");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            output.is_empty(),
+            "exact record cap must remain accepted: {output}"
+        );
+
+        let one_over = format!("{exact}{record}");
+        write_ledger(&fixture.path, one_over.as_bytes());
+        let (code, output) = run_stop_fixture(&fixture.path, "record-cap-boundary-session");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            output.contains("current-task evidence exceeds the bounded record limit"),
+            "{output}"
+        );
+        assert!(output.contains("lgtm: action required"), "{output}");
+        assert!(!output.contains("lgtm: passed"), "{output}");
+    }
+
+    #[test]
+    fn exact_size_valid_current_task_ledger_is_readable() {
+        let fixture = TestTempDir::new("exact-limit");
+        let contents = exact_size_valid_ledger(MAX_LEDGER_BYTES as usize);
+        write_ledger(&fixture.path, &contents);
+
+        match read_current_task_ledger(
+            &fixture
+                .path
+                .join(".lgtm/evidence/current-task.results.jsonl"),
+        ) {
+            CurrentTaskLedger::Readable(raw) => assert_eq!(raw.len(), MAX_LEDGER_BYTES as usize),
+            CurrentTaskLedger::Missing => panic!("exact-size ledger must be readable"),
+            CurrentTaskLedger::Unverified(reason) => {
+                panic!("exact-size ledger must not be unverified: {reason}")
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_valid_current_task_ledger_is_rejected_for_size() {
+        let fixture = TestTempDir::new("oversized-valid");
+        let contents = exact_size_valid_ledger(MAX_LEDGER_BYTES as usize + 1);
+        write_ledger(&fixture.path, &contents);
+
+        match read_current_task_ledger(
+            &fixture
+                .path
+                .join(".lgtm/evidence/current-task.results.jsonl"),
+        ) {
+            CurrentTaskLedger::Unverified(reason) => {
+                assert!(reason.contains("exceeds the maximum size"), "{reason}");
+            }
+            CurrentTaskLedger::Missing => panic!("oversized ledger must be inspected"),
+            CurrentTaskLedger::Readable(_) => panic!("one-byte-over ledger must be rejected"),
+        }
+        assert_stop_reports_unverified(&fixture.path, "exact-session");
+    }
+
+    #[test]
+    fn absent_current_task_ledger_remains_silent_no_edits() {
+        let fixture = TestTempDir::new("absent");
+        let (code, output) = run_stop_fixture(&fixture.path, "absent-session");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(output.is_empty(), "absent ledger remains silent: {output}");
+    }
+
+    #[test]
+    fn present_empty_current_task_ledger_is_unverified_not_no_edits() {
+        let fixture = TestTempDir::new("empty-ledger");
+        write_ledger(&fixture.path, b"");
+        let (code, output) = run_stop_fixture(&fixture.path, "empty-session");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            output.contains("current-task evidence is empty"),
+            "{output}"
+        );
+        assert!(output.contains("lgtm: action required"), "{output}");
+        assert!(!output.contains("lgtm: passed"), "{output}");
+    }
+
+    #[test]
+    fn current_task_ledger_nonregular_input_is_unverified_not_no_edits() {
+        let fixture = TestTempDir::new("nonregular");
+        let ledger = fixture
+            .path
+            .join(".lgtm/evidence/current-task.results.jsonl");
+        std::fs::create_dir_all(&ledger).expect("non-regular ledger fixture");
+        assert_stop_reports_unverified(&fixture.path, "nonregular-session");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_task_ledger_symlink_is_unverified_without_following() {
+        let fixture = TestTempDir::new("symlink");
+        let source = fixture.path.join("src/target.py");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        std::fs::write(&source, "value = 1\n").expect("symlink target source");
+        let target = fixture.path.join("target.jsonl");
+        std::fs::write(
+            &target,
+            valid_ledger_line("symlink-session", "src/target.py", "passed"),
+        )
+        .expect("valid symlink target ledger");
+        let ledger = fixture
+            .path
+            .join(".lgtm/evidence/current-task.results.jsonl");
+        std::fs::create_dir_all(ledger.parent().expect("ledger parent"))
+            .expect("evidence directory");
+        std::os::unix::fs::symlink(&target, &ledger).expect("ledger symlink");
+        assert_stop_reports_unverified(&fixture.path, "symlink-session");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_task_ledger_fifo_is_unverified_without_blocking() {
+        let fixture = TestTempDir::new("fifo");
+        let ledger = fixture
+            .path
+            .join(".lgtm/evidence/current-task.results.jsonl");
+        std::fs::create_dir_all(ledger.parent().expect("ledger parent"))
+            .expect("evidence directory");
+        let cpath = std::ffi::CString::new(ledger.as_os_str().as_encoded_bytes())
+            .expect("FIFO path has no interior nul");
+        // SAFETY: `mkfifo` receives a valid path and mode; the return value is
+        // checked so no malformed fixture can silently pass.
+        let result = unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) };
+        assert_eq!(result, 0, "FIFO fixture must be creatable");
+        let started = std::time::Instant::now();
+        assert_stop_reports_unverified(&fixture.path, "fifo-session");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "FIFO inspection must remain non-blocking"
+        );
+    }
+
+    #[test]
+    fn current_task_ledger_loss_marker_from_other_session_is_unverified() {
+        let fixture = TestTempDir::new("marker-global");
+        let marker = serde_json::json!({
+            "session_id": "other-session",
+            "edited_file": null,
+            "result": {
+                "rule_id": "current-task-evidence",
+                "status": "unverified",
+                "severity": "error",
+                "message": CURRENT_TASK_RETENTION_MESSAGE,
+                "locations": [],
+                "remediation": null,
+                "evidence": {
+                    "check": "evidence.current-task",
+                    "tool_version": null,
+                    "finding_descriptions": []
+                }
+            },
+            "truncated": true
+        });
+        write_ledger(&fixture.path, format!("{marker}\n").as_bytes());
+        assert_stop_reports_unverified(&fixture.path, "current-session");
+        let touched = touched_paths(&fixture.path, Some("current-session"))
+            .expect("other-session marker parses");
+        assert!(touched.files.is_empty());
+        assert_eq!(
+            touched.ledger_issue.as_deref(),
+            Some(
+                "current-task evidence was truncated at the bounded retention limit; repair or regenerate evidence"
+            )
+        );
+        let (_, output) = run_stop_fixture(&fixture.path, "current-session");
+        assert!(
+            output.contains(
+                "current-task evidence was truncated at the bounded retention limit; repair or regenerate evidence"
+            ),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn current_task_ledger_marker_preserves_surviving_path_identity() {
+        let fixture = TestTempDir::new("marker-path");
+        let source = fixture.path.join("src/app.py");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        std::fs::write(&source, "value = 1\n").expect("source fixture");
+        let marker = serde_json::json!({
+            "session_id": "marker-session",
+            "edited_file": null,
+            "result": {
+                "rule_id": "current-task-evidence",
+                "status": "unverified",
+                "severity": "error",
+                "message": CURRENT_TASK_RETENTION_MESSAGE,
+                "locations": [],
+                "remediation": null,
+                "evidence": {
+                    "check": "evidence.current-task",
+                    "tool_version": null,
+                    "finding_descriptions": []
+                }
+            },
+            "truncated": true
+        });
+        write_ledger(
+            &fixture.path,
+            format!(
+                "{}\n{}",
+                marker,
+                valid_ledger_line("marker-session", "src/app.py", "failed")
+            )
+            .as_bytes(),
+        );
+
+        let touched = touched_paths(&fixture.path, Some("marker-session")).expect("marker parses");
+        assert!(touched.had_edits);
+        assert_eq!(
+            touched.ledger_issue.as_deref(),
+            Some(
+                "current-task evidence was truncated at the bounded retention limit; repair or regenerate evidence"
+            )
+        );
+        assert_eq!(touched.files, vec![source.to_string_lossy().into_owned()]);
+        let (_, output) = run_stop_fixture(&fixture.path, "marker-session");
+        assert!(
+            output.contains(
+                "current-task evidence was truncated at the bounded retention limit; repair or regenerate evidence"
+            ),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn current_task_ledger_detail_truncation_is_not_retention_marker() {
+        let fixture = TestTempDir::new("detail-truncation");
+        let source = fixture.path.join("src/app.py");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        std::fs::write(&source, "value = 1\n").expect("source fixture");
+        let record = serde_json::json!({
+            "session_id": "detail-session",
+            "edited_file": "src/app.py",
+            "result": {
+                "rule_id": "no-committed-secrets",
+                "status": "failed",
+                "severity": "error",
+                "message": "details were compacted",
+                "locations": [],
+                "remediation": null,
+                "evidence": {
+                    "check": "gitleaks.detect",
+                    "tool_version": null,
+                    "finding_descriptions": []
+                }
+            },
+            "truncated": true
+        });
+        write_ledger(&fixture.path, format!("{record}\n").as_bytes());
+
+        let touched = touched_paths(&fixture.path, Some("detail-session"))
+            .expect("detail-truncated record parses");
+        assert_eq!(
+            touched.ledger_issue.as_deref(),
+            Some(CURRENT_TASK_RECORD_TRUNCATION_REASON)
+        );
+        assert_eq!(touched.files, vec![source.to_string_lossy().into_owned()]);
+        let (_, output) = run_stop_fixture(&fixture.path, "detail-session");
+        assert!(
+            output.contains(CURRENT_TASK_RECORD_TRUNCATION_REASON),
+            "{output}"
+        );
+        assert!(!output.contains(CURRENT_TASK_RETENTION_REASON), "{output}");
+    }
+
+    #[test]
+    fn current_task_ledger_structural_marker_with_wrong_message_is_detail_truncation() {
+        let fixture = TestTempDir::new("structural-marker");
+        let record = serde_json::json!({
+            "session_id": "structural-session",
+            "edited_file": null,
+            "result": {
+                "rule_id": "current-task-evidence",
+                "status": "unverified",
+                "severity": "error",
+                "message": "evidence was truncated",
+                "locations": [],
+                "remediation": null,
+                "evidence": {
+                    "check": "evidence.current-task",
+                    "tool_version": null,
+                    "finding_descriptions": []
+                }
+            },
+            "truncated": true
+        });
+        write_ledger(&fixture.path, format!("{record}\n").as_bytes());
+
+        let touched = touched_paths(&fixture.path, Some("structural-session"))
+            .expect("structural marker parses");
+        assert_eq!(
+            touched.ledger_issue.as_deref(),
+            Some(CURRENT_TASK_RECORD_TRUNCATION_REASON)
+        );
+        let (_, output) = run_stop_fixture(&fixture.path, "structural-session");
+        assert!(
+            output.contains(CURRENT_TASK_RECORD_TRUNCATION_REASON),
+            "{output}"
+        );
+        assert!(!output.contains(CURRENT_TASK_RETENTION_REASON), "{output}");
+    }
+
+    #[test]
+    fn current_task_ledger_detail_truncation_from_other_session_is_global() {
+        let fixture = TestTempDir::new("detail-truncation-global");
+        let record = serde_json::json!({
+            "session_id": "other-session",
+            "edited_file": "src/other.py",
+            "result": {
+                "rule_id": "no-committed-secrets",
+                "status": "failed",
+                "severity": "error",
+                "message": "details were compacted",
+                "locations": [],
+                "remediation": null,
+                "evidence": {
+                    "check": "gitleaks.detect",
+                    "tool_version": null,
+                    "finding_descriptions": []
+                }
+            },
+            "truncated": true
+        });
+        write_ledger(&fixture.path, format!("{record}\n").as_bytes());
+
+        let touched = touched_paths(&fixture.path, Some("current-session"))
+            .expect("other-session detail truncation parses");
+        assert!(touched.files.is_empty());
+        assert!(touched.had_edits);
+        assert_eq!(
+            touched.ledger_issue.as_deref(),
+            Some(CURRENT_TASK_RECORD_TRUNCATION_REASON)
+        );
+        let (_, output) = run_stop_fixture(&fixture.path, "current-session");
+        assert!(
+            output.contains(CURRENT_TASK_RECORD_TRUNCATION_REASON),
+            "{output}"
+        );
+        assert!(output.contains("lgtm: action required"), "{output}");
+        assert!(!output.contains("lgtm: passed"), "{output}");
+    }
+
+    #[test]
+    fn current_task_persistence_failure_marker_is_global() {
+        let fixture = TestTempDir::new("persistence-global");
+        let record = serde_json::json!({
+            "session_id": null,
+            "edited_file": null,
+            "result": {
+                "rule_id": "current-task-evidence",
+                "status": "unverified",
+                "severity": "error",
+                "message": CURRENT_TASK_PERSISTENCE_MESSAGE,
+                "locations": [],
+                "remediation": null,
+                "evidence": {
+                    "check": "evidence.current-task",
+                    "tool_version": null,
+                    "finding_descriptions": []
+                }
+            },
+            "truncated": true,
+            "persistence_failed": true
+        });
+        write_ledger(&fixture.path, format!("{record}\n").as_bytes());
+
+        let touched = touched_paths(&fixture.path, Some("current-session"))
+            .expect("persistence marker parses");
+        assert!(touched.files.is_empty());
+        assert!(touched.had_edits);
+        assert_eq!(
+            touched.ledger_issue.as_deref(),
+            Some(CURRENT_TASK_PERSISTENCE_REASON)
+        );
+        let (_, output) = run_stop_fixture(&fixture.path, "current-session");
+        assert!(output.contains(CURRENT_TASK_PERSISTENCE_REASON), "{output}");
+        assert!(output.contains("lgtm: action required"), "{output}");
+        assert!(!output.contains("lgtm: passed"), "{output}");
+    }
+
+    #[test]
+    fn current_task_loss_marker_precedence_survives_later_truncated_survivors() {
+        let persistence = serde_json::json!({
+            "session_id": null,
+            "edited_file": null,
+            "result": {
+                "rule_id": "current-task-evidence",
+                "status": "unverified",
+                "severity": "error",
+                "message": CURRENT_TASK_PERSISTENCE_MESSAGE,
+                "locations": [],
+                "remediation": null,
+                "evidence": {
+                    "check": "evidence.current-task",
+                    "tool_version": null,
+                    "finding_descriptions": []
+                }
+            },
+            "truncated": true,
+            "persistence_failed": true
+        });
+        let retention = |session_id: &str| {
+            serde_json::json!({
+                "session_id": session_id,
+                "edited_file": null,
+                "result": {
+                    "rule_id": "current-task-evidence",
+                    "status": "unverified",
+                    "severity": "error",
+                    "message": CURRENT_TASK_RETENTION_MESSAGE,
+                    "locations": [],
+                    "remediation": null,
+                    "evidence": {
+                        "check": "evidence.current-task",
+                        "tool_version": null,
+                        "finding_descriptions": []
+                    }
+                },
+                "truncated": true
+            })
+        };
+        let detail = |session_id: &str| {
+            serde_json::json!({
+                "session_id": session_id,
+                "edited_file": null,
+                "result": {
+                    "rule_id": "no-committed-secrets",
+                    "status": "failed",
+                    "severity": "error",
+                    "message": "details were compacted",
+                    "locations": [],
+                    "remediation": null,
+                    "evidence": {
+                        "check": "gitleaks.detect",
+                        "tool_version": null,
+                        "finding_descriptions": []
+                    }
+                },
+                "truncated": true
+            })
+        };
+
+        let persistence_fixture = TestTempDir::new("precedence-persistence");
+        write_ledger(
+            &persistence_fixture.path,
+            format!(
+                "{}\n{}\n{}\n",
+                persistence,
+                retention("later-session"),
+                detail("later-session")
+            )
+            .as_bytes(),
+        );
+        let touched = touched_paths(&persistence_fixture.path, Some("later-session"))
+            .expect("persistence precedence fixture parses");
+        assert_eq!(
+            touched.ledger_issue.as_deref(),
+            Some(CURRENT_TASK_PERSISTENCE_REASON)
+        );
+        let (_, output) = run_stop_fixture(&persistence_fixture.path, "later-session");
+        assert!(output.contains(CURRENT_TASK_PERSISTENCE_REASON), "{output}");
+        assert!(!output.contains(CURRENT_TASK_RETENTION_REASON), "{output}");
+        assert!(
+            !output.contains(CURRENT_TASK_RECORD_TRUNCATION_REASON),
+            "{output}"
+        );
+
+        let retention_fixture = TestTempDir::new("precedence-retention");
+        write_ledger(
+            &retention_fixture.path,
+            format!(
+                "{}\n{}\n",
+                retention("retention-session"),
+                detail("retention-session")
+            )
+            .as_bytes(),
+        );
+        let touched = touched_paths(&retention_fixture.path, Some("retention-session"))
+            .expect("retention precedence fixture parses");
+        assert_eq!(
+            touched.ledger_issue.as_deref(),
+            Some(CURRENT_TASK_RETENTION_REASON)
+        );
+        let (_, output) = run_stop_fixture(&retention_fixture.path, "retention-session");
+        assert!(output.contains(CURRENT_TASK_RETENTION_REASON), "{output}");
+        assert!(
+            !output.contains(CURRENT_TASK_RECORD_TRUNCATION_REASON),
+            "{output}"
+        );
+        assert!(
+            !output.contains(CURRENT_TASK_PERSISTENCE_REASON),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn persistence_marker_metadata_permutations_are_schema_invalid_in_stop() {
+        let valid = serde_json::json!({
+            "session_id": null,
+            "edited_file": null,
+            "result": {
+                "rule_id": "current-task-evidence",
+                "status": "unverified",
+                "severity": "error",
+                "message": CURRENT_TASK_PERSISTENCE_MESSAGE,
+                "locations": [],
+                "remediation": null,
+                "evidence": {
+                    "check": "evidence.current-task",
+                    "tool_version": null,
+                    "finding_descriptions": []
+                }
+            },
+            "truncated": true,
+            "persistence_failed": true
+        });
+        type ValueMutation = fn(&mut serde_json::Value);
+        let cases: [(&str, ValueMutation); 8] = [
+            ("missing-truncated", |value| {
+                value
+                    .as_object_mut()
+                    .expect("marker object")
+                    .remove("truncated");
+            }),
+            ("false-truncated", |value| {
+                value["truncated"] = serde_json::json!(false)
+            }),
+            ("missing-persistence-failed", |value| {
+                value
+                    .as_object_mut()
+                    .expect("marker object")
+                    .remove("persistence_failed");
+            }),
+            ("false-persistence-failed", |value| {
+                value["persistence_failed"] = serde_json::json!(false)
+            }),
+            ("non-null-session", |value| {
+                value["session_id"] = serde_json::json!("session")
+            }),
+            ("empty-session", |value| {
+                value["session_id"] = serde_json::json!("")
+            }),
+            ("wrong-message", |value| {
+                value["result"]["message"] = serde_json::json!("not the persistence marker")
+            }),
+            ("ordinary-record-with-persistence-failed", |value| {
+                value["session_id"] = serde_json::json!("ordinary-session");
+                value["edited_file"] = serde_json::json!("src/ordinary.py");
+                value["result"]["rule_id"] = serde_json::json!("no-committed-secrets");
+                value["result"]["status"] = serde_json::json!("failed");
+                value["result"]["message"] = serde_json::json!("finding");
+                value
+                    .as_object_mut()
+                    .expect("ordinary record object")
+                    .remove("truncated");
+            }),
+        ];
+
+        for (label, mutate) in cases {
+            let mut record = valid.clone();
+            mutate(&mut record);
+            let fixture = TestTempDir::new(label);
+            write_ledger(&fixture.path, format!("{record}\n").as_bytes());
+            let (code, output) = run_stop_fixture(&fixture.path, label);
+            assert_eq!(
+                code,
+                ExitCode::SUCCESS,
+                "invalid marker remains a surfaced issue"
+            );
+            assert!(
+                output.contains("current-task evidence contains invalid record schema"),
+                "{label}: {output}"
+            );
+            assert!(
+                output.contains("lgtm: action required"),
+                "{label}: {output}"
+            );
+            assert!(!output.contains("lgtm: passed"), "{label}: {output}");
+        }
+    }
+
+    #[test]
+    fn retention_marker_with_false_persistence_metadata_is_schema_invalid_in_stop() {
+        let fixture = TestTempDir::new("retention-false-persistence");
+        let record = serde_json::json!({
+            "session_id": "retention-session",
+            "edited_file": null,
+            "result": {
+                "rule_id": "current-task-evidence",
+                "status": "unverified",
+                "severity": "error",
+                "message": CURRENT_TASK_RETENTION_MESSAGE,
+                "locations": [],
+                "remediation": null,
+                "evidence": {
+                    "check": "evidence.current-task",
+                    "tool_version": null,
+                    "finding_descriptions": []
+                }
+            },
+            "truncated": true,
+            "persistence_failed": false
+        });
+        write_ledger(&fixture.path, format!("{record}\n").as_bytes());
+
+        let (code, output) = run_stop_fixture(&fixture.path, "retention-session");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            output.contains("current-task evidence contains invalid record schema"),
+            "{output}"
+        );
+        assert!(output.contains("lgtm: action required"), "{output}");
+        assert!(!output.contains("lgtm: passed"), "{output}");
+    }
+
+    #[test]
+    fn current_task_ledger_keeps_valid_session_path_identity() {
+        let fixture = TestTempDir::new("valid");
+        let source = fixture.path.join("src/app.py");
+        let ledger = fixture
+            .path
+            .join(".lgtm/evidence/current-task.results.jsonl");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        std::fs::create_dir_all(ledger.parent().expect("ledger parent"))
+            .expect("evidence directory");
+        std::fs::write(&source, "value = 1\n").expect("source fixture");
+        let result = EnforcementResult {
+            rule_id: "no-committed-secrets".to_string(),
+            status: Status::Failed,
+            severity: Severity::Error,
+            message: "finding".to_string(),
+            locations: Vec::new(),
+            remediation: None,
+            evidence: ResultEvidence {
+                check: "gitleaks.detect".to_string(),
+                tool_version: None,
+                finding_descriptions: Vec::new(),
+            },
+        };
+        std::fs::write(
+            &ledger,
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "session_id": "session",
+                    "edited_file": "src/app.py",
+                    "result": result,
+                })
+            ),
+        )
+        .expect("ledger fixture");
+
+        let touched = touched_paths(&fixture.path, Some("session")).expect("valid ledger parses");
+        assert!(touched.had_edits);
+        assert!(touched.ledger_issue.is_none());
+        assert_eq!(touched.files, vec![source.to_string_lossy().into_owned()]);
+    }
+
+    #[test]
+    fn stop_production_checks_surviving_touched_path() {
+        let fixture = TestTempDir::new("production-path");
+        let source = fixture.path.join("src/App.tsx");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        std::fs::write(&source, "const value: any = input;\n").expect("source fixture");
+        write_ledger(
+            &fixture.path,
+            valid_ledger_line("production-path-session", "src/App.tsx", "passed").as_bytes(),
+        );
+
+        let (code, output) = run_stop_fixture(&fixture.path, "production-path-session");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(output.contains("typescript-no-any"), "{output}");
+        assert!(output.contains("lgtm: action required"), "{output}");
+        assert!(!output.contains("lgtm: passed"), "{output}");
+
+        let evidence = std::fs::read_to_string(fixture.path.join(".lgtm/evidence/evidence.jsonl"))
+            .expect("Stop persists task evidence");
+        let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("evidence");
+        let source = source.to_string_lossy().into_owned();
+        assert!(record["results"].as_array().is_some_and(|results| {
+            results.iter().any(|result| {
+                result["rule_id"] == "typescript-no-any"
+                    && result["locations"].as_array().is_some_and(|locations| {
+                        locations
+                            .iter()
+                            .any(|location| location["file"].as_str() == Some(source.as_str()))
+                    })
+            })
+        }));
+    }
+
+    #[test]
+    fn current_task_ledger_touched_paths_are_bounded() {
+        let fixture = TestTempDir::new("path-cap");
+        write_path_cap_ledger(&fixture.path, "path-cap-session", 512);
+        let exact =
+            touched_paths(&fixture.path, Some("path-cap-session")).expect("exact path-cap parses");
+        assert_eq!(exact.files.len(), 512);
+        assert!(exact.ledger_issue.is_none());
+        assert!(exact.had_edits);
+
+        write_path_cap_ledger(&fixture.path, "path-cap-session", 513);
+        let exceeded = touched_paths(&fixture.path, Some("path-cap-session"))
+            .expect("exceeded path-cap parses");
+        assert_eq!(exceeded.files.len(), 512);
+        assert!(exceeded.ledger_issue.is_some());
+        assert!(exceeded.had_edits);
+    }
+
+    #[test]
+    fn current_task_ledger_duplicate_raw_paths_use_the_resolution_cache() {
+        let fixture = TestTempDir::new("duplicate-path-cache");
+        write_path_cap_ledger(&fixture.path, "duplicate-path-cache-session", 512);
+        let ledger = fixture
+            .path
+            .join(".lgtm/evidence/current-task.results.jsonl");
+        let mut contents = std::fs::read_to_string(&ledger).expect("path-cap ledger readable");
+        contents.push_str(&valid_ledger_line(
+            "duplicate-path-cache-session",
+            "touched/0.py",
+            "failed",
+        ));
+        std::fs::write(&ledger, contents).expect("duplicate path ledger writable");
+        TOUCHED_PATH_RESOLUTION_ATTEMPTS.with(|attempts| attempts.set(0));
+
+        let touched = touched_paths(&fixture.path, Some("duplicate-path-cache-session"))
+            .expect("duplicate path ledger parses");
+        assert_eq!(touched.files.len(), 512);
+        assert!(touched.ledger_issue.is_none());
+        assert_eq!(
+            TOUCHED_PATH_RESOLUTION_ATTEMPTS.with(|attempts| attempts.get()),
+            512,
+            "the duplicate 513th raw candidate must use the cached resolution"
+        );
+    }
+
+    #[test]
+    fn current_task_ledger_location_candidates_stop_before_the_next_resolution() {
+        let fixture = TestTempDir::new("location-path-cap");
+        write_location_path_cap_ledger(&fixture.path, "location-path-cap-session", 513);
+        TOUCHED_PATH_RESOLUTION_ATTEMPTS.with(|attempts| attempts.set(0));
+
+        let touched = touched_paths(&fixture.path, Some("location-path-cap-session"))
+            .expect("location path-cap parses");
+        assert_eq!(touched.files.len(), 512);
+        assert_eq!(
+            touched.ledger_issue.as_deref(),
+            Some("current-task evidence contains too many edited paths")
+        );
+        assert!(touched.had_edits);
+        assert_eq!(
+            TOUCHED_PATH_RESOLUTION_ATTEMPTS.with(|attempts| attempts.get()),
+            512,
+            "the 513th raw candidate must not reach canonical resolution"
+        );
+    }
+
+    #[test]
+    fn current_task_ledger_rejects_over_limit_stored_locations() {
+        let fixture = TestTempDir::new("over-limit-locations");
+        let locations: Vec<_> = (0..=MAX_TOUCHED_PATHS)
+            .map(|index| {
+                serde_json::json!({
+                    "file": format!("src/existing-{index}.py"),
+                    "line": 1
+                })
+            })
+            .collect();
+        let record = serde_json::json!({
+            "session_id": "over-limit-session",
+            "edited_file": "src/existing.py",
+            "result": {
+                "rule_id": "no-committed-secrets",
+                "status": "failed",
+                "severity": "error",
+                "message": "finding",
+                "locations": locations,
+                "evidence": {"check": "gitleaks.detect"}
+            }
+        });
+        write_ledger(&fixture.path, format!("{record}\n").as_bytes());
+
+        let (code, output) = run_stop_fixture(&fixture.path, "over-limit-session");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            output.contains("current-task evidence contains invalid record schema"),
+            "{output}"
+        );
+        assert!(output.contains("lgtm: action required"), "{output}");
+        assert!(!output.contains("lgtm: passed"), "{output}");
+    }
+
+    #[test]
+    fn current_task_ledger_accepts_exact_stored_location_bound() {
+        let locations: Vec<_> = (0..MAX_TOUCHED_PATHS)
+            .map(|index| {
+                serde_json::json!({
+                    "file": format!("src/existing-{index}.py"),
+                    "line": 1
+                })
+            })
+            .collect();
+        let record = serde_json::json!({
+            "session_id": "exact-location-session",
+            "edited_file": "src/existing.py",
+            "result": {
+                "rule_id": "no-committed-secrets",
+                "status": "failed",
+                "severity": "error",
+                "message": "finding",
+                "locations": locations,
+                "evidence": {"check": "gitleaks.detect"}
+            }
+        });
+
+        let parsed = match parse_edit_record(&record.to_string()) {
+            Ok(record) => record,
+            Err(_) => panic!("exact stored location bound remains schema-valid"),
+        };
+        assert_eq!(parsed.result.locations.len(), MAX_TOUCHED_PATHS);
+        assert_eq!(parsed.result.locations[0].file, "src/existing-0.py");
+        assert_eq!(
+            parsed.result.locations[MAX_TOUCHED_PATHS - 1].file,
+            format!("src/existing-{}.py", MAX_TOUCHED_PATHS - 1)
+        );
+    }
+
+    #[test]
+    fn current_task_ledger_path_candidates_share_one_aggregate_budget() {
+        let fixture = TestTempDir::new("mixed-path-cap");
+        write_mixed_path_cap_ledger(&fixture.path, "mixed-path-cap-session");
+        TOUCHED_PATH_RESOLUTION_ATTEMPTS.with(|attempts| attempts.set(0));
+
+        let touched = touched_paths(&fixture.path, Some("mixed-path-cap-session"))
+            .expect("mixed path-cap parses");
+        assert_eq!(touched.files.len(), 512);
+        assert_eq!(
+            touched.ledger_issue.as_deref(),
+            Some("current-task evidence contains too many edited paths")
+        );
+        assert_eq!(
+            TOUCHED_PATH_RESOLUTION_ATTEMPTS.with(|attempts| attempts.get()),
+            512,
+            "edited-file and location candidates share the aggregate bound"
+        );
+    }
+
+    #[test]
+    fn aggregate_path_budget_overflow_reaches_stop_action_required() {
+        let fixture = TestTempDir::new("mixed-path-production");
+        let mut contents = String::new();
+        for index in 0..=MAX_TOUCHED_PATHS {
+            contents.push_str(&valid_ledger_line(
+                "mixed-path-production-session",
+                &format!("missing/{index}.py"),
+                "failed",
+            ));
+        }
+        write_ledger(&fixture.path, contents.as_bytes());
+
+        let (code, output) = run_stop_fixture(&fixture.path, "mixed-path-production-session");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            output.contains("current-task evidence contains too many edited paths"),
+            "{output}"
+        );
+        assert!(output.contains("lgtm: action required"), "{output}");
+        assert!(!output.contains("lgtm: passed"), "{output}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unreadable_proc_ledger_is_unverified_without_reading_contents() {
+        let state = read_current_task_ledger(Path::new("/proc/self/mem"));
+        assert!(
+            matches!(state, CurrentTaskLedger::Unverified(_)),
+            "/proc/self/mem must fail as an unreadable ledger"
+        );
     }
 
     #[test]
