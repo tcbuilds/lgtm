@@ -277,6 +277,10 @@ fn projected_coverage_result<'a>(record: &'a Value, status: &str) -> &'a Value {
         .expect("projected coverage result")
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn failing_required_command_blocks_commit_and_records_full_evidence() {
     let repo = TempRepo::new();
@@ -340,6 +344,10 @@ fn failing_required_command_blocks_commit_and_records_full_evidence() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn stop_is_targeted_and_reuses_successful_precommit_evidence() {
     let repo = TempRepo::new();
@@ -713,6 +721,10 @@ fn isolated_supervisor_preserves_unrelated_child_waitability() {
     assert_eq!(status.code(), Some(23));
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn precommit_reuses_full_evidence_with_only_warning_severity_failures() {
     let repo = TempRepo::new();
@@ -786,6 +798,10 @@ fn precommit_reuses_full_evidence_with_only_warning_severity_failures() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn timed_out_required_command_denies_each_retry_and_is_never_reused() {
     let repo = TempRepo::new();
@@ -842,6 +858,10 @@ fn timed_out_required_command_denies_each_retry_and_is_never_reused() {
     }
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn failed_coverage_threshold_denies_each_retry_and_is_never_reused() {
     let repo = TempRepo::new();
@@ -896,6 +916,10 @@ fn failed_coverage_threshold_denies_each_retry_and_is_never_reused() {
     }
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn config_trust_is_revalidated_before_successful_evidence_reuse() {
     let repo = TempRepo::new();
@@ -954,6 +978,10 @@ fn config_trust_is_revalidated_before_successful_evidence_reuse() {
     assert_eq!(repo.read("trusted-config-runs"), "xx");
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn explicit_cli_tier_runs_only_requested_commands() {
     let repo = TempRepo::new();
@@ -1038,6 +1066,10 @@ fn invalid_command_timeout_is_surfaced_as_unverified() {
     assert!(stdout.contains("between 1 and 3600"));
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn passing_line_and_branch_coverage_passes_stop_and_persists_result() {
     let repo = TempRepo::new();
@@ -1083,6 +1115,10 @@ fn evidence_append_recovers_from_a_truncated_final_jsonl_record() {
     assert!(!evidence.contains("{\"task_id\":{\"task_id\""));
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn ratio_and_decimal_coverage_uses_the_percentage_value() {
     let repo = TempRepo::new();
@@ -1105,6 +1141,10 @@ fn ratio_and_decimal_coverage_uses_the_percentage_value() {
     assert_eq!(record["coverage"][0]["branch_percent"], 99.17);
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn out_of_range_coverage_is_unverified_and_persists_valid_evidence() {
     let repo = TempRepo::new();
@@ -1130,6 +1170,10 @@ fn out_of_range_coverage_is_unverified_and_persists_valid_evidence() {
     assert_eq!(record["rules"]["failed"], 0);
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn workspace_scoped_full_check_ignores_other_workspace_coverage_failure() {
     let repo = TempRepo::new();
@@ -1149,6 +1193,10 @@ fn workspace_scoped_full_check_ignores_other_workspace_coverage_failure() {
     assert_eq!(record["rules"]["failed"], 0);
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn full_check_without_workspace_selector_runs_all_coverage() {
     let repo = TempRepo::new();
@@ -1236,6 +1284,10 @@ fn unknown_workspace_selector_in_direct_hook_payload_is_denied() {
     assert_eq!(record["coverage"][0]["status"], "not_applicable");
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn below_threshold_coverage_blocks_stop_and_full_check() {
     let repo = TempRepo::new();
@@ -1277,6 +1329,10 @@ fn below_threshold_coverage_blocks_stop_and_full_check() {
     assert!(check_reason.contains("coverage"));
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn semantic_coverage_labels_ignore_baseline_substrings_end_to_end() {
     let repo = TempRepo::new();
@@ -1431,6 +1487,10 @@ fn doctor_and_stop_accept_parent_relative_executable_paths() {
 }
 
 #[cfg(unix)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn doctor_accepts_final_symlinks_for_absolute_and_coverage_paths() {
     let repo = TempRepo::new();
@@ -2968,6 +3028,10 @@ fn missing_coverage_executable_is_unverified_and_does_not_fail_stop() {
     assert_eq!(record["rules"]["failed"], 0);
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn downgraded_coverage_failure_remains_actionable() {
     let repo = TempRepo::new();
@@ -2989,6 +3053,10 @@ fn downgraded_coverage_failure_remains_actionable() {
     assert!(summary.contains("raise coverage and rerun"));
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
 #[test]
 fn active_stop_hook_summarizes_failed_coverage_instead_of_blocking() {
     let repo = TempRepo::new();
