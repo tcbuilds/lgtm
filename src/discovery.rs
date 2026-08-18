@@ -368,6 +368,15 @@ fn has_dependency(root: &Path, package: &str) -> bool {
 
 fn typescript_commands(root: &Path) -> Vec<(Vec<String>, &'static str, &'static str)> {
     let package = read_optional_bounded(&root.join("package.json"), MAX_METADATA_BYTES);
+    let Ok(package) = serde_json::from_str::<serde_json::Value>(&package) else {
+        return Vec::new();
+    };
+    let Some(scripts_object) = package
+        .get("scripts")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Vec::new();
+    };
     let manager = if root.join("pnpm-lock.yaml").is_file() {
         "pnpm"
     } else if root.join("yarn.lock").is_file() {
@@ -380,7 +389,7 @@ fn typescript_commands(root: &Path) -> Vec<(Vec<String>, &'static str, &'static 
     let scripts = ["lint", "format", "typecheck", "test", "build"];
     scripts
         .into_iter()
-        .filter(|script| package.contains(&format!("\"{script}\"")))
+        .filter(|script| scripts_object.contains_key(*script))
         .map(|script| {
             (
                 vec![manager.to_string(), "run".to_string(), script.to_string()],
@@ -842,6 +851,91 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    fn typescript_commands_for(package: &str) -> Vec<Vec<String>> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-discovery-ts-regression-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(root.join("package.json"), package).expect("package");
+        let commands = discover(&root)
+            .expect("discovery")
+            .into_iter()
+            .find(|workspace| workspace.language == "typescript")
+            .expect("typescript workspace")
+            .commands
+            .into_iter()
+            .map(|command| command.argv)
+            .collect();
+        std::fs::remove_dir_all(root).expect("temporary discovery root removed");
+        commands
+    }
+
+    #[test]
+    fn ignores_recognized_names_outside_top_level_scripts() {
+        let package = r#"{
+            "keywords": ["test"],
+            "dependencies": {"lint": "latest"},
+            "devDependencies": {"build": "latest"},
+            "metadata": {"format": true, "typecheck": "example"},
+            "scripts": {}
+        }"#;
+
+        assert!(typescript_commands_for(package).is_empty());
+    }
+
+    #[test]
+    fn emits_only_present_recognized_top_level_scripts() {
+        let package = r#"{
+            "scripts": {"test": "vitest run", "custom": "node custom.js"}
+        }"#;
+
+        assert_eq!(
+            typescript_commands_for(package),
+            vec![vec![
+                "npm".to_string(),
+                "run".to_string(),
+                "test".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn non_object_or_missing_scripts_do_not_create_guessed_scripts() {
+        for package in [
+            r#"{"scripts":["test"]}"#,
+            r#"{"scripts":"test"}"#,
+            r#"{"scripts":null}"#,
+            r#"{}"#,
+        ] {
+            assert!(
+                typescript_commands_for(package).is_empty(),
+                "package shape should not produce commands: {package}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_package_json_does_not_create_guessed_scripts() {
+        let package = r#"{"scripts":{"test":"vitest run"}"#;
+
+        assert!(typescript_commands_for(package).is_empty());
+    }
+
+    #[test]
+    fn oversized_package_json_does_not_create_guessed_scripts() {
+        let package = format!(
+            "{{\"scripts\":{{\"test\":\"vitest run\"}},\"padding\":\"{}\"}}",
+            "x".repeat(MAX_METADATA_BYTES as usize)
+        );
+
+        assert!(typescript_commands_for(&package).is_empty());
+    }
+
     #[test]
     fn typescript_workspace_uses_lockfile_manager_and_configured_scripts() {
         let root = std::env::temp_dir().join(format!("lgtm-discovery-ts-{}", std::process::id()));
@@ -857,6 +951,7 @@ mod tests {
             .into_iter()
             .find(|workspace| workspace.language == "typescript")
             .expect("typescript workspace");
+        assert_eq!(workspace.commands.len(), 5);
         assert!(workspace.commands.iter().any(|command| {
             command.argv.iter().map(String::as_str).collect::<Vec<_>>() == ["yarn", "run", "lint"]
         }));
