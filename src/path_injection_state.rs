@@ -420,19 +420,10 @@ fn validate_directory(directory: &std::fs::File) -> Result<(), SessionDedupStore
 }
 
 #[cfg(target_os = "macos")]
-fn sync_directory(directory: &std::fs::File) -> Result<(), SessionDedupStoreError> {
-    match directory.sync_all() {
-        Ok(()) => Ok(()),
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::InvalidInput | std::io::ErrorKind::Unsupported
-            ) =>
-        {
-            Ok(())
-        }
-        Err(_) => Err(SessionDedupStoreError),
-    }
+fn sync_directory(_directory: &std::fs::File) -> Result<(), SessionDedupStoreError> {
+    // macOS does not expose a reliable directory-fsync result through
+    // `File::sync_all`; file contents are synced before the atomic rename.
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
