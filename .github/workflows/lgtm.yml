@@ -54,3 +54,15 @@ jobs:
             lgtm-check.log
             .lgtm/evidence/evidence.jsonl
           retention-days: 14
+
+  macos-tests:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.0 --profile minimal
+      - name: Run macOS test suite
+        run: cargo test --locked --all-targets --all-features

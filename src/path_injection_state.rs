@@ -307,7 +307,7 @@ fn file_name(path: &Path) -> Result<CString, SessionDedupStoreError> {
     CString::new(name.as_bytes()).map_err(|_| SessionDedupStoreError)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(test, target_os = "macos"))]
 fn normalize_macos_system_alias(path: &Path) -> PathBuf {
     for (alias, target) in [("/var", "/private/var"), ("/tmp", "/private/tmp")] {
         let alias = Path::new(alias);
@@ -777,6 +777,30 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn macos_system_alias_normalization_is_exact_and_deterministic() {
+        assert_eq!(
+            normalize_macos_system_alias(Path::new("/var/folders/session")),
+            Path::new("/private/var/folders/session")
+        );
+        assert_eq!(
+            normalize_macos_system_alias(Path::new("/tmp/session")),
+            Path::new("/private/tmp/session")
+        );
+        assert_eq!(
+            normalize_macos_system_alias(Path::new("/var")),
+            Path::new("/private/var")
+        );
+        assert_eq!(
+            normalize_macos_system_alias(Path::new("/various/session")),
+            Path::new("/various/session")
+        );
+        assert_eq!(
+            normalize_macos_system_alias(Path::new("relative/session")),
+            Path::new("relative/session")
+        );
     }
 
     // Same-process flock contention is Linux-specific; macOS coverage uses

@@ -44,6 +44,37 @@ impl Drop for TempState {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_tmp_alias_supports_persistent_state_traversal() {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let root = Path::new("/tmp").join(format!(
+        "lgtm-path-injection-macos-tmp-{}-{id}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).expect("macOS /tmp fixture");
+    std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .expect("private macOS /tmp fixture");
+    let state = TempState {
+        path: root.join("sessions.json"),
+        root,
+    };
+    let store = FileSessionDedupStore::new(&state.path);
+
+    assert!(
+        store
+            .filter_and_record("session", &["source.md".to_string()])
+            .expect("store through /tmp alias")
+            .is_empty()
+    );
+    assert_eq!(
+        store.seen("session").expect("load through /tmp alias"),
+        BTreeSet::from(["source.md".to_string()])
+    );
+}
+
 fn write_private(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     let mut file = std::fs::File::create(path)?;
     file.write_all(contents.as_ref())?;
