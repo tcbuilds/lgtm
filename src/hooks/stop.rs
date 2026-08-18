@@ -2550,8 +2550,17 @@ mod tests {
         // checked so no malformed fixture can silently pass.
         let result = unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) };
         assert_eq!(result, 0, "FIFO fixture must be creatable");
+        // Measure the ledger reader directly so parallel Stop checks cannot make
+        // this FIFO-specific non-blocking assertion flaky.
         let started = std::time::Instant::now();
-        assert_stop_reports_unverified(&fixture.path, "fifo-session");
+        match read_current_task_ledger(&ledger) {
+            CurrentTaskLedger::Unverified(reason) => assert_eq!(
+                reason, "current-task evidence is not a regular file",
+                "FIFO inspection must be reported as a non-regular ledger"
+            ),
+            CurrentTaskLedger::Missing => panic!("FIFO ledger must be inspected"),
+            CurrentTaskLedger::Readable(_) => panic!("FIFO ledger must not be read"),
+        }
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "FIFO inspection must remain non-blocking"
