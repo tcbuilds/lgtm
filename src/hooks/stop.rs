@@ -1484,9 +1484,10 @@ fn canonical_contained_file(root: &Path, file: &str) -> Option<String> {
     if !metadata.is_file() {
         return None;
     }
+    let canonical_root = std::fs::canonicalize(root).ok()?;
     let canonical = std::fs::canonicalize(candidate).ok()?;
     canonical
-        .starts_with(root)
+        .starts_with(canonical_root)
         .then(|| canonical.to_string_lossy().into_owned())
 }
 
