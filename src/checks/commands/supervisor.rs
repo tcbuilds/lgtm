@@ -5,7 +5,9 @@ use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+#[cfg(target_os = "linux")]
+use std::process::Stdio;
+use std::process::{Command, ExitCode};
 use std::thread;
 use std::time::{Duration, Instant};
 
