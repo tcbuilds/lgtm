@@ -171,6 +171,9 @@ fn codex_chat_only_lifecycle_is_silent_and_omits_unknown_intent() {
     );
 }
 
+// Production command containment is available on Linux; macOS must surface
+// the unavailable-containment result rather than assert a command exit status.
+#[cfg(target_os = "linux")]
 #[test]
 fn codex_exec_command_commit_runs_full_gate() {
     let repo = TempRepo::new();
