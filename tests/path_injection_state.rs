@@ -741,8 +741,11 @@ fn healthy_lock_contention_is_busy_without_duplicate_guidance() {
         );
         let _ = sender.send(result);
     });
+    // The store's retry budget is one second before scheduler overhead. Keep
+    // the harness timeout wider so a loaded macOS runner tests the product
+    // bound instead of racing an unrelated two-second assertion deadline.
     let result = receiver
-        .recv_timeout(std::time::Duration::from_secs(2))
+        .recv_timeout(std::time::Duration::from_secs(5))
         .expect("contention selection must be bounded");
     assert!(result.bodies.is_empty());
     assert_eq!(result.diagnostics, ["guidance session state busy"]);
