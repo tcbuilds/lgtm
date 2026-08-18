@@ -590,7 +590,12 @@ fn same_regular_entry(location: &StateLocation, file: &std::fs::File) -> std::io
         return Ok(false);
     }
     let entry = unsafe { entry.assume_init() };
-    Ok(entry.st_dev == metadata.dev() && entry.st_ino == metadata.ino())
+    #[cfg(target_os = "macos")]
+    let same_device = u64::try_from(entry.st_dev).ok() == Some(metadata.dev());
+    #[cfg(not(target_os = "macos"))]
+    let same_device = entry.st_dev == metadata.dev();
+    let same_inode = entry.st_ino == metadata.ino();
+    Ok(same_device && same_inode)
 }
 
 #[cfg(unix)]
