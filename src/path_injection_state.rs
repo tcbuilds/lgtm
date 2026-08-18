@@ -307,8 +307,26 @@ fn file_name(path: &Path) -> Result<CString, SessionDedupStoreError> {
     CString::new(name.as_bytes()).map_err(|_| SessionDedupStoreError)
 }
 
+#[cfg(target_os = "macos")]
+fn normalize_macos_system_alias(path: &Path) -> PathBuf {
+    for (alias, target) in [("/var", "/private/var"), ("/tmp", "/private/tmp")] {
+        let alias = Path::new(alias);
+        if path == alias || path.starts_with(alias) {
+            return Path::new(target)
+                .join(path.strip_prefix(alias).unwrap_or_else(|_| Path::new("")));
+        }
+    }
+    path.to_path_buf()
+}
+
 #[cfg(unix)]
 fn open_directory_path(path: &Path) -> Result<std::fs::File, SessionDedupStoreError> {
+    // macOS exposes stable `/var` and `/tmp` aliases through symlinks; normalize
+    // those OS-owned aliases before the no-follow descriptor traversal.
+    #[cfg(target_os = "macos")]
+    let path = normalize_macos_system_alias(path);
+    #[cfg(not(target_os = "macos"))]
+    let path = path.to_path_buf();
     let start = if path.is_absolute() {
         Path::new("/")
     } else {
