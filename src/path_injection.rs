@@ -3,10 +3,16 @@
 //! This module selects guidance only. It does not produce enforcement results,
 //! make policy decisions, or retain session state for future calls.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use crate::policy::frontmatter::{self, RULE_DOCUMENT_SOURCES};
 use crate::select::file_pattern_matches;
+
+pub use crate::path_injection_state::{
+    FileSessionDedupStore, MAX_SESSION_DEDUP_SESSIONS, MAX_SESSION_DEDUP_STATE_BYTES,
+    NoopSessionDedupStore, SESSION_DEDUP_STATE_RELATIVE_PATH, SessionDedupBeginError,
+    SessionDedupStore, SessionDedupStoreError, SessionDedupTransaction,
+};
 
 pub const MAX_CANDIDATE_PATHS: usize = 1_024;
 pub const MAX_CANDIDATE_PATH_BYTES: usize = 4_096;
@@ -33,6 +39,8 @@ const DIAG_SOURCE_SCOPE_UNSUPPORTED: &str = "guidance source scope unsupported";
 const DIAG_SOURCE_PATH_REJECTED: &str = "guidance source path rejected";
 const DIAG_AGGREGATE_LIMIT: &str = "guidance aggregate budget exceeded";
 const DIAG_MATCH_WORK_LIMIT: &str = "guidance matching work budget exhausted";
+const DIAG_SESSION_STATE_UNAVAILABLE: &str = "guidance session state unavailable";
+const DIAG_SESSION_STATE_BUSY: &str = "guidance session state busy";
 
 /// Input to path-scoped guidance selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -147,15 +155,36 @@ impl RuleDocumentSource for EmbeddedRuleDocumentSource {
     }
 }
 
-/// Select guidance from the embedded rule-document catalog.
+/// Select guidance from the embedded rule-document catalog without persistence.
 pub fn select_rule_bodies(request: &PathInjectionRequest) -> PathInjectionResult {
     select_rule_bodies_with_source(request, &EmbeddedRuleDocumentSource)
 }
 
-/// Select guidance from an injected catalog source.
+/// Select guidance from an injected catalog source without persistence.
+///
+/// This compatibility API retains issue #5 behavior. Future adapters should use
+/// [`select_rule_bodies_with_source_and_store`] with [`FileSessionDedupStore`].
 pub fn select_rule_bodies_with_source(
     request: &PathInjectionRequest,
     source: &dyn RuleDocumentSource,
+) -> PathInjectionResult {
+    select_rule_bodies_with_source_and_store(request, source, &NoopSessionDedupStore)
+}
+
+/// Select guidance from the embedded catalog with an explicit persistent store.
+pub fn select_rule_bodies_with_store(
+    request: &PathInjectionRequest,
+    store: &dyn SessionDedupStore,
+) -> PathInjectionResult {
+    select_rule_bodies_with_source_and_store(request, &EmbeddedRuleDocumentSource, store)
+}
+
+/// Select guidance from an injected catalog source and atomically filter bodies
+/// already emitted for the request's usable session id.
+pub fn select_rule_bodies_with_source_and_store(
+    request: &PathInjectionRequest,
+    source: &dyn RuleDocumentSource,
+    store: &dyn SessionDedupStore,
 ) -> PathInjectionResult {
     let mut diagnostics = DiagnosticCollector::default();
     let session_id = request
@@ -170,6 +199,25 @@ pub fn select_rule_bodies_with_source(
     let mut state = SelectionState {
         diagnostics,
         ..SelectionState::default()
+    };
+    let mut session_transaction = None;
+    if let Some(session_id) = session_id.as_deref() {
+        match store.begin(session_id) {
+            Ok(transaction) => match transaction.seen() {
+                Ok(previously_emitted) => {
+                    state.previously_emitted = previously_emitted;
+                    session_transaction = Some(transaction);
+                }
+                Err(_) => state.session_state_unavailable = true,
+            },
+            Err(SessionDedupBeginError::Contended) => {
+                state.diagnostics.push(DIAG_SESSION_STATE_BUSY);
+                return result(Some(session_id.to_string()), Vec::new(), state.diagnostics);
+            }
+            Err(SessionDedupBeginError::Unavailable) => {
+                state.session_state_unavailable = true;
+            }
+        }
     };
     for index in 0..=MAX_SOURCE_DOCUMENTS {
         let Some(metadata) = source.metadata(index) else {
@@ -195,6 +243,12 @@ pub fn select_rule_bodies_with_source(
         }
     }
 
+    if session_id.is_some() {
+        apply_session_dedup(&mut state, session_transaction.as_deref_mut());
+    } else {
+        use_fallback_projection(&mut state);
+    }
+    drop(session_transaction);
     result(session_id, state.bodies, state.diagnostics)
 }
 
@@ -203,9 +257,15 @@ struct SelectionState {
     seen_sources: HashSet<String>,
     bodies: Vec<RuleBody>,
     body_bytes: usize,
+    fallback_bodies: Vec<RuleBody>,
+    fallback_body_bytes: usize,
+    fallback_aggregate_exceeded: bool,
+    aggregate_limit_reported: bool,
     match_attempts: usize,
     match_work: usize,
     match_budget_reported: bool,
+    previously_emitted: BTreeSet<String>,
+    session_state_unavailable: bool,
     diagnostics: DiagnosticCollector,
 }
 
@@ -255,7 +315,6 @@ fn process_document(document: SourceDocument, candidates: &[String], state: &mut
         }
         ScopeMatch::Applies => {}
     }
-
     let body = match frontmatter::body(&contents) {
         Ok(body) => body,
         Err(_) => {
@@ -263,16 +322,67 @@ fn process_document(document: SourceDocument, candidates: &[String], state: &mut
             return;
         }
     };
+    let previously_emitted = state.previously_emitted.contains(&source_identity);
+    let rule_body = RuleBody {
+        source_path,
+        body: body.to_string(),
+    };
+    if body.len() <= MAX_AGGREGATE_BODY_BYTES.saturating_sub(state.fallback_body_bytes) {
+        state.fallback_body_bytes += body.len();
+        state.fallback_bodies.push(rule_body.clone());
+    } else {
+        state.fallback_aggregate_exceeded = true;
+    }
+    state.seen_sources.insert(source_identity);
+    if previously_emitted {
+        return;
+    }
     if body.len() > MAX_AGGREGATE_BODY_BYTES.saturating_sub(state.body_bytes) {
         state.diagnostics.push(DIAG_AGGREGATE_LIMIT);
+        state.aggregate_limit_reported = true;
         return;
     }
     state.body_bytes += body.len();
-    state.seen_sources.insert(source_identity);
-    state.bodies.push(RuleBody {
-        source_path,
-        body: body.to_string(),
-    });
+    state.bodies.push(rule_body);
+}
+
+fn apply_session_dedup(
+    state: &mut SelectionState,
+    transaction: Option<&mut (dyn SessionDedupTransaction + '_)>,
+) {
+    if state.bodies.is_empty() && state.fallback_bodies.is_empty() {
+        return;
+    }
+    if state.session_state_unavailable {
+        state.diagnostics.push(DIAG_SESSION_STATE_UNAVAILABLE);
+        use_fallback_projection(state);
+        return;
+    }
+    let Some(transaction) = transaction else {
+        state.diagnostics.push(DIAG_SESSION_STATE_UNAVAILABLE);
+        use_fallback_projection(state);
+        return;
+    };
+    let source_paths: Vec<_> = state
+        .bodies
+        .iter()
+        .map(|body| body.source_path.clone())
+        .collect();
+    let Ok(already_seen) = transaction.filter_and_record(&source_paths) else {
+        state.diagnostics.push(DIAG_SESSION_STATE_UNAVAILABLE);
+        use_fallback_projection(state);
+        return;
+    };
+    state
+        .bodies
+        .retain(|body| !already_seen.contains(&body.source_path));
+}
+
+fn use_fallback_projection(state: &mut SelectionState) {
+    state.bodies = std::mem::take(&mut state.fallback_bodies);
+    if state.fallback_aggregate_exceeded && !state.aggregate_limit_reported {
+        state.diagnostics.push(DIAG_AGGREGATE_LIMIT);
+    }
 }
 
 fn result(
@@ -288,12 +398,14 @@ fn result(
 }
 
 fn sanitize_session_id(value: &str, diagnostics: &mut DiagnosticCollector) -> Option<String> {
-    if value.len() > MAX_SESSION_ID_BYTES {
-        diagnostics.push(DIAG_SESSION_LIMIT);
+    if value.is_empty() || value.len() > MAX_SESSION_ID_BYTES || value.chars().any(char::is_control)
+    {
+        if !value.is_empty() {
+            diagnostics.push(DIAG_SESSION_LIMIT);
+        }
         return None;
     }
-    let value = clean_and_clip(value, MAX_SESSION_ID_BYTES);
-    (!value.is_empty()).then_some(value)
+    Some(value.to_string())
 }
 
 fn normalize_candidates(
@@ -417,30 +529,11 @@ fn brace_depth(pattern: &str) -> usize {
 }
 
 fn source_path_is_valid(path: &str) -> bool {
-    path.len() <= MAX_SOURCE_PATH_BYTES && !path.chars().any(char::is_control)
+    !path.is_empty() && path.len() <= MAX_SOURCE_PATH_BYTES && !path.chars().any(char::is_control)
 }
 
 fn source_path(path: &str) -> String {
-    let path = clean_and_clip(path, MAX_SOURCE_PATH_BYTES);
-    if path.is_empty() {
-        "<unnamed>".to_string()
-    } else {
-        path
-    }
-}
-
-fn clean_and_clip(value: &str, max_bytes: usize) -> String {
-    let mut cleaned = String::new();
-    for character in value.chars() {
-        if character.is_control() {
-            continue;
-        }
-        if cleaned.len() + character.len_utf8() > max_bytes {
-            break;
-        }
-        cleaned.push(character);
-    }
-    cleaned
+    path.to_string()
 }
 
 #[derive(Debug, Default)]

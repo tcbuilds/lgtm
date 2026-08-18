@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -8,8 +9,9 @@ use lgtm::path_injection::{
     MAX_CANDIDATE_PATHS, MAX_DIAGNOSTIC_BYTES, MAX_DOCUMENT_PATTERNS, MAX_PATTERN_BRACE_DEPTH,
     MAX_PATTERN_BYTES, MAX_PATTERN_MATCH_ATTEMPTS, MAX_PATTERN_MATCH_WORK, MAX_SESSION_ID_BYTES,
     MAX_SOURCE_DOCUMENT_BYTES, MAX_SOURCE_DOCUMENTS, MAX_SOURCE_PATH_BYTES, PathInjectionRequest,
-    RuleDocumentSource, SourceDocument, SourceDocumentError, SourceDocumentMetadata,
-    select_rule_bodies, select_rule_bodies_with_source,
+    RuleDocumentSource, SessionDedupStore, SessionDedupStoreError, SourceDocument,
+    SourceDocumentError, SourceDocumentMetadata, select_rule_bodies,
+    select_rule_bodies_with_source, select_rule_bodies_with_source_and_store,
 };
 use lgtm::policy::frontmatter::RULE_DOCUMENT_SOURCES;
 
@@ -60,6 +62,22 @@ impl RuleDocumentSource for FakeSource {
 }
 
 struct FakeHarness;
+
+struct SeenThenFailStore;
+
+impl SessionDedupStore for SeenThenFailStore {
+    fn seen(&self, _session_id: &str) -> Result<BTreeSet<String>, SessionDedupStoreError> {
+        Ok(BTreeSet::from(["a.md".to_string()]))
+    }
+
+    fn filter_and_record(
+        &self,
+        _session_id: &str,
+        _source_paths: &[String],
+    ) -> Result<BTreeSet<String>, SessionDedupStoreError> {
+        Err(SessionDedupStoreError)
+    }
+}
 
 impl FakeHarness {
     fn inject(
@@ -717,4 +735,49 @@ fn embedded_source_implements_the_bounded_public_source_seam() {
             .is_some()
     );
     assert!(source.metadata(RULE_DOCUMENT_SOURCES.len()).is_none());
+}
+
+#[test]
+fn late_session_store_failure_restores_previously_suppressed_guidance() {
+    let initial_source = source(vec![
+        SourceDocument::readable("a.md", "a body"),
+        SourceDocument::readable("b.md", "b body"),
+    ]);
+    let result = select_rule_bodies_with_source_and_store(
+        &request(&["service.py"]),
+        &initial_source,
+        &SeenThenFailStore,
+    );
+    let paths = result
+        .bodies
+        .iter()
+        .map(|body| body.source_path.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(paths, ["a.md", "b.md"]);
+    let large_source = source(vec![
+        SourceDocument::readable("a.md", "a".repeat(MAX_AGGREGATE_BODY_BYTES)),
+        SourceDocument::readable("b.md", "b"),
+    ]);
+    let large_result = select_rule_bodies_with_source_and_store(
+        &request(&["service.py"]),
+        &large_source,
+        &SeenThenFailStore,
+    );
+    assert_eq!(
+        large_result
+            .bodies
+            .iter()
+            .map(|body| body.source_path.as_str())
+            .collect::<Vec<_>>(),
+        ["a.md"]
+    );
+    assert_eq!(result.diagnostics, ["guidance session state unavailable"]);
+    assert_eq!(
+        large_result.diagnostics,
+        [
+            "guidance session state unavailable",
+            "guidance aggregate budget exceeded",
+        ]
+    );
 }
