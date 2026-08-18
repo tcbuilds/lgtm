@@ -44,6 +44,37 @@ impl Drop for TempState {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_tmp_alias_supports_persistent_state_traversal() {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let root = Path::new("/tmp").join(format!(
+        "lgtm-path-injection-macos-tmp-{}-{id}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).expect("macOS /tmp fixture");
+    std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .expect("private macOS /tmp fixture");
+    let state = TempState {
+        path: root.join("sessions.json"),
+        root,
+    };
+    let store = FileSessionDedupStore::new(&state.path);
+
+    assert!(
+        store
+            .filter_and_record("session", &["source.md".to_string()])
+            .expect("store through /tmp alias")
+            .is_empty()
+    );
+    assert_eq!(
+        store.seen("session").expect("load through /tmp alias"),
+        BTreeSet::from(["source.md".to_string()])
+    );
+}
+
 fn write_private(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     let mut file = std::fs::File::create(path)?;
     file.write_all(contents.as_ref())?;
@@ -710,8 +741,11 @@ fn healthy_lock_contention_is_busy_without_duplicate_guidance() {
         );
         let _ = sender.send(result);
     });
+    // The store's retry budget is one second before scheduler overhead. Keep
+    // the harness timeout wider so a loaded macOS runner tests the product
+    // bound instead of racing an unrelated two-second assertion deadline.
     let result = receiver
-        .recv_timeout(std::time::Duration::from_secs(2))
+        .recv_timeout(std::time::Duration::from_secs(5))
         .expect("contention selection must be bounded");
     assert!(result.bodies.is_empty());
     assert_eq!(result.diagnostics, ["guidance session state busy"]);
