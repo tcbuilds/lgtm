@@ -358,7 +358,7 @@ fn open_or_create_directory(
 ) -> Result<std::fs::File, SessionDedupStoreError> {
     match open_directory_at(parent, name) {
         Ok(directory) => {
-            parent.sync_all().map_err(|_| SessionDedupStoreError)?;
+            sync_directory(parent)?;
             validate_traversal_directory(&directory)?;
             Ok(directory)
         }
@@ -369,9 +369,9 @@ fn open_or_create_directory(
             if result < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
                 return Err(SessionDedupStoreError);
             }
-            parent.sync_all().map_err(|_| SessionDedupStoreError)?;
+            sync_directory(parent)?;
             let directory = open_directory_at(parent, name).map_err(|_| SessionDedupStoreError)?;
-            parent.sync_all().map_err(|_| SessionDedupStoreError)?;
+            sync_directory(parent)?;
             validate_traversal_directory(&directory)?;
             Ok(directory)
         }
@@ -417,6 +417,27 @@ fn validate_directory(directory: &std::fs::File) -> Result<(), SessionDedupStore
         return Err(SessionDedupStoreError);
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn sync_directory(directory: &std::fs::File) -> Result<(), SessionDedupStoreError> {
+    match directory.sync_all() {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidInput | std::io::ErrorKind::Unsupported
+            ) =>
+        {
+            Ok(())
+        }
+        Err(_) => Err(SessionDedupStoreError),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sync_directory(directory: &std::fs::File) -> Result<(), SessionDedupStoreError> {
+    directory.sync_all().map_err(|_| SessionDedupStoreError)
 }
 
 #[cfg(unix)]
@@ -513,10 +534,7 @@ fn persist_state(
             let _ = unlinkat(location, &temp_name);
             return Err(SessionDedupStoreError);
         }
-        location
-            .directory
-            .sync_all()
-            .map_err(|_| SessionDedupStoreError)?;
+        sync_directory(&location.directory)?;
         return Ok(());
     }
     let _ = unlinkat(location, &temp_name);

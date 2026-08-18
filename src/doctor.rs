@@ -235,7 +235,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[cfg(unix)]
+    // macOS filesystem path components use a valid Unicode representation, so
+    // raw non-UTF-8 path-byte coverage is specific to Linux.
+    #[cfg(target_os = "linux")]
     #[test]
     fn path_probe_preserves_non_utf8_path_entries() {
         use std::os::unix::ffi::OsStringExt;

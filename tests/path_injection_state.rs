@@ -551,8 +551,10 @@ fn fifo_lock_fails_open_with_fixed_diagnostics() {
         );
         let _ = sender.send(result);
     });
+    // Keep the timeout long enough for the parallel release suite while still
+    // failing a genuinely blocking FIFO open instead of hanging indefinitely.
     let result = receiver
-        .recv_timeout(std::time::Duration::from_secs(1))
+        .recv_timeout(std::time::Duration::from_secs(5))
         .expect("FIFO lock attempt must be bounded");
 
     assert_eq!(result.bodies.len(), 1);

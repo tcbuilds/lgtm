@@ -123,7 +123,26 @@ pub(crate) fn run_with_deadline(
             cwd_identity: Some(cwd_identity),
         })
     }
-    #[cfg(not(target_os = "linux"))]
+    // Non-Linux production hooks fail closed because descendant containment is
+    // unavailable; unit tests still exercise command parsing and bounded
+    // execution through the direct runner without claiming containment.
+    #[cfg(all(not(target_os = "linux"), test))]
+    {
+        let command = configured_command(argv, &repository_root.join(cwd));
+        let captured =
+            crate::checks::gitleaks::runner::run_details_with_deadline(command, deadline)
+                .ok_or(ContainedRunError::CouldNotRun)?;
+        if captured.process_group_survived {
+            return Err(ContainedRunError::ContainmentViolation);
+        }
+        Ok(Captured {
+            code: captured.code,
+            stdout: captured.stdout,
+            stderr: captured.stderr,
+            cwd_identity: None,
+        })
+    }
+    #[cfg(all(not(target_os = "linux"), not(test)))]
     {
         let _ = (argv, repository_root, workspace_root, cwd, deadline);
         Err(ContainedRunError::ContainmentUnavailable)
