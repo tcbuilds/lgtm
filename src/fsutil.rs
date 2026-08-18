@@ -6,7 +6,18 @@
 
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::ffi::{CStr, CString};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
+pub const MAX_DIRECTORY_COMPONENTS: usize = 128;
 
 /// Atomically open `path` for reading, requiring it to be a regular file.
 ///
@@ -50,6 +61,247 @@ pub fn open_regular_file(path: &Path) -> io::Result<Option<File>> {
         Ok(_) => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+/// Open a configured repository-relative directory without following any
+/// symlink component. The returned descriptor is a directory capability that
+/// callers can retain through process creation.
+#[cfg(unix)]
+pub fn open_directory_capability(
+    repository_root: &Path,
+    workspace_root: &Path,
+    cwd: &Path,
+) -> io::Result<File> {
+    let workspace = safe_relative_components(workspace_root)?;
+    let cwd_components = safe_relative_components(cwd)?;
+    if !cwd_components.starts_with(&workspace) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "cwd is outside the workspace root",
+        ));
+    }
+
+    let mut directory = open_repository_directory(repository_root)?;
+    for component in cwd_components {
+        directory = open_directory_component(&directory, &component)?;
+    }
+    #[cfg(target_os = "linux")]
+    prove_directory_search_access(&directory)?;
+    Ok(directory)
+}
+
+#[cfg(not(unix))]
+pub fn open_directory_capability(
+    _repository_root: &Path,
+    _workspace_root: &Path,
+    _cwd: &Path,
+) -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "directory containment is unavailable on this platform",
+    ))
+}
+
+#[cfg(unix)]
+pub fn directory_identity(directory: &File) -> io::Result<String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = directory.metadata()?;
+    Ok(format!("{}:{}", metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+pub fn directory_identity(_directory: &File) -> io::Result<String> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "directory identity is unavailable on this platform",
+    ))
+}
+
+/// Resolve an opened directory capability through its stable descriptor path.
+/// Linux's proc descriptor link identifies the directory that was opened,
+/// rather than re-resolving a mutable pathname. Other targets fail closed so
+/// callers retain obligations when this snapshot cannot be proven.
+#[cfg(target_os = "linux")]
+pub fn opened_directory_path(directory: &File) -> io::Result<PathBuf> {
+    std::fs::read_link(format!("/proc/self/fd/{}", directory.as_raw_fd()))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn opened_directory_path(_directory: &File) -> io::Result<PathBuf> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "opened directory paths are unavailable on this platform",
+    ))
+}
+
+#[cfg(not(unix))]
+pub fn opened_directory_path(_directory: &File) -> io::Result<PathBuf> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "opened directory paths are unavailable on this platform",
+    ))
+}
+
+#[cfg(unix)]
+pub fn directory_contains_executable(directory: &File, path: &Path) -> io::Result<bool> {
+    if path.is_absolute() {
+        return Ok(false);
+    }
+    metadata_and_execute_access(directory.as_raw_fd(), path)
+}
+
+#[cfg(not(unix))]
+pub fn directory_contains_executable(_directory: &File, _path: &Path) -> io::Result<bool> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "descriptor-relative file lookup is unavailable on this platform",
+    ))
+}
+
+#[cfg(unix)]
+pub fn absolute_file_is_executable(path: &Path) -> io::Result<bool> {
+    metadata_and_execute_access(libc::AT_FDCWD, path)
+}
+
+#[cfg(not(unix))]
+pub fn absolute_file_is_executable(path: &Path) -> io::Result<bool> {
+    Ok(path.is_file())
+}
+
+#[cfg(unix)]
+fn metadata_and_execute_access(directory_fd: libc::c_int, path: &Path) -> io::Result<bool> {
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: the descriptor is live and path is NUL-free. fstatat follows
+    // executable-path symlinks like runtime exec while inspecting metadata;
+    // it never opens the final target, so devices and FIFOs are not opened.
+    let result = unsafe { libc::fstatat(directory_fd, path.as_ptr(), metadata.as_mut_ptr(), 0) };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fstatat initialized metadata when it returned success.
+    let metadata = unsafe { metadata.assume_init() };
+    if metadata.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Ok(false);
+    }
+    // SAFETY: path is NUL-free and the descriptor/path pair is the same one
+    // used for the metadata probe. AT_EACCESS checks effective credentials.
+    let accessible =
+        unsafe { libc::faccessat(directory_fd, path.as_ptr(), libc::X_OK, libc::AT_EACCESS) };
+    if accessible == 0 {
+        Ok(true)
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(unix)]
+fn safe_relative_components(path: &Path) -> io::Result<Vec<CString>> {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(value) => {
+                components.push(CString::new(value.as_bytes()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte")
+                })?)
+            }
+            std::path::Component::RootDir
+            | std::path::Component::Prefix(_)
+            | std::path::Component::ParentDir => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "path must be repository-relative without parent components",
+                ));
+            }
+        }
+    }
+    if components.len() > MAX_DIRECTORY_COMPONENTS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path has too many directory components",
+        ));
+    }
+    Ok(components)
+}
+
+#[cfg(target_os = "linux")]
+fn directory_open_flags() -> libc::c_int {
+    libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn directory_open_flags() -> libc::c_int {
+    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW
+}
+
+#[cfg(target_os = "linux")]
+fn prove_directory_search_access(directory: &File) -> io::Result<()> {
+    let current_directory = b".\0";
+    // SAFETY: the descriptor is borrowed for this call and the path is a
+    // static NUL-terminated string. AT_EACCESS checks effective credentials.
+    let result = unsafe {
+        libc::faccessat(
+            directory.as_raw_fd(),
+            current_directory.as_ptr().cast(),
+            libc::X_OK,
+            libc::AT_EACCESS,
+        )
+    };
+    (result == 0)
+        .then_some(())
+        .ok_or_else(io::Error::last_os_error)
+}
+
+#[cfg(unix)]
+fn open_repository_directory(path: &Path) -> io::Result<File> {
+    let mut directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(directory_open_flags())
+        .open(if path.is_absolute() {
+            Path::new("/")
+        } else {
+            Path::new(".")
+        })?;
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir | std::path::Component::RootDir => {}
+            std::path::Component::Normal(value) => {
+                let component = CString::new(value.as_bytes()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte")
+                })?;
+                directory = open_directory_component(&directory, &component)?;
+            }
+            std::path::Component::ParentDir | std::path::Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "repository root must not contain parent or prefix components",
+                ));
+            }
+        }
+    }
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn open_directory_component(parent: &File, component: &CStr) -> io::Result<File> {
+    // SAFETY: the component is NUL-free and the descriptor is borrowed only
+    // for this call. O_NOFOLLOW rejects symlink components atomically, while
+    // O_CLOEXEC keeps the capability out of children.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            component.as_ptr(),
+            directory_open_flags(),
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fd is a newly opened descriptor owned by this File.
+    Ok(unsafe { File::from_raw_fd(fd) })
 }
 
 /// Open `path` without following a final-component symlink and without blocking
@@ -97,6 +349,43 @@ fn is_symlink_open_rejection(error: &io::Error) -> bool {
 #[cfg(not(unix))]
 fn is_symlink_open_rejection(_error: &io::Error) -> bool {
     false
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_capability_rejects_escape_and_symlink_components() {
+        let root = std::env::temp_dir().join(format!("lgtm-fsutil-{}", std::process::id()));
+        let outside = root.join("outside");
+        std::fs::create_dir_all(root.join("workspace/src")).expect("workspace fixture");
+        std::fs::create_dir(&outside).expect("outside fixture");
+        std::os::unix::fs::symlink(&outside, root.join("workspace/link")).expect("symlink fixture");
+
+        assert!(
+            open_directory_capability(&root, Path::new("workspace"), Path::new("workspace/src"))
+                .is_ok()
+        );
+        assert!(
+            open_directory_capability(&root, Path::new("workspace"), Path::new("workspace/link"))
+                .is_err()
+        );
+        assert!(
+            open_directory_capability(
+                &root,
+                Path::new("workspace"),
+                Path::new("workspace/../outside")
+            )
+            .is_err()
+        );
+        assert!(
+            open_directory_capability(&root, Path::new("workspace"), Path::new("workspace2"))
+                .is_err()
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 /// Read a file to a string, bounding the read at `max` bytes and treating any

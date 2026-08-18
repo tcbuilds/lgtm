@@ -51,6 +51,7 @@ pub struct ConfigSnapshot {
 #[derive(Debug, Clone)]
 pub struct StructuredCommand {
     pub argv: Vec<String>,
+    pub workspace_root: PathBuf,
     pub cwd: PathBuf,
     pub workspace_id: String,
     pub tier: String,
@@ -61,6 +62,7 @@ pub struct StructuredCommand {
 pub struct CoverageCommand {
     pub workspace_id: String,
     pub argv: Vec<String>,
+    pub workspace_root: PathBuf,
     pub cwd: PathBuf,
     pub timeout: std::time::Duration,
     pub scope: String,
@@ -145,10 +147,13 @@ fn parse_config(raw: &str) -> Result<Settings, String> {
         let mut workspace_ids = Vec::new();
         for workspace in config.workspaces {
             workspace_ids.push(workspace.id.clone());
+            // V2 cwd values are repository-relative. Validation guarantees that
+            // each one is inside its workspace root before consumers use it.
             for item in &workspace.coverage {
                 coverage.push(CoverageCommand {
                     workspace_id: workspace.id.clone(),
                     argv: item.argv.clone(),
+                    workspace_root: workspace.root.clone(),
                     cwd: item.cwd.clone(),
                     timeout: std::time::Duration::from_secs(item.timeout_seconds),
                     scope: item.scope.clone(),
@@ -160,6 +165,7 @@ fn parse_config(raw: &str) -> Result<Settings, String> {
                 commands.push(command.argv.join(" "));
                 structured.push(StructuredCommand {
                     argv: command.argv,
+                    workspace_root: workspace.root.clone(),
                     cwd: command.cwd,
                     workspace_id: workspace.id.clone(),
                     tier: command.tier,

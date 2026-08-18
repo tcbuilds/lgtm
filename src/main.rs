@@ -675,8 +675,13 @@ fn run_config(command: ConfigCommand) -> ExitCode {
             };
             let mut findings = 0_usize;
             for workspace in &config.workspaces {
-                let workspace_root = root.join(&workspace.root);
-                if !workspace_root.is_dir() {
+                let workspace_available = lgtm::fsutil::open_directory_capability(
+                    &root,
+                    &workspace.root,
+                    &workspace.root,
+                )
+                .is_ok();
+                if !workspace_available {
                     findings += 1;
                     println!(
                         "STALE workspace={} root={}",
@@ -685,11 +690,32 @@ fn run_config(command: ConfigCommand) -> ExitCode {
                     );
                 }
                 for command in &workspace.commands {
-                    if !command_available(&command.argv[0], &workspace_root) {
+                    if !command_available(
+                        &command.argv,
+                        &root,
+                        &workspace.root,
+                        &command.cwd,
+                        command.timeout_seconds.saturating_mul(1000),
+                    ) {
                         findings += 1;
                         println!(
                             "MISSING workspace={} command={}",
                             workspace.id, command.argv[0]
+                        );
+                    }
+                }
+                for coverage in &workspace.coverage {
+                    if !command_available(
+                        &coverage.argv,
+                        &root,
+                        &workspace.root,
+                        &coverage.cwd,
+                        coverage.timeout_seconds.saturating_mul(1000),
+                    ) {
+                        findings += 1;
+                        println!(
+                            "MISSING workspace={} command={}",
+                            workspace.id, coverage.argv[0]
                         );
                     }
                 }
@@ -715,13 +741,50 @@ fn report_config_diagnostic(prefix: &str, error: impl std::fmt::Display) {
     eprintln!("{prefix}: {diagnostic}");
 }
 
-fn command_available(command: &str, cwd: &Path) -> bool {
+fn command_available(
+    argv: &[String],
+    repository_root: &Path,
+    workspace_root: &Path,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    if !lgtm::checks::commands::request_is_transportable(
+        argv,
+        repository_root,
+        workspace_root,
+        cwd,
+        timeout_ms,
+    ) {
+        return false;
+    }
+    let Some(command) = argv.first() else {
+        return false;
+    };
+    let Ok(cwd_capability) =
+        lgtm::fsutil::open_directory_capability(repository_root, workspace_root, cwd)
+    else {
+        return false;
+    };
     let path = Path::new(command);
+    if path.is_absolute() {
+        return lgtm::fsutil::absolute_file_is_executable(path).is_ok_and(|available| available);
+    }
     if path.components().count() > 1 {
-        return cwd.join(path).is_file() || path.is_file();
+        return lgtm::fsutil::directory_contains_executable(&cwd_capability, path)
+            .is_ok_and(|available| available);
     }
     std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|directory| directory.join(command).is_file())
+        std::env::split_paths(&paths).any(|directory| {
+            if directory.is_absolute() {
+                return lgtm::fsutil::absolute_file_is_executable(&directory.join(command))
+                    .is_ok_and(|available| available);
+            }
+            lgtm::fsutil::directory_contains_executable(&cwd_capability, &directory.join(command))
+                .is_ok_and(|available| available)
+        })
     })
 }
 

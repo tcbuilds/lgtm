@@ -120,8 +120,13 @@ pub fn run_structured_with_budget(
         };
         let started_at_ms = unix_ms();
         let started = Instant::now();
-        let details =
-            super::supervisor::run_with_deadline(&command.argv, &root.join(&command.cwd), deadline);
+        let details = super::supervisor::run_with_deadline(
+            &command.argv,
+            root,
+            &command.workspace_root,
+            &command.cwd,
+            deadline,
+        );
         if matches!(
             &details,
             Err(super::supervisor::ContainedRunError::ContainmentUnavailable
@@ -141,6 +146,10 @@ pub fn run_structured_with_budget(
             duration_ms,
             argv: command.argv.clone(),
             cwd: Some(command.cwd.to_string_lossy().into_owned()),
+            cwd_identity: details
+                .as_ref()
+                .ok()
+                .and_then(|details| details.cwd_identity.clone()),
             workspace_id: Some(command.workspace_id.clone()),
             config_digest: None,
             touched_files_digest: None,
@@ -172,6 +181,8 @@ pub fn run_coverage_with_budget(
         return vec![CoverageEvidence {
             workspace_id: "repository".to_string(),
             status: "not_applicable".to_string(),
+            cwd: None,
+            cwd_identity: None,
             tool: None,
             scope: None,
             line_percent: None,
@@ -190,8 +201,13 @@ pub fn run_coverage_with_budget(
             continue;
         };
         let measured_at_ms = unix_ms();
-        let captured =
-            super::supervisor::run_with_deadline(&command.argv, &root.join(&command.cwd), deadline);
+        let captured = super::supervisor::run_with_deadline(
+            &command.argv,
+            root,
+            &command.workspace_root,
+            &command.cwd,
+            deadline,
+        );
         if matches!(
             &captured,
             Err(super::supervisor::ContainedRunError::ContainmentUnavailable
@@ -204,10 +220,16 @@ pub fn run_coverage_with_budget(
             evidence.push(coverage_unverified_evidence(command, Some(measured_at_ms)));
             continue;
         }
+        let cwd_identity = captured
+            .as_ref()
+            .ok()
+            .and_then(|details| details.cwd_identity.clone());
         let (status, line_percent, branch_percent) = classify_coverage(command, captured.ok());
         evidence.push(CoverageEvidence {
             workspace_id: command.workspace_id.clone(),
             status: status.to_string(),
+            cwd: Some(command.cwd.to_string_lossy().into_owned()),
+            cwd_identity,
             tool: command.argv.first().cloned(),
             scope: Some(command.scope.clone()),
             line_percent,
@@ -241,6 +263,7 @@ fn unrun_structured_evidence(command: &StructuredCommand, display: &str) -> Comm
         duration_ms: 0,
         argv: command.argv.clone(),
         cwd: Some(command.cwd.to_string_lossy().into_owned()),
+        cwd_identity: None,
         workspace_id: Some(command.workspace_id.clone()),
         config_digest: None,
         touched_files_digest: None,
@@ -262,6 +285,8 @@ fn coverage_unverified_evidence(
     CoverageEvidence {
         workspace_id: command.workspace_id.clone(),
         status: "unverified".to_string(),
+        cwd: Some(command.cwd.to_string_lossy().into_owned()),
+        cwd_identity: None,
         tool: command.argv.first().cloned(),
         scope: Some(command.scope.clone()),
         line_percent: None,
@@ -381,6 +406,7 @@ fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mu
                 duration_ms: 0,
                 argv: Vec::new(),
                 cwd: None,
+                cwd_identity: None,
                 workspace_id: None,
                 config_digest: None,
                 touched_files_digest: None,
@@ -396,7 +422,8 @@ fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mu
     let deadline = Instant::now()
         .checked_add(timeout)
         .unwrap_or_else(Instant::now);
-    let details = super::supervisor::run_with_deadline(&argv, root, deadline);
+    let details =
+        super::supervisor::run_with_deadline(&argv, root, Path::new("."), Path::new("."), deadline);
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let code = details.as_ref().ok().and_then(|details| details.code);
     output.evidence.push(CommandEvidence {
@@ -405,6 +432,10 @@ fn run_one(root: &Path, command: &str, timeout: std::time::Duration, output: &mu
         duration_ms,
         argv: Vec::new(),
         cwd: None,
+        cwd_identity: details
+            .as_ref()
+            .ok()
+            .and_then(|details| details.cwd_identity.clone()),
         workspace_id: None,
         config_digest: None,
         touched_files_digest: None,

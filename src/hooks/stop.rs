@@ -503,12 +503,15 @@ fn effective_tier(tier: Option<&str>) -> &str {
 }
 
 fn select_coverage_commands(
+    root: &Path,
     coverage: &[commands::CoverageCommand],
     workspace: Option<&str>,
+    touched_paths: &[String],
 ) -> Vec<commands::CoverageCommand> {
     coverage
         .iter()
         .filter(|command| workspace.is_none_or(|id| command.workspace_id == id))
+        .filter(|command| workspace_touched(root, &command.workspace_root, touched_paths))
         .cloned()
         .collect()
 }
@@ -562,12 +565,13 @@ fn run_repository_commands(
                 .iter()
                 .filter(|command| workspace.is_none_or(|id| command.workspace_id == id))
                 .filter(|command| tier.is_none_or(|selected| command.tier == selected))
-                .filter(|command| workspace_touched(root, &command.cwd, touched_paths))
+                .filter(|command| workspace_touched(root, &command.workspace_root, touched_paths))
                 .cloned()
                 .collect();
             let command_run = commands::run_structured_with_budget(root, &selected, budget);
             let coverage = if tier == Some("full") {
-                let selected = select_coverage_commands(&configured.coverage, workspace);
+                let selected =
+                    select_coverage_commands(root, &configured.coverage, workspace, touched_paths);
                 commands::run_coverage_with_budget(root, &selected, budget)
             } else {
                 commands::run_coverage(root, &[])
@@ -586,7 +590,8 @@ fn run_repository_commands(
         Ok(configured) => {
             let command_run = commands::run_structured_with_budget(root, &[], budget);
             let coverage = if tier == Some("full") {
-                let selected = select_coverage_commands(&configured.coverage, workspace);
+                let selected =
+                    select_coverage_commands(root, &configured.coverage, workspace, touched_paths);
                 commands::run_coverage_with_budget(root, &selected, budget)
             } else {
                 commands::run_coverage(root, &[])
@@ -603,14 +608,69 @@ fn run_repository_commands(
     }
 }
 
-fn workspace_touched(root: &Path, cwd: &Path, touched_paths: &[String]) -> bool {
+fn workspace_touched(root: &Path, workspace_root: &Path, touched_paths: &[String]) -> bool {
     if touched_paths.is_empty() {
         return true;
     }
-    let workspace = root.join(cwd);
+    let Ok(repository) = std::fs::canonicalize(root) else {
+        // An unresolvable repository or workspace must remain selected so
+        // execution records containment failure instead of silently authorizing.
+        return true;
+    };
+    let Ok(snapshot) =
+        crate::fsutil::open_directory_capability(root, workspace_root, workspace_root)
+    else {
+        // Symlinked, outside, unresolved, or otherwise unavailable workspace
+        // roots remain selected so descriptor execution fails closed.
+        return true;
+    };
+    let Ok(workspace) = crate::fsutil::opened_directory_path(&snapshot) else {
+        return true;
+    };
+    let Ok(identity) = crate::fsutil::directory_identity(&snapshot) else {
+        return true;
+    };
+    let configured_workspace = root.join(workspace_root);
+    if path_contains_symlink(&configured_workspace) {
+        return true;
+    }
+    // Re-open the pathname and compare both identity and opened path. This
+    // rejects an exchange between the snapshot and the selection decision.
+    let Ok(current) =
+        crate::fsutil::open_directory_capability(root, workspace_root, workspace_root)
+    else {
+        return true;
+    };
+    let Ok(current_identity) = crate::fsutil::directory_identity(&current) else {
+        return true;
+    };
+    let Ok(current_path) = crate::fsutil::opened_directory_path(&current) else {
+        return true;
+    };
+    if current_identity != identity || current_path != workspace {
+        return true;
+    }
+    if !workspace.starts_with(&repository) {
+        // An outside-pointing alias must remain selected so descriptor-based
+        // execution rejects it instead of silently omitting the obligation.
+        return true;
+    }
     touched_paths
         .iter()
         .any(|path| Path::new(path).starts_with(&workspace))
+}
+
+fn path_contains_symlink(path: &Path) -> bool {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if std::fs::symlink_metadata(&current)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn bind_command_provenance(
@@ -645,8 +705,38 @@ fn matching_full_evidence(
         .structured
         .iter()
         .filter(|command| command.tier == "full")
-        .filter(|command| workspace_touched(root, &command.cwd, paths))
+        .filter(|command| workspace_touched(root, &command.workspace_root, paths))
         .collect::<Vec<_>>();
+    let expected_coverage = settings
+        .coverage
+        .iter()
+        .filter(|coverage| workspace_touched(root, &coverage.workspace_root, paths))
+        .cloned()
+        .collect::<Vec<_>>();
+    let command_identities = selected_commands
+        .iter()
+        .map(|command| {
+            let capability = crate::fsutil::open_directory_capability(
+                root,
+                &command.workspace_root,
+                &command.cwd,
+            )
+            .ok()?;
+            crate::fsutil::directory_identity(&capability).ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let coverage_identities = expected_coverage
+        .iter()
+        .map(|coverage| {
+            let capability = crate::fsutil::open_directory_capability(
+                root,
+                &coverage.workspace_root,
+                &coverage.cwd,
+            )
+            .ok()?;
+            crate::fsutil::directory_identity(&capability).ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
     let expected_files = digest_paths(paths);
     let raw = crate::fsutil::read_optional_bounded(
         &root.join(".lgtm/evidence/evidence.jsonl"),
@@ -666,13 +756,22 @@ fn matching_full_evidence(
         return None;
     }
 
-    full_record_passed(&record, &selected_commands, &settings.coverage).then_some(record.commands)
+    full_record_passed(
+        &record,
+        &selected_commands,
+        &command_identities,
+        &expected_coverage,
+        &coverage_identities,
+    )
+    .then_some(record.commands)
 }
 
 fn full_record_passed(
     record: &StoredTaskEvidence,
     selected_commands: &[&commands::StructuredCommand],
+    command_identities: &[String],
     expected_coverage: &[commands::CoverageCommand],
+    coverage_identities: &[String],
 ) -> bool {
     if record
         .results
@@ -702,12 +801,14 @@ fn full_record_passed(
         .commands
         .iter()
         .zip(selected_commands)
-        .all(|(evidence, expected)| {
+        .zip(command_identities)
+        .all(|((evidence, expected), identity)| {
             evidence.exit_code == Some(0)
                 && evidence.started_at_ms.is_some()
                 && evidence.finished_at_ms.is_some()
                 && evidence.argv == expected.argv
                 && evidence.cwd.as_deref() == Some(expected.cwd.to_string_lossy().as_ref())
+                && evidence.cwd_identity.as_deref() == Some(identity.as_str())
                 && evidence.workspace_id.as_deref() == Some(expected.workspace_id.as_str())
         })
     {
@@ -722,7 +823,11 @@ fn full_record_passed(
             .coverage
             .iter()
             .zip(expected_coverage)
-            .all(|(evidence, expected)| coverage_obligation_passed(evidence, expected))
+            .zip(coverage_identities)
+            .all(|((evidence, expected), identity)| {
+                evidence.cwd_identity.as_deref() == Some(identity.as_str())
+                    && coverage_obligation_passed(evidence, expected)
+            })
 }
 
 fn coverage_obligation_passed(
@@ -732,6 +837,7 @@ fn coverage_obligation_passed(
     evidence.status == "passed"
         && evidence.measured_at_ms.is_some()
         && evidence.workspace_id == expected.workspace_id
+        && evidence.cwd.as_deref() == Some(expected.cwd.to_string_lossy().as_ref())
         && evidence.tool.as_deref() == expected.argv.first().map(String::as_str)
         && evidence.scope.as_deref() == Some(expected.scope.as_str())
         && expected.line_threshold_percent.is_none_or(|threshold| {
@@ -1958,6 +2064,7 @@ mod tests {
                 duration_ms: 1,
                 argv: Vec::new(),
                 cwd: None,
+                cwd_identity: None,
                 workspace_id: None,
                 config_digest: None,
                 touched_files_digest: None,
@@ -1969,6 +2076,8 @@ mod tests {
             coverage: vec![commands::CoverageEvidence {
                 workspace_id: "workspace".to_string(),
                 status: coverage_status.to_string(),
+                cwd: None,
+                cwd_identity: None,
                 tool: None,
                 scope: None,
                 line_percent: None,
@@ -1983,6 +2092,36 @@ mod tests {
             config_digest: "config".to_string(),
             tier: Some("full".to_string()),
         }
+    }
+
+    #[test]
+    fn coverage_reuse_requires_a_matching_effective_cwd() {
+        let expected = commands::CoverageCommand {
+            workspace_id: "workspace".to_string(),
+            argv: vec!["coverage".to_string()],
+            workspace_root: ".".into(),
+            cwd: "workspace/coverage".into(),
+            timeout: Duration::from_secs(30),
+            scope: "unit".to_string(),
+            line_threshold_percent: Some(80),
+            branch_threshold_percent: None,
+        };
+        let mut evidence = commands::CoverageEvidence {
+            workspace_id: "workspace".to_string(),
+            status: "passed".to_string(),
+            cwd: None,
+            cwd_identity: None,
+            tool: Some("coverage".to_string()),
+            scope: Some("unit".to_string()),
+            line_percent: Some(100.0),
+            branch_percent: None,
+            measured_at_ms: Some(1),
+        };
+        assert!(!coverage_obligation_passed(&evidence, &expected));
+        evidence.cwd = Some("workspace/other".to_string());
+        assert!(!coverage_obligation_passed(&evidence, &expected));
+        evidence.cwd = Some("workspace/coverage".to_string());
+        assert!(coverage_obligation_passed(&evidence, &expected));
     }
 
     #[test]

@@ -19,6 +19,8 @@ pub struct CommandEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_digest: Option<String>,
@@ -38,6 +40,10 @@ pub struct CommandEvidence {
 pub struct CoverageEvidence {
     pub workspace_id: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd_identity: Option<String>,
     pub tool: Option<String>,
     pub scope: Option<String>,
     pub line_percent: Option<f64>,
@@ -122,10 +128,11 @@ fn coverage_result(evidence: &CoverageEvidence) -> Option<EnforcementResult> {
         _ => (Status::Unverified, "could not verify coverage"),
     };
     let identity = format!(
-        "coverage workspace={} scope={} tool={}",
+        "coverage workspace={} scope={} tool={} cwd={}",
         evidence.workspace_id,
         evidence.scope.as_deref().unwrap_or("unspecified"),
-        evidence.tool.as_deref().unwrap_or("unknown")
+        evidence.tool.as_deref().unwrap_or("unknown"),
+        evidence.cwd.as_deref().unwrap_or("unspecified")
     );
     let mut projected = result_with_check(&identity, status, reason, COVERAGE_CHECK);
     if status != Status::Passed {
