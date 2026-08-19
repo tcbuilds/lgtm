@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "pi_version": "0.84.2",
+  "package": "@earendil-works/pi-coding-agent",
+  "captures": [
+    {"fixture_id":"source-session-start-types-0.84.2","kind":"source","path":"source_captures.json"},
+    {"fixture_id":"source-before-agent-start-types-0.84.2","kind":"source","path":"source_captures.json"},
+    {"fixture_id":"source-tool-call-types-0.84.2","kind":"source","path":"source_captures.json"},
+    {"fixture_id":"source-tool-result-types-0.84.2","kind":"source","path":"source_captures.json"},
+    {"fixture_id":"source-tool-execution-end-types-0.84.2","kind":"source","path":"source_captures.json"},
+    {"fixture_id":"source-agent-end-types-0.84.2","kind":"source","path":"source_captures.json"},
+    {"fixture_id":"source-agent-settled-types-0.84.2","kind":"source","path":"source_captures.json"},
+    {"fixture_id":"live-project-trust-yes-no-001","kind":"live","path":"trust.json"},
+    {"fixture_id":"live-malformed-extension-001","kind":"live","path":"malformed_extension.json"},
+    {"fixture_id":"live-discovery-root-order-001","kind":"live","path":"discovery.json"},
+    {"fixture_id":"live-discovery-nested-global-only-001","kind":"live","path":"discovery.json"},
+    {"fixture_id":"live-sdk-builtins-001","kind":"live","path":"tool_provenance.json"},
+    {"fixture_id":"live-sdk-override-001","kind":"live","path":"tool_provenance.json"},
+    {"fixture_id":"unverified-custom-tool-provenance","kind":"source","path":"source_captures.json"}
+  ]
+}

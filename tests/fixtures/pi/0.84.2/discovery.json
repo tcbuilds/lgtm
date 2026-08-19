@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "pi_version": "0.84.2",
+  "fixture_id": "live-discovery-root-order-001",
+  "capture_method": "discoverAndLoadExtensions probe with temporary project and agent directories; filesystem paths redacted",
+  "project_root": {
+    "loaded_extensions": [
+      "<project>/.pi/extensions/project.ts",
+      "<agent>/extensions/global.ts"
+    ],
+    "errors": [],
+    "fixture_id": "live-discovery-root-order-001"
+  },
+  "nested_cwd": {
+    "cwd": "<project>/nested",
+    "loaded_extensions": [
+      "<agent>/extensions/global.ts"
+    ],
+    "errors": [],
+    "fixture_id": "live-discovery-nested-global-only-001"
+  },
+  "interpretation": {
+    "project_extension_ancestor_walk": false,
+    "global_extension_applies_to_nested_cwd": true,
+    "project_before_global_order": true
+  }
+}

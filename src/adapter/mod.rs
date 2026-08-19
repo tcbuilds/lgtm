@@ -8,9 +8,11 @@
 
 mod claude;
 mod codex;
+mod pi;
 
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
+pub use pi::PiAdapter;
 
 use std::io::Write;
 
@@ -23,6 +25,8 @@ pub enum HookEvent {
     SessionStart,
     /// A user prompt was submitted.
     UserPromptSubmit,
+    /// A prompt and system prompt are ready before the agent loop starts.
+    BeforeAgentStart,
     /// A tool call is about to run.
     PreToolUse,
     /// Codex is about to ask for permission for a tool call.
@@ -81,6 +85,10 @@ pub enum HookResponse {
     Allow,
     /// Inject compact context text for the harness to prepend.
     InjectContext(String),
+    /// Add a persisted custom message before the agent loop starts.
+    InjectMessage(String),
+    /// Replace the system prompt before the agent loop starts.
+    InjectSystemPrompt(String),
     /// Deny a tool call before it runs, with an operator-facing reason.
     Deny {
         /// Why the tool call was denied.
@@ -123,11 +131,22 @@ pub struct EncodedResponse {
 /// A harness adapter: parse a lifecycle payload into a neutral request, and
 /// encode a normalized response into that harness's exact bytes and exit code.
 pub trait HookAdapter {
+    /// Stable harness identity carried into newly written evidence records.
+    fn harness_name(&self) -> &'static str {
+        "claude-code"
+    }
+
     /// Whether the harness loads path-scoped rule files without hook guidance.
     ///
     /// Native loading means UserPromptSubmit must not guess file paths from the
     /// prompt or inject a second copy of the rule content.
     fn loads_rules_natively(&self) -> bool {
+        false
+    }
+
+    /// Whether policy/configuration failures should be reported to the shim as
+    /// fail-open unverified outcomes instead of harness denials.
+    fn fail_open_on_error(&self) -> bool {
         false
     }
 
@@ -146,7 +165,8 @@ pub trait HookAdapter {
     /// Only event-valid pairs encode. Each adapter owns its event capability
     /// matrix; Claude keeps its historical SessionStart/UserPromptSubmit
     /// contract, while Codex adds event-specific context, permission, and
-    /// subagent forms. Any unsupported pair returns `Err` rather than
+    /// subagent forms. Pi adds its verified before-agent-start and tool-result
+    /// forms. Any unsupported pair returns `Err` rather than
     /// emitting plausible but wrong bytes. Callers MUST treat an `Err` as
     /// fail-open per lgtm's fail-safe design: exit 0 with no output rather than
     /// blocking the agent.

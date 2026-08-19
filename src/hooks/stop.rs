@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::adapter::{ClaudeAdapter, HookAdapter, HookResponse};
+use crate::adapter::{ClaudeAdapter, HookAdapter, HookResponse, PiAdapter};
 use crate::checks::tiers::{self, Hook, Tier};
 use crate::checks::{EnforcementResult, Location, ResultEvidence, Status};
 use crate::checks::{commands, gitleaks, ruff, semgrep};
@@ -96,9 +96,19 @@ struct RuleCounts {
 }
 
 #[derive(Debug, Serialize)]
+struct PiEnforcementEvidence {
+    state: crate::pi_state::PiEnforcementState,
+    scope: Option<String>,
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
 struct TaskEvidence<'a> {
     task_id: &'a str,
     agent: &'static str,
+    harness: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enforcement: Option<PiEnforcementEvidence>,
     profile: &'a str,
     commit: Option<String>,
     rules: RuleCounts,
@@ -120,8 +130,15 @@ struct TaskEvidence<'a> {
     tier: &'a str,
 }
 
+struct GateLimits {
+    total_deadline: Option<Instant>,
+    precomputed_check_paths: Option<(Vec<String>, bool)>,
+}
+
 struct EvidenceMeta<'a> {
+    adapter: &'a dyn HookAdapter,
     root: &'a Path,
+    deadline: Option<Instant>,
     session_id: Option<&'a str>,
     profile: &'a str,
     paths: &'a [String],
@@ -153,6 +170,10 @@ struct StoredTaskEvidence {
 struct InternalGateAdapter;
 
 impl HookAdapter for InternalGateAdapter {
+    fn harness_name(&self) -> &'static str {
+        "internal-gate"
+    }
+
     fn parse_request(
         &self,
         _event: crate::adapter::HookEvent,
@@ -190,23 +211,46 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
 /// Run the complete gate immediately before an agent executes `git commit`.
 ///
 /// A matching successful full-tier record is reused for the same session and
-/// exact file/config state, so a denied commit retry does not rerun unchanged
-/// tests. `Ok(None)` means the commit may proceed; `Ok(Some(reason))` means the
-/// full gate found a blocking failure.
-pub(crate) fn run_pre_commit_gate(
+/// exact file/config state on non-deadline-bound gates, so a denied Claude or
+/// Codex commit retry does not rerun unchanged tests. Deadline-bound Pi gates
+/// always rerun. `Ok(None)` means the commit may proceed; `Ok(Some(reason))`
+/// means the full gate found a blocking failure.
+pub(crate) fn run_pre_commit_gate_for_adapter(
     root: &Path,
     session_id: Option<&str>,
+    harness: &str,
 ) -> Result<Option<String>, String> {
-    run_pre_commit_gate_with_budget(root, session_id, commands::STOP_COMMAND_BUDGET)
+    let (command_budget, total_deadline) = if harness == "pi" {
+        let total = Duration::from_secs(30);
+        (total, Instant::now().checked_add(total))
+    } else {
+        (commands::STOP_COMMAND_BUDGET, None)
+    };
+    run_pre_commit_gate_with_limits(root, session_id, command_budget, total_deadline)
 }
 
+#[cfg(test)]
 fn run_pre_commit_gate_with_budget(
     root: &Path,
     session_id: Option<&str>,
     command_budget: Duration,
 ) -> Result<Option<String>, String> {
-    let paths = check_paths(root)?;
-    if matching_full_evidence(root, session_id, &paths).is_some() {
+    run_pre_commit_gate_with_limits(root, session_id, command_budget, None)
+}
+
+fn run_pre_commit_gate_with_limits(
+    root: &Path,
+    session_id: Option<&str>,
+    command_budget: Duration,
+    total_deadline: Option<Instant>,
+) -> Result<Option<String>, String> {
+    let (paths, path_scan_incomplete) = check_paths_with_deadline(root, total_deadline)?;
+    // Deadline-bound Pi gates must rerun rather than authorize from a record
+    // that may have crossed the deadline while it was being persisted.
+    if total_deadline.is_none()
+        && !path_scan_incomplete
+        && matching_full_evidence(root, session_id, &paths).is_some()
+    {
         return Ok(None);
     }
     let payload = serde_json::json!({
@@ -224,6 +268,10 @@ fn run_pre_commit_gate_with_budget(
         crate::adapter::HookEvent::Stop,
         command_budget,
         true,
+        GateLimits {
+            total_deadline,
+            precomputed_check_paths: Some((paths, path_scan_incomplete)),
+        },
     )?;
     if code == ExitCode::SUCCESS {
         return Ok(None);
@@ -290,7 +338,18 @@ fn run_inner_with_budget(
     event: crate::adapter::HookEvent,
     command_budget: Duration,
 ) -> Result<ExitCode, String> {
-    run_inner_with_options(input, output, adapter, event, command_budget, false)
+    run_inner_with_options(
+        input,
+        output,
+        adapter,
+        event,
+        command_budget,
+        false,
+        GateLimits {
+            total_deadline: None,
+            precomputed_check_paths: None,
+        },
+    )
 }
 
 fn run_inner_with_options(
@@ -300,8 +359,11 @@ fn run_inner_with_options(
     event: crate::adapter::HookEvent,
     command_budget: Duration,
     pre_commit: bool,
+    limits: GateLimits,
 ) -> Result<ExitCode, String> {
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Targeted);
+    let total_deadline = limits.total_deadline;
+    let precomputed_check_paths = limits.precomputed_check_paths;
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
@@ -311,11 +373,25 @@ fn run_inner_with_options(
             .validate_workspace(hook_input.workspace.as_deref())
             .err()
     });
-    let (paths, had_edits, ledger_issue) = if hook_input.check {
-        (check_paths(&root)?, false, None)
+    let (paths, had_edits, ledger_issue, path_scan_incomplete) = if hook_input.check {
+        let (paths, incomplete) = match precomputed_check_paths {
+            Some(paths) => paths,
+            None => check_paths_with_deadline(&root, total_deadline)?,
+        };
+        (paths, false, None, incomplete)
     } else {
         let touched = touched_paths(&root, hook_input.session_id.as_deref())?;
-        (touched.files, touched.had_edits, touched.ledger_issue)
+        (
+            touched.files,
+            touched.had_edits,
+            touched.ledger_issue,
+            false,
+        )
+    };
+    let total_deadline = if path_scan_incomplete && total_deadline.is_some() {
+        Some(Instant::now())
+    } else {
+        total_deadline
     };
     let configured = configured_executables(config_snapshot.settings.as_ref().ok());
     let claims_only = !hook_input.check
@@ -329,9 +405,11 @@ fn run_inner_with_options(
     }
     let (profile, registry, overrides, waivers, compatibility, policy_sources) =
         crate::policy::load_profiled_registry(&root)?;
-    let run_file_checks = hook_input.check || had_edits;
+    let run_file_checks = (hook_input.check || had_edits)
+        && !path_scan_incomplete
+        && !deadline_expired(total_deadline);
     let mut results = if run_file_checks {
-        rerun_checks(&paths)
+        rerun_checks(&paths, total_deadline)
     } else {
         Vec::new()
     };
@@ -351,31 +429,53 @@ fn run_inner_with_options(
             baseline.as_ref(),
             intent.as_deref(),
         ));
-        results.extend(rerun_python_checks(&paths));
-        results.extend(crate::checks::languages::scan(&paths));
-        results.extend(crate::checks::structure::scan(&paths));
-        results.extend(crate::checks::modules::scan(&paths));
-        results.extend(crate::checks::naming::scan(&paths));
-        results.extend(crate::checks::boundary::scan(&paths));
-        results.extend(crate::checks::logging::scan(&paths));
-        results.extend(crate::checks::determinism::scan(&paths));
-        results.extend(crate::checks::ui::scan(&paths));
-        results.extend(crate::checks::justification::scan(&paths));
-        results.extend(crate::checks::construction::scan(&paths));
-        results.extend(crate::checks::endpoints::scan(&paths));
-        results.extend(crate::checks::auth::scan(&paths));
+        results.extend(rerun_python_checks(&paths, total_deadline));
+        if !deadline_expired(total_deadline) {
+            results.extend(crate::checks::languages::scan(&paths));
+            results.extend(crate::checks::structure::scan(&paths));
+            results.extend(crate::checks::modules::scan(&paths));
+            results.extend(crate::checks::naming::scan(&paths));
+            results.extend(crate::checks::boundary::scan(&paths));
+            results.extend(crate::checks::logging::scan(&paths));
+            results.extend(crate::checks::determinism::scan(&paths));
+            results.extend(crate::checks::ui::scan(&paths));
+            results.extend(crate::checks::justification::scan(&paths));
+            results.extend(crate::checks::construction::scan(&paths));
+            results.extend(crate::checks::endpoints::scan(&paths));
+            results.extend(crate::checks::auth::scan(&paths));
+        }
     }
     let tier = effective_tier(hook_input.tier.as_deref());
+    let command_budget = total_deadline.map_or(command_budget, |deadline| {
+        std::cmp::min(
+            command_budget,
+            deadline.saturating_duration_since(Instant::now()),
+        )
+    });
     let mut budget = commands::ExecutionBudget::new(command_budget);
-    let (mut command_run, coverage) = run_repository_commands(
-        &root,
-        config_snapshot.settings.as_ref(),
-        hook_input.workspace.as_deref(),
-        Some(tier),
-        &paths,
-        &mut budget,
-    );
-    if budget.is_exhausted() {
+    let (mut command_run, coverage) =
+        if deadline_expired_for_gate(path_scan_incomplete, total_deadline) {
+            (
+                commands::RunResults {
+                    results: vec![commands::budget_unverified()],
+                    evidence: Vec::new(),
+                },
+                commands::run_coverage(&root, &[]),
+            )
+        } else {
+            run_repository_commands(
+                &root,
+                config_snapshot.settings.as_ref(),
+                hook_input.workspace.as_deref(),
+                Some(tier),
+                &paths,
+                &mut budget,
+            )
+        };
+    if budget.is_exhausted()
+        || (deadline_expired_for_gate(path_scan_incomplete, total_deadline)
+            && !command_run.results.iter().any(is_aggregate_budget_result))
+    {
         command_run.results.push(commands::budget_unverified());
     }
     if budget.containment_failed() {
@@ -434,9 +534,21 @@ fn run_inner_with_options(
     if let Some(reason) = workspace_error {
         results.push(commands::invalid_workspace(&reason));
     }
+    if deadline_expired_for_gate(path_scan_incomplete, total_deadline)
+        && !results.iter().any(is_aggregate_budget_result)
+    {
+        let mut timeout = commands::budget_unverified();
+        if pre_commit {
+            timeout.status = Status::Failed;
+            timeout.severity = Severity::Error;
+        }
+        results.push(timeout);
+    }
     append_task_evidence(
         EvidenceMeta {
+            adapter,
             root: &root,
+            deadline: total_deadline,
             session_id: hook_input.session_id.as_deref(),
             profile: &profile,
             paths: &paths,
@@ -453,6 +565,37 @@ fn run_inner_with_options(
         &waivers,
     )?;
 
+    if deadline_expired_for_gate(path_scan_incomplete, total_deadline)
+        && !results.iter().any(is_aggregate_budget_result)
+    {
+        let mut timeout = commands::budget_unverified();
+        if pre_commit {
+            timeout.status = Status::Failed;
+            timeout.severity = Severity::Error;
+        }
+        results.push(timeout);
+        append_task_evidence(
+            EvidenceMeta {
+                adapter,
+                root: &root,
+                deadline: total_deadline,
+                session_id: hook_input.session_id.as_deref(),
+                profile: &profile,
+                paths: &paths,
+                config_digest: &config_snapshot.digest,
+                started_at_ms,
+                finished_at_ms: unix_ms(),
+                tier,
+            },
+            &results,
+            &command_run.evidence,
+            &coverage,
+            &policy_sources,
+            &overrides,
+            &waivers,
+        )?;
+    }
+
     // Evidence persistence is part of the authorization transaction. If the
     // trusted config path changed while the first record was being made
     // durable, append a non-reusable denial record before deciding the gate.
@@ -465,7 +608,9 @@ fn run_inner_with_options(
         results.push(mutation);
         append_task_evidence(
             EvidenceMeta {
+                adapter,
                 root: &root,
+                deadline: total_deadline,
                 session_id: hook_input.session_id.as_deref(),
                 profile: &profile,
                 paths: &paths,
@@ -492,6 +637,14 @@ fn run_inner_with_options(
         return Ok(ExitCode::SUCCESS);
     }
     write_block_decision(output, adapter, event, &failures)
+}
+
+fn deadline_expired(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|deadline| Instant::now() >= deadline)
+}
+
+fn deadline_expired_for_gate(path_scan_incomplete: bool, deadline: Option<Instant>) -> bool {
+    deadline.is_some() && (path_scan_incomplete || deadline_expired(deadline))
 }
 
 fn effective_tier(tier: Option<&str>) -> &str {
@@ -1398,12 +1551,33 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
     })
 }
 
+const MAX_CHECK_PATHS: usize = 512;
+const MAX_CHECK_PATH_ENTRIES: usize = 16_384;
+
+#[cfg(test)]
 fn check_paths(root: &Path) -> Result<Vec<String>, String> {
+    check_paths_with_deadline(root, None).map(|(paths, _)| paths)
+}
+
+fn check_paths_with_deadline(
+    root: &Path,
+    deadline: Option<Instant>,
+) -> Result<(Vec<String>, bool), String> {
     let mut paths = Vec::new();
-    collect_check_paths(root, root, 0, &mut paths)?;
+    let mut entries_seen = 0;
+    let mut incomplete = false;
+    collect_check_paths(
+        root,
+        root,
+        0,
+        &mut paths,
+        deadline,
+        &mut entries_seen,
+        &mut incomplete,
+    )?;
     paths.sort();
     paths.dedup();
-    Ok(paths)
+    Ok((paths, incomplete || deadline_expired(deadline)))
 }
 
 fn collect_check_paths(
@@ -1411,13 +1585,26 @@ fn collect_check_paths(
     current: &Path,
     depth: usize,
     paths: &mut Vec<String>,
+    deadline: Option<Instant>,
+    entries_seen: &mut usize,
+    incomplete: &mut bool,
 ) -> Result<(), String> {
-    if depth > 8 || paths.len() >= 512 {
+    if deadline_expired(deadline)
+        || depth > 8
+        || paths.len() >= MAX_CHECK_PATHS
+        || *entries_seen >= MAX_CHECK_PATH_ENTRIES
+    {
+        *incomplete = true;
         return Ok(());
     }
     let entries =
         std::fs::read_dir(current).map_err(|error| format!("scan check paths ({error})"))?;
     for entry in entries {
+        if deadline_expired(deadline) || *entries_seen >= MAX_CHECK_PATH_ENTRIES {
+            *incomplete = true;
+            break;
+        }
+        *entries_seen += 1;
         let entry = entry.map_err(|error| format!("read check path ({error})"))?;
         let path = entry.path();
         let metadata = std::fs::symlink_metadata(&path)
@@ -1443,7 +1630,15 @@ fn collect_check_paths(
                         | "venv"
                 )
             {
-                collect_check_paths(root, &path, depth + 1, paths)?;
+                collect_check_paths(
+                    root,
+                    &path,
+                    depth + 1,
+                    paths,
+                    deadline,
+                    entries_seen,
+                    incomplete,
+                )?;
             }
         } else if metadata.is_file()
             && path
@@ -1468,6 +1663,13 @@ fn collect_check_paths(
             && path.strip_prefix(root).is_ok()
         {
             paths.push(path.to_string_lossy().into_owned());
+            if paths.len() >= MAX_CHECK_PATHS {
+                *incomplete = true;
+                break;
+            }
+        }
+        if *incomplete {
+            break;
         }
     }
     Ok(())
@@ -1491,7 +1693,7 @@ fn canonical_contained_file(root: &Path, file: &str) -> Option<String> {
         .then(|| canonical.to_string_lossy().into_owned())
 }
 
-fn rerun_checks(paths: &[String]) -> Vec<EnforcementResult> {
+fn rerun_checks(paths: &[String], deadline: Option<Instant>) -> Vec<EnforcementResult> {
     if paths.is_empty() {
         return vec![EnforcementResult {
             rule_id: "no-committed-secrets".to_string(),
@@ -1511,7 +1713,10 @@ fn rerun_checks(paths: &[String]) -> Vec<EnforcementResult> {
             },
         }];
     }
-    let mut result = gitleaks::scan(paths);
+    let mut result = deadline.map_or_else(
+        || gitleaks::scan(paths),
+        |deadline| gitleaks::scan_with_deadline(paths, deadline),
+    );
     if result.locations.is_empty() {
         result.locations = paths
             .iter()
@@ -1524,7 +1729,7 @@ fn rerun_checks(paths: &[String]) -> Vec<EnforcementResult> {
     vec![result]
 }
 
-fn rerun_python_checks(paths: &[String]) -> Vec<EnforcementResult> {
+fn rerun_python_checks(paths: &[String], deadline: Option<Instant>) -> Vec<EnforcementResult> {
     let python_files: Vec<String> = paths
         .iter()
         .filter(|path| path.ends_with(".py"))
@@ -1533,9 +1738,51 @@ fn rerun_python_checks(paths: &[String]) -> Vec<EnforcementResult> {
     if python_files.is_empty() {
         return Vec::new();
     }
-    let mut results = ruff::scan(&python_files);
-    results.extend(semgrep::scan(&python_files));
+    let mut results = deadline.map_or_else(
+        || ruff::scan(&python_files),
+        |deadline| ruff::scan_with_deadline(&python_files, deadline),
+    );
+    results.extend(deadline.map_or_else(
+        || semgrep::scan(&python_files),
+        |deadline| semgrep::scan_with_deadline(&python_files, deadline),
+    ));
     results
+}
+
+pub fn write_pi_settled_evidence(root: &Path, session_id: &str) -> Result<(), String> {
+    let state = crate::pi_state::assess_for_session(root, session_id);
+    if state.state != crate::pi_state::PiEnforcementState::Active {
+        return Err(format!("Pi settlement is unverified: {}", state.reason));
+    }
+    let adapter = PiAdapter;
+    let now = unix_ms();
+    let empty_results: Vec<EnforcementResult> = Vec::new();
+    let empty_commands: Vec<commands::CommandEvidence> = Vec::new();
+    let empty_coverage: Vec<commands::CoverageEvidence> = Vec::new();
+    let empty_sources: Vec<String> = Vec::new();
+    let empty_overrides: Vec<crate::policy::overrides::OverrideRecord> = Vec::new();
+    let empty_waivers: Vec<crate::policy::waivers::Waiver> = Vec::new();
+    let config_digest = commands::load_snapshot(root).digest;
+    append_task_evidence(
+        EvidenceMeta {
+            adapter: &adapter,
+            root,
+            deadline: None,
+            session_id: Some(session_id),
+            profile: "pi",
+            paths: &empty_sources,
+            config_digest: &config_digest,
+            started_at_ms: now,
+            finished_at_ms: now,
+            tier: "targeted",
+        },
+        &empty_results,
+        &empty_commands,
+        &empty_coverage,
+        &empty_sources,
+        &empty_overrides,
+        &empty_waivers,
+    )
 }
 
 fn append_task_evidence(
@@ -1548,13 +1795,23 @@ fn append_task_evidence(
     waivers: &[crate::policy::waivers::Waiver],
 ) -> Result<(), String> {
     let root = metadata.root;
-    let directory = root.join(".lgtm/evidence");
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| format!("create evidence directory ({error})"))?;
     let task_id = metadata.session_id.unwrap_or("unknown-session");
+    let enforcement = (metadata.adapter.harness_name() == "pi").then(|| {
+        let state = metadata.session_id.map_or_else(
+            || crate::pi_state::assess(root),
+            |id| crate::pi_state::assess_for_session(root, id),
+        );
+        PiEnforcementEvidence {
+            state: state.state,
+            scope: state.scope,
+            reason: state.reason,
+        }
+    });
     let record = TaskEvidence {
         task_id,
         agent: "claude-code",
+        harness: metadata.adapter.harness_name(),
+        enforcement,
         profile: metadata.profile,
         commit: None,
         rules: count_results(results),
@@ -1571,7 +1828,7 @@ fn append_task_evidence(
         containment_version: commands::CONTAINMENT_VERSION,
         started_at_ms: metadata.started_at_ms,
         finished_at_ms: metadata.finished_at_ms,
-        touched_files_digest: digest_paths(metadata.paths),
+        touched_files_digest: digest_paths_until(metadata.paths, metadata.deadline),
         config_digest: metadata.config_digest.to_string(),
         tier: metadata.tier,
     };
@@ -1579,7 +1836,27 @@ fn append_task_evidence(
         serde_json::to_string(&record).map_err(|error| format!("serialize evidence ({error})"))?;
     validate_evidence(&line)?;
     line.push('\n');
-    append_bounded_regular(&directory.join("evidence.jsonl"), line.as_bytes())
+    let persistence = (|| -> Result<(), String> {
+        let lgtm_directory = root.join(".lgtm");
+        crate::fsutil::ensure_directory(&lgtm_directory)
+            .map_err(|error| format!("inspect evidence ancestry ({error})"))?;
+        let directory = lgtm_directory.join("evidence");
+        crate::fsutil::ensure_directory(&directory)
+            .map_err(|error| format!("inspect evidence directory ({error})"))?;
+        append_bounded_regular(
+            &directory.join("evidence.jsonl"),
+            line.as_bytes(),
+            metadata.deadline,
+        )
+    })();
+    if persistence.is_err()
+        && metadata
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        return Ok(());
+    }
+    persistence
 }
 
 fn unix_ms() -> u128 {
@@ -1589,8 +1866,15 @@ fn unix_ms() -> u128 {
 }
 
 fn digest_paths(paths: &[String]) -> String {
+    digest_paths_until(paths, None)
+}
+
+fn digest_paths_until(paths: &[String], deadline: Option<Instant>) -> String {
     let mut material = String::new();
     for path in paths {
+        if deadline_expired(deadline) {
+            break;
+        }
         material.push_str(path);
         material.push('\0');
         material.push_str(&crate::fsutil::read_optional_bounded(
@@ -1627,10 +1911,16 @@ fn validate_evidence(record: &str) -> Result<(), String> {
     }
 }
 
-fn append_bounded_regular(path: &Path, line: &[u8]) -> Result<(), String> {
+fn append_bounded_regular(
+    path: &Path,
+    line: &[u8],
+    deadline: Option<Instant>,
+) -> Result<(), String> {
     if line.len() as u64 > MAX_TASK_EVIDENCE_BYTES {
         return Err("single evidence record exceeds maximum size".to_string());
     }
+    let lock_path = path.with_file_name("evidence.jsonl.lock");
+    let _lock = crate::hooks::evidence_lock::EvidenceLock::acquire_until(&lock_path, deadline)?;
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => {}
         Ok(_) => return Err("evidence path is not a regular file".to_string()),
@@ -3337,6 +3627,73 @@ mod tests {
     }
 
     #[test]
+    fn expired_total_precommit_deadline_denies_instead_of_passing() {
+        let root =
+            std::env::temp_dir().join(format!("lgtm-stop-total-deadline-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temporary root");
+        let result = run_pre_commit_gate_with_limits(
+            &root,
+            Some("deadline-session"),
+            Duration::from_secs(1),
+            Some(Instant::now()),
+        )
+        .expect("expired gate should return a decision");
+        assert!(result.is_some(), "an expired pre-commit gate must deny");
+        std::fs::remove_dir_all(root).expect("temporary root removal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn expired_precommit_denies_when_evidence_ancestry_cannot_persist() {
+        use std::os::unix::fs::symlink;
+
+        let root =
+            std::env::temp_dir().join(format!("lgtm-stop-expired-evidence-{}", std::process::id()));
+        let evidence_target = root.join("foreign-evidence");
+        std::fs::create_dir_all(&evidence_target).expect("foreign evidence directory");
+        std::fs::create_dir_all(root.join(".lgtm")).expect("lgtm directory");
+        symlink(&evidence_target, root.join(".lgtm/evidence")).expect("evidence symlink");
+
+        let result = run_pre_commit_gate_with_limits(
+            &root,
+            Some("expired-evidence-session"),
+            Duration::from_secs(1),
+            Some(Instant::now()),
+        )
+        .expect("expired gate should still return a block");
+        assert!(
+            result.is_some(),
+            "evidence persistence must not erase the block"
+        );
+        std::fs::remove_dir_all(root).expect("temporary root removal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn precommit_evidence_ancestry_failure_before_deadline_remains_an_error() {
+        use std::os::unix::fs::symlink;
+
+        let root =
+            std::env::temp_dir().join(format!("lgtm-stop-live-evidence-{}", std::process::id()));
+        let evidence_target = root.join("foreign-evidence");
+        std::fs::create_dir_all(&evidence_target).expect("foreign evidence directory");
+        std::fs::create_dir_all(root.join(".lgtm")).expect("lgtm directory");
+        symlink(&evidence_target, root.join(".lgtm/evidence")).expect("evidence symlink");
+
+        let result = run_pre_commit_gate_with_limits(
+            &root,
+            Some("live-evidence-session"),
+            Duration::from_secs(1),
+            Instant::now().checked_add(Duration::from_secs(30)),
+        );
+        assert!(
+            result.is_err(),
+            "persistence failures before the deadline must remain errors"
+        );
+        std::fs::remove_dir_all(root).expect("temporary root removal");
+    }
+
+    #[test]
     fn incomplete_command_gate_evidence_is_not_reused_but_unrelated_unverified_is() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -3436,6 +3793,71 @@ mod tests {
             );
         }
 
+        std::fs::remove_dir_all(root).expect("temporary evidence directory removal");
+    }
+
+    #[test]
+    fn deadline_bound_precommit_does_not_reuse_full_evidence() {
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-deadline-evidence-reuse-{}",
+            std::process::id()
+        ));
+        let evidence_path = root.join(".lgtm/evidence/evidence.jsonl");
+        std::fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
+            .expect("evidence directory");
+        let record = serde_json::json!({
+            "task_id": "deadline-reuse-session",
+            "rules": {
+                "passed": 0,
+                "failed": 0,
+                "warning": 0,
+                "skipped": 0,
+                "not_applicable": 0,
+                "unverified": 0,
+                "overridden": 0,
+                "waived": 0
+            },
+            "results": [],
+            "commands": [],
+            "coverage": [{
+                "workspace_id": "repository",
+                "status": "not_applicable",
+                "tool": null,
+                "scope": null,
+                "line_percent": null,
+                "branch_percent": null,
+                "measured_at_ms": null
+            }],
+            "policy_version": crate::policy::POLICY_BUNDLE_VERSION,
+            "binary_version": env!("CARGO_PKG_VERSION"),
+            "platform": commands::platform_id(),
+            "containment_version": commands::CONTAINMENT_VERSION,
+            "touched_files_digest": digest_paths(&[]),
+            "config_digest": digest_bytes(""),
+            "tier": "full"
+        });
+        std::fs::write(&evidence_path, format!("{record}\n")).expect("passing evidence record");
+        assert!(
+            matching_full_evidence(&root, Some("deadline-reuse-session"), &[]).is_some(),
+            "fixture must be reusable without the deadline-bound gate"
+        );
+
+        let result = run_pre_commit_gate_with_limits(
+            &root,
+            Some("deadline-reuse-session"),
+            Duration::from_secs(1),
+            Instant::now().checked_add(Duration::from_secs(30)),
+        )
+        .expect("deadline-bound gate runs");
+        assert!(result.is_none(), "fresh gate should pass the empty fixture");
+        let records = std::fs::read_to_string(&evidence_path)
+            .expect("evidence")
+            .lines()
+            .count();
+        assert!(
+            records >= 2,
+            "deadline-bound gate must append a fresh record"
+        );
         std::fs::remove_dir_all(root).expect("temporary evidence directory removal");
     }
 

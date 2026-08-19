@@ -184,6 +184,7 @@ fn embedded_catalog_selects_python_and_excludes_rust_and_terraform_guidance() {
     assert!(!paths.contains(&"templates/claude-rules/rules/rust.md"));
     assert!(!paths.contains(&"templates/claude-rules/rules/patterns/rust.md"));
     assert!(!paths.contains(&"templates/claude-rules/rules/infrastructure.md"));
+    assert!(!paths.contains(&lgtm::path_injection::EAGER_ENTRY_SOURCE_PATH));
     assert!(
         result
             .bodies

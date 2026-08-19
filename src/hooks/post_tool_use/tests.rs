@@ -3,14 +3,31 @@ use super::*;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use crate::adapter::{EncodedResponse, HookRequest};
 use serde_json::Value;
 
 use super::evidence::{
     MAX_EVIDENCE_BYTES, MAX_EVIDENCE_RECORDS, MAX_MUST_KEEP_RECORDS, MAX_RECORDED_PATHS,
     append_evidence, compact_existing_record, is_must_keep_record, trim_records,
 };
-use super::input::{HookInput, ToolInput, edited_file};
-use super::target::{resolve_target, unverified_target};
+use super::input::{HookInput, ToolInput, edited_file, read_file};
+use super::target::{resolve_read_path, resolve_target, unverified_target};
+
+struct PanicAdapter;
+
+impl HookAdapter for PanicAdapter {
+    fn fail_open_on_error(&self) -> bool {
+        true
+    }
+
+    fn parse_request(&self, _: HookEvent, _: &str) -> Result<HookRequest, String> {
+        panic!("test adapter panic");
+    }
+
+    fn encode_response(&self, _: HookEvent, _: HookResponse) -> Result<EncodedResponse, String> {
+        panic!("test adapter panic");
+    }
+}
 
 struct TempDir {
     path: PathBuf,
@@ -55,6 +72,26 @@ fn non_edit_tool_is_ignored_silently() {
     let (out, code) = run_capture(&stdin);
     assert!(out.is_empty(), "a non-edit tool must emit nothing");
     assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::SUCCESS));
+}
+
+#[test]
+fn pi_panic_returns_fail_open_signal_for_shim_evidence() {
+    let temp = TempDir::new();
+    std::fs::create_dir(temp.path.join(".git")).expect("git marker");
+    let file = temp.path.join("App.tsx");
+    std::fs::write(&file, "const value: any = input;\n").expect("fixture source");
+    let payload = json!({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Edit",
+        "tool_input": { "file_path": file },
+        "cwd": temp.path,
+    });
+    let serialized = payload.to_string();
+    let mut input = serialized.as_bytes();
+    let mut output = Vec::new();
+    let code = run_with_adapter(&mut input, &mut output, &PanicAdapter);
+    assert_eq!(code, ExitCode::from(1));
+    assert!(output.is_empty());
 }
 
 #[test]
@@ -111,6 +148,7 @@ fn edited_file_only_matches_edit_tools() {
         tool_name: Some("Read".to_string()),
         tool_input: Some(ToolInput {
             file_path: Some("/a.py".to_string()),
+            path: None,
         }),
         ..HookInput::default()
     };
@@ -124,8 +162,16 @@ fn edited_file_only_matches_edit_tools() {
 
     input.tool_input = Some(ToolInput {
         file_path: Some("   ".to_string()),
+        path: None,
     });
     assert_eq!(edited_file(&input), None, "a blank path is ignored");
+
+    input.tool_name = Some("Read".to_string());
+    input.tool_input = Some(ToolInput {
+        file_path: None,
+        path: Some("/a.py".to_string()),
+    });
+    assert_eq!(read_file(&input), Some("/a.py".to_string()));
 }
 
 #[test]
@@ -468,6 +514,52 @@ fn resolve_target_joins_relative_path_against_payload_cwd() {
     assert!(
         resolved.ends_with("edited.py"),
         "the resolved path must name the edited file: {resolved}"
+    );
+}
+
+#[test]
+fn resolve_read_path_normalizes_absolute_and_nested_paths() {
+    let temp = TempDir::new();
+    let workspace = temp.path.join("workspace");
+    let source = temp.path.join("src/app.py");
+    std::fs::create_dir_all(&workspace).expect("workspace creatable");
+    std::fs::create_dir_all(source.parent().expect("source parent")).expect("source parent");
+    std::fs::write(&source, "value = 1\n").expect("source writable");
+    let root = temp.path.to_string_lossy().into_owned();
+    let nested = workspace.to_string_lossy().into_owned();
+    let absolute = source.to_string_lossy().into_owned();
+
+    assert_eq!(
+        resolve_read_path(&temp.path, Some(&root), &absolute),
+        Some("src/app.py".to_string())
+    );
+    assert_eq!(
+        resolve_read_path(&temp.path, Some(&nested), "../src/app.py"),
+        Some("src/app.py".to_string())
+    );
+    assert_eq!(
+        resolve_read_path(&temp.path, Some(&nested), "../../outside.py"),
+        None
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn resolve_read_path_rejects_symlink_escape() {
+    let temp = TempDir::new();
+    let outside = TempDir::new();
+    let outside_file = outside.path.join("outside.py");
+    std::fs::write(&outside_file, "value = 1\n").expect("outside source writable");
+    std::os::unix::fs::symlink(&outside_file, temp.path.join("link.py"))
+        .expect("symlink creatable");
+
+    assert_eq!(
+        resolve_read_path(
+            &temp.path,
+            Some(temp.path.to_str().expect("UTF-8 root")),
+            "link.py"
+        ),
+        None
     );
 }
 

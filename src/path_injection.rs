@@ -28,6 +28,10 @@ pub const MAX_PATTERN_BRACE_DEPTH: usize = 32;
 pub const MAX_PATTERN_MATCH_ATTEMPTS: usize = 65_536;
 pub const MAX_PATTERN_MATCH_WORK: usize = 64 * 1_024 * 1_024;
 
+/// The compact entry is loaded eagerly through Pi's managed `AGENTS.md` block.
+/// Shared path injection must never return that same body a second time.
+pub const EAGER_ENTRY_SOURCE_PATH: &str = "templates/claude-rules/CLAUDE.md";
+
 const DIAG_CANDIDATE_LIMIT: &str = "guidance candidate limit exceeded";
 const DIAG_CANDIDATE_REJECTED: &str = "guidance candidate rejected";
 const DIAG_SESSION_LIMIT: &str = "guidance session id omitted";
@@ -226,6 +230,9 @@ pub fn select_rule_bodies_with_source_and_store(
         if index == MAX_SOURCE_DOCUMENTS {
             state.diagnostics.push(DIAG_SOURCE_LIMIT);
             break;
+        }
+        if metadata.logical_path == EAGER_ENTRY_SOURCE_PATH {
+            continue;
         }
         if !source_path_is_valid(&metadata.logical_path) {
             state.diagnostics.push(DIAG_SOURCE_PATH_REJECTED);

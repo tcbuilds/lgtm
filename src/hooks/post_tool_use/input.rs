@@ -19,6 +19,8 @@ pub(super) struct HookInput {
 pub(super) struct ToolInput {
     #[serde(default)]
     pub(super) file_path: Option<String>,
+    #[serde(default)]
+    pub(super) path: Option<String>,
 }
 
 pub(super) fn parse_input(raw: &str) -> Result<HookInput, serde_json::Error> {
@@ -34,5 +36,17 @@ pub(super) fn edited_file(input: &HookInput) -> Option<String> {
         return None;
     }
     let path = input.tool_input.as_ref()?.file_path.as_deref()?;
+    (!path.trim().is_empty()).then(|| path.to_string())
+}
+
+pub(super) fn read_file(input: &HookInput) -> Option<String> {
+    if input.tool_name.as_deref() != Some("Read") {
+        return None;
+    }
+    let tool_input = input.tool_input.as_ref()?;
+    let path = tool_input
+        .path
+        .as_deref()
+        .or(tool_input.file_path.as_deref())?;
     (!path.trim().is_empty()).then(|| path.to_string())
 }

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "pi_version": "0.84.2",
+  "package": "@earendil-works/pi-coding-agent",
+  "capture_method": "verbatim bounded excerpts copied from the installed Pi 0.84.2 package; checked-in capture paths and line ranges are retained for drift review",
+  "captures": [
+    {
+      "fixture_id": "source-session-start-types-0.84.2",
+      "source_path": "captures/types.d.ts",
+      "line_range": "416-423",
+      "excerpt": "export interface SessionStartEvent {\n    type: \"session_start\";\n    /** Why this session start happened. */\n    reason: \"startup\" | \"reload\" | \"new\" | \"resume\" | \"fork\";\n    /** Previously active session file. Present for \"new\", \"resume\", and \"fork\". */\n    previousSessionFile?: string;\n}\n/** Fired when the current session metadata changes. */"
+    },
+    {
+      "fixture_id": "source-before-agent-start-types-0.84.2",
+      "source_path": "captures/types.d.ts",
+      "line_range": "525-532",
+      "excerpt": "export interface BeforeAgentStartEvent {\n    type: \"before_agent_start\";\n    /** The raw user prompt text (after expansion). */\n    prompt: string;\n    /** Images attached to the user prompt, if any. */\n    images?: ImageContent[];\n    /** The fully assembled system prompt string. */\n    systemPrompt: string;"
+    },
+    {
+      "fixture_id": "source-tool-call-types-0.84.2",
+      "source_path": "captures/types.d.ts",
+      "line_range": "649-656",
+      "excerpt": "interface ToolCallEventBase {\n    type: \"tool_call\";\n    toolCallId: string;\n}\nexport interface BashToolCallEvent extends ToolCallEventBase {\n    toolName: \"bash\";\n    input: BashToolInput;\n}"
+    },
+    {
+      "fixture_id": "source-tool-result-types-0.84.2",
+      "source_path": "captures/types.d.ts",
+      "line_range": "692-699",
+      "excerpt": "interface ToolResultEventBase {\n    type: \"tool_result\";\n    toolCallId: string;\n    input: Record<string, unknown>;\n    content: (TextContent | ImageContent)[];\n    isError: boolean;\n    /** Usage from the tool execution itself, if available. */\n    usage?: Usage;"
+    },
+    {
+      "fixture_id": "source-tool-execution-end-types-0.84.2",
+      "source_path": "captures/types.d.ts",
+      "line_range": "594-601",
+      "excerpt": "export interface ToolExecutionEndEvent {\n    type: \"tool_execution_end\";\n    toolCallId: string;\n    toolName: string;\n    result: any;\n    isError: boolean;\n}\nexport type ModelSelectSource = \"set\" | \"cycle\" | \"restore\";"
+    },
+    {
+      "fixture_id": "source-agent-end-types-0.84.2",
+      "source_path": "captures/types.d.ts",
+      "line_range": "541-548",
+      "excerpt": "export interface AgentEndEvent {\n    type: \"agent_end\";\n    messages: AgentMessage[];\n}\n/** Fired after an agent run has fully settled and no automatic retry, compaction, or queued continuation will run. */\nexport interface AgentSettledEvent {\n    type: \"agent_settled\";\n}"
+    },
+    {
+      "fixture_id": "source-agent-settled-types-0.84.2",
+      "source_path": "captures/types.d.ts",
+      "line_range": "546-553",
+      "excerpt": "export interface AgentSettledEvent {\n    type: \"agent_settled\";\n}\n/** Fired at the start of each turn */\nexport interface TurnStartEvent {\n    type: \"turn_start\";\n    turnIndex: number;\n    timestamp: number;"
+    },
+    {
+      "fixture_id": "unverified-custom-tool-provenance",
+      "source_path": "captures/agent-session.js",
+      "line_range": "1947-1954",
+      "excerpt": "        const allCustomTools = [\n            ...registeredTools,\n            ...this._customTools.map((definition) => ({\n                definition,\n                sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: \"sdk\" }),\n            })),\n        ].filter((tool) => isAllowedTool(tool.definition.name));\n        const definitionRegistry = new Map(Array.from(this._baseToolDefinitions.entries())"
+    }
+  ]
+}

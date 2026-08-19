@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "pi_version": "0.84.2",
+  "package": "@earendil-works/pi-coding-agent",
+  "rows": [
+    {
+      "id": "session-start",
+      "lgtm_hook": "session_start",
+      "pi_event": "session_start",
+      "tool_name": null,
+      "fixture_id": "source-session-start-types-0.84.2",
+      "tool_input_path": null,
+      "response_support": "notification-only",
+      "discovery_method": "installed types.d.ts and agent-session.js",
+      "verification_status": "verified_source",
+      "evidence": [
+        "dist/core/extensions/types.d.ts:416-422",
+        "dist/core/agent-session.js:1760-1762"
+      ],
+      "notes": "Session start is emitted after extension binding and before resource discovery."
+    },
+    {
+      "id": "before-agent-start",
+      "lgtm_hook": "before_agent_start",
+      "pi_event": "before_agent_start",
+      "tool_name": null,
+      "fixture_id": "source-before-agent-start-types-0.84.2",
+      "tool_input_path": "event.prompt; event.systemPrompt",
+      "response_support": "message or systemPrompt",
+      "discovery_method": "installed types.d.ts and extensions.md",
+      "verification_status": "verified_source",
+      "evidence": [
+        "dist/core/extensions/types.d.ts:525-535",
+        "dist/core/extensions/types.d.ts:806-810",
+        "docs/extensions.md:556-556"
+      ],
+      "notes": "The result can add a custom message or replace the current system prompt."
+    },
+    {
+      "id": "tool-call-block",
+      "lgtm_hook": "pre_tool_use",
+      "pi_event": "tool_call",
+      "tool_name": "verified built-ins only",
+      "fixture_id": "source-tool-call-types-0.84.2",
+      "tool_input_path": "event.input",
+      "response_support": "block plus reason",
+      "discovery_method": "installed types.d.ts, agent-session.js, and extensions.md",
+      "verification_status": "verified_source",
+      "evidence": [
+        "dist/core/extensions/types.d.ts:649-691",
+        "dist/core/extensions/types.d.ts:779-787",
+        "dist/core/agent-session.js:223-242",
+        "docs/extensions.md:751-766"
+      ],
+      "notes": "The input is mutable and handlers can block; LGTM must not mutate it."
+    },
+    {
+      "id": "tool-result-feedback",
+      "lgtm_hook": "post_tool_use",
+      "pi_event": "tool_result",
+      "tool_name": "verified built-ins only",
+      "fixture_id": "source-tool-result-types-0.84.2",
+      "tool_input_path": "event.content; event.details; event.isError; event.usage",
+      "response_support": "partial content/details/isError/usage patch",
+      "discovery_method": "installed types.d.ts, agent-session.js, and extensions.md",
+      "verification_status": "verified_source",
+      "evidence": [
+        "dist/core/extensions/types.d.ts:692-730",
+        "dist/core/extensions/types.d.ts:796-800",
+        "dist/core/agent-session.js:244-270",
+        "docs/extensions.md:815-823"
+      ],
+      "notes": "Handlers run before tool_execution_end and final tool-result messages; omitted fields are retained by Pi's middleware contract."
+    },
+    {
+      "id": "tool-execution-end",
+      "lgtm_hook": "post_tool_use_notification",
+      "pi_event": "tool_execution_end",
+      "tool_name": "verified built-ins only",
+      "fixture_id": "source-tool-execution-end-types-0.84.2",
+      "tool_input_path": "event.result; event.isError",
+      "response_support": "notification-only",
+      "discovery_method": "installed types.d.ts, agent-session.js, and extensions.md",
+      "verification_status": "verified_source",
+      "evidence": [
+        "dist/core/extensions/types.d.ts:593-600",
+        "dist/core/agent-session.js:519-527",
+        "docs/extensions.md:624-644"
+      ],
+      "notes": "This event has no typed replacement result."
+    },
+    {
+      "id": "agent-end",
+      "lgtm_hook": "stop_candidate",
+      "pi_event": "agent_end",
+      "tool_name": null,
+      "fixture_id": "source-agent-end-types-0.84.2",
+      "tool_input_path": "event.messages",
+      "response_support": "notification-only",
+      "discovery_method": "installed types.d.ts and extensions.md",
+      "verification_status": "verified_source",
+      "evidence": [
+        "dist/core/extensions/types.d.ts:540-544",
+        "dist/core/agent-session.js:445-447",
+        "docs/extensions.md:558-570"
+      ],
+      "notes": "agent_end may be followed by retry, compaction, or queued continuation; no block result is declared."
+    },
+    {
+      "id": "agent-settled",
+      "lgtm_hook": "stop_candidate",
+      "pi_event": "agent_settled",
+      "tool_name": null,
+      "fixture_id": "source-agent-settled-types-0.84.2",
+      "tool_input_path": null,
+      "response_support": "notification-only",
+      "discovery_method": "installed types.d.ts, agent-session.js, and extensions.md",
+      "verification_status": "verified_source",
+      "evidence": [
+        "dist/core/extensions/types.d.ts:545-548",
+        "dist/core/agent-session.js:327-335",
+        "docs/extensions.md:558-570"
+      ],
+      "notes": "agent_settled means no automatic retry, compaction retry, or queued continuation remains; no block result is declared."
+    },
+    {
+      "id": "project-trust-yes-no",
+      "lgtm_hook": "project_trust",
+      "pi_event": "project_trust",
+      "tool_name": null,
+      "fixture_id": "live-project-trust-yes-no-001",
+      "tool_input_path": "event.cwd",
+      "response_support": "yes, no, or undecided",
+      "discovery_method": "live loader and runner probe against Pi 0.84.2",
+      "verification_status": "verified_live",
+      "evidence": [
+        "dist/core/extensions/types.d.ts:868-870",
+        "dist/core/extensions/runner.js:57-84",
+        "docs/extensions.md:338-367"
+      ],
+      "notes": "A global or CLI extension can return yes/no; the first decided result wins. The probe used remember=false and a throwaway directory."
+    },
+    {
+      "id": "malformed-extension",
+      "lgtm_hook": "extension_load",
+      "pi_event": "extension_load",
+      "tool_name": null,
+      "fixture_id": "live-malformed-extension-001",
+      "tool_input_path": null,
+      "response_support": "loader error; other extensions continue",
+      "discovery_method": "live discoverAndLoadExtensions probe against Pi 0.84.2",
+      "verification_status": "verified_live",
+      "evidence": [
+        "dist/core/extensions/loader.js:399-416",
+        "dist/core/extensions/loader.js:432-453"
+      ],
+      "notes": "A module without a factory is reported in errors and is not returned as a loaded extension."
+    },
+    {
+      "id": "project-global-discovery-root",
+      "lgtm_hook": "extension_discovery",
+      "pi_event": "project-root startup",
+      "tool_name": null,
+      "fixture_id": "live-discovery-root-order-001",
+      "tool_input_path": null,
+      "response_support": "project and global extensions load",
+      "discovery_method": "live discoverAndLoadExtensions probe against Pi 0.84.2",
+      "verification_status": "verified_live",
+      "evidence": [
+        "dist/core/extensions/loader.js:543-579",
+        "tests/fixtures/pi/0.84.2/discovery.json"
+      ],
+      "notes": "The observed order is project-local first, then global."
+    },
+    {
+      "id": "project-global-discovery-nested",
+      "lgtm_hook": "extension_discovery",
+      "pi_event": "nested-cwd startup",
+      "tool_name": null,
+      "fixture_id": "live-discovery-nested-global-only-001",
+      "tool_input_path": null,
+      "response_support": "global extension only",
+      "discovery_method": "live discoverAndLoadExtensions probe against Pi 0.84.2",
+      "verification_status": "verified_live",
+      "evidence": [
+        "dist/core/extensions/loader.js:557-562",
+        "tests/fixtures/pi/0.84.2/discovery.json"
+      ],
+      "notes": "The loader resolves the project extension directory from the startup cwd and does not walk ancestors."
+    },
+    {
+      "id": "builtin-read-provenance",
+      "lgtm_hook": "tool_contract",
+      "pi_event": "pi.getAllTools()",
+      "tool_name": "read",
+      "fixture_id": "live-sdk-builtins-001",
+      "tool_input_path": "event.input.path",
+      "response_support": "not applicable",
+      "discovery_method": "live createAgentSession SDK probe against Pi 0.84.2",
+      "verification_status": "verified_live",
+      "evidence": [
+        "dist/core/agent-session.js:613-620",
+        "dist/core/agent-session.js:1954-1961",
+        "tests/fixtures/pi/0.84.2/tool_provenance.json"
+      ],
+      "notes": "The built-in source is <builtin:read>; parameter details are in the paired fixture."
+    },
+    {
+      "id": "builtin-bash-provenance",
+      "lgtm_hook": "tool_contract",
+      "pi_event": "pi.getAllTools()",
+      "tool_name": "bash",
+      "fixture_id": "live-sdk-builtins-001",
+      "tool_input_path": "event.input.command; event.input.timeout",
+      "response_support": "not applicable",
+      "discovery_method": "live createAgentSession SDK probe against Pi 0.84.2",
+      "verification_status": "verified_live",
+      "evidence": [
+        "dist/core/agent-session.js:613-620",
+        "dist/core/agent-session.js:1954-1961",
+        "dist/core/tools/bash.js:226-238",
+        "tests/fixtures/pi/0.84.2/tool_provenance.json"
+      ],
+      "notes": "The built-in source is <builtin:bash>; parameter details are in the paired fixture."
+    },
+    {
+      "id": "builtin-edit-provenance",
+      "lgtm_hook": "tool_contract",
+      "pi_event": "pi.getAllTools()",
+      "tool_name": "edit",
+      "fixture_id": "live-sdk-builtins-001",
+      "tool_input_path": "event.input.path; event.input.edits[].oldText; event.input.edits[].newText",
+      "response_support": "not applicable",
+      "discovery_method": "live createAgentSession SDK probe against Pi 0.84.2",
+      "verification_status": "verified_live",
+      "evidence": [
+        "dist/core/agent-session.js:613-620",
+        "dist/core/agent-session.js:1954-1961",
+        "dist/core/tools/edit.js:168-179",
+        "tests/fixtures/pi/0.84.2/tool_provenance.json"
+      ],
+      "notes": "The built-in source is <builtin:edit>; parameter details are in the paired fixture."
+    },
+    {
+      "id": "builtin-write-provenance",
+      "lgtm_hook": "tool_contract",
+      "pi_event": "pi.getAllTools()",
+      "tool_name": "write",
+      "fixture_id": "live-sdk-builtins-001",
+      "tool_input_path": "event.input.path; event.input.content",
+      "response_support": "not applicable",
+      "discovery_method": "live createAgentSession SDK probe against Pi 0.84.2",
+      "verification_status": "verified_live",
+      "evidence": [
+        "dist/core/agent-session.js:613-620",
+        "dist/core/agent-session.js:1954-1961",
+        "dist/core/tools/write.js:136-145",
+        "tests/fixtures/pi/0.84.2/tool_provenance.json"
+      ],
+      "notes": "The built-in source is <builtin:write>; parameter details are in the paired fixture."
+    },
+    {
+      "id": "same-name-read-override",
+      "lgtm_hook": "tool_contract",
+      "pi_event": "pi.getAllTools()",
+      "tool_name": "read",
+      "fixture_id": "live-sdk-override-001",
+      "tool_input_path": "event.input.path",
+      "response_support": "not applicable",
+      "discovery_method": "live createAgentSession SDK probe with project extension override",
+      "verification_status": "verified_live",
+      "evidence": [
+        "dist/core/agent-session.js:1963-1967",
+        "docs/extensions.md:2051-2072",
+        "tests/fixtures/pi/0.84.2/tool_provenance.json"
+      ],
+      "notes": "The same-name project override is observable with non-builtin sourceInfo and is not eligible for built-in enforcement."
+    },
+    {
+      "id": "custom-tool-provenance",
+      "lgtm_hook": "tool_contract",
+      "pi_event": "pi.getAllTools()",
+      "tool_name": "custom or MCP tool",
+      "fixture_id": "unverified-custom-tool-provenance",
+      "tool_input_path": "event.input",
+      "response_support": "not applicable",
+      "discovery_method": "not captured for a universal tool set",
+      "verification_status": "unverified",
+      "evidence": [
+        "dist/core/agent-session.js:1948-1953",
+        "docs/extensions.md:1670-1675"
+      ],
+      "notes": "Name-only matching remains unverified because it cannot establish built-in provenance or schema compatibility."
+    }
+  ]
+}
