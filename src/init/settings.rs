@@ -44,6 +44,14 @@ pub fn build_v2_config(workspaces: &[Workspace]) -> Value {
 /// those inputs before any write so a malformed file is never silently
 /// replaced.
 pub fn merge_settings(existing: &Map<String, Value>) -> Map<String, Value> {
+    merge_settings_with_binary(existing, "lgtm")
+}
+
+/// Merge Claude hooks while pinning each command to a stable binary path.
+pub(super) fn merge_settings_with_binary(
+    existing: &Map<String, Value>,
+    binary: &str,
+) -> Map<String, Value> {
     let mut merged = existing.clone();
 
     let hooks_entry = merged
@@ -51,12 +59,12 @@ pub fn merge_settings(existing: &Map<String, Value>) -> Map<String, Value> {
         .or_insert_with(|| Value::Object(Map::new()));
     let Value::Object(hooks) = hooks_entry else {
         let mut replacement = Map::new();
-        insert_hook_events(&mut replacement);
+        insert_hook_events(&mut replacement, binary);
         merged.insert("hooks".to_string(), Value::Object(replacement));
         return merged;
     };
 
-    insert_hook_events(hooks);
+    insert_hook_events(hooks, binary);
     merged
 }
 
@@ -64,7 +72,7 @@ pub fn merge_settings(existing: &Map<String, Value>) -> Map<String, Value> {
 /// entry for the same event: if one is found with the wrong matcher, its matcher
 /// is corrected; if found and already correct, it is left exactly as authored
 /// (preserving a path-qualified command); if absent, the entry is appended.
-fn insert_hook_events(hooks: &mut Map<String, Value>) {
+fn insert_hook_events(hooks: &mut Map<String, Value>, binary: &str) {
     for wiring in &HOOK_EVENTS {
         let entries = hooks
             .entry(wiring.event.to_string())
@@ -77,7 +85,7 @@ fn insert_hook_events(hooks: &mut Map<String, Value>) {
             .find(|entry| entry_runs_command(entry, wiring.command))
         {
             Some(existing_entry) => reconcile_matcher(existing_entry, wiring),
-            None => entries.push(hook_entry(wiring)),
+            None => entries.push(hook_entry(wiring, binary)),
         }
     }
 }
@@ -109,10 +117,11 @@ fn reconcile_matcher(entry: &mut Value, wiring: &HookWiring) {
 }
 
 /// Build a single Claude Code hook entry for a wiring.
-fn hook_entry(wiring: &HookWiring) -> Value {
+fn hook_entry(wiring: &HookWiring, binary: &str) -> Value {
+    let command = format!("{binary} {}", wiring.command.trim_start_matches("lgtm "));
     let inner = json!({
         "type": "command",
-        "command": wiring.command,
+        "command": command,
     });
     match wiring.matcher {
         Some(matcher) => json!({ "matcher": matcher, "hooks": [inner] }),

@@ -30,6 +30,7 @@ mod config;
 pub(crate) mod execpolicy;
 mod fs;
 mod gitignore;
+mod global;
 mod rules;
 mod runner;
 mod settings;
@@ -43,6 +44,7 @@ use fs::{
 #[cfg(test)]
 use gitignore::evidence_is_ignored;
 use gitignore::{render_gitignore, render_settings};
+pub use global::{GlobalInitSummary, run as run_global};
 pub use rules::{
     ENTRY_DOCUMENT_MARKER, Installed, agents_document_lines, install as install_rules,
     install_agents_md as install_agents, planned as planned_rules, planned_agents_md,
@@ -204,6 +206,14 @@ pub enum InitError {
         path: PathBuf,
         /// The event key whose value is not an array.
         event: String,
+    },
+    /// A managed global guidance block has missing or invalid boundary markers.
+    #[error("global guidance is malformed: path={path} reason={reason} retryable=false")]
+    MalformedGuidance {
+        /// Global instruction file containing the malformed block.
+        path: PathBuf,
+        /// Why replacement cannot proceed safely.
+        reason: String,
     },
     /// An optional `.lgtm/execpolicy.json` file is malformed.
     #[error("execpolicy config is malformed: path={path} reason={reason} retryable=false")]

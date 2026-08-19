@@ -43,6 +43,24 @@ Commit the generated `.lgtm/config.json`, `.lgtm/execpolicy.json`, `.claude/sett
 
 To take the standards as guidance with no hooks and nothing enforced, use `lgtm init --rules-only`. It writes `.claude/rules/` for Claude Code, or `AGENTS.md` with `--agent codex`.
 
+## Initialize All Harnesses Globally
+
+Install every harness supported by this LGTM build under your home directory:
+
+```bash
+lgtm init -g
+```
+
+Global init writes or merges `$HOME/.claude/settings.json`, installs the rule
+documents under `$HOME/.claude/rules/`, writes or merges
+`$HOME/.codex/hooks.json`, and adds an LGTM-managed section to
+`$HOME/.codex/AGENTS.md`. Existing hooks and instruction text are preserved.
+It does not create repository `.lgtm` configuration; run normal `lgtm init`
+inside each repository that needs project commands, overrides, or execpolicy.
+
+Preview global writes without changing files with `lgtm init -g --dry-run`.
+Codex requires reviewing changed command hooks through `/hooks` before they run.
+
 ## How the Hooks Work
 
 The `lgtm` binary is the enforcement engine. It is not a background service.
