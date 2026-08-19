@@ -10,6 +10,7 @@ use crate::adapter::{self, ClaudeAdapter, HookAdapter, HookEvent, HookResponse};
 use crate::checks::tiers::{self, Check, Hook};
 use crate::checks::{EnforcementResult, Status};
 use crate::checks::{gitleaks, languages, ruff, structure};
+use crate::policy::Severity;
 #[cfg(test)]
 use serde_json::json;
 
@@ -20,6 +21,10 @@ mod target;
 use evidence::append_evidence;
 use input::{MAX_PAYLOAD_BYTES, edited_file, parse_input};
 use target::{repo_root, resolve_target, unverified_target};
+
+const MAX_REVIEW_FEEDBACK_CHARS: usize = 1_024;
+const REVIEW_FEEDBACK_PREFIX: &str = "PostToolUse review feedback: ";
+const REVIEW_REMEDIATION_SEPARATOR: &str = " Remediation: ";
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     let adapter = ClaudeAdapter;
@@ -185,7 +190,7 @@ fn handle_results(
 ) -> ExitCode {
     let failures: Vec<_> = results
         .iter()
-        .filter(|result| result.status == Status::Failed)
+        .filter(|result| result.status == Status::Failed && result.severity == Severity::Error)
         .collect();
     for result in results
         .iter()
@@ -198,11 +203,12 @@ fn handle_results(
             false,
         );
     }
-    for result in results
-        .iter()
-        .filter(|result| result.status == Status::Warning)
-    {
-        diagnostic("review", &result.rule_id, &result.message, false);
+    for result in results.iter().filter(|result| {
+        result.status == Status::Warning
+            || (result.status == Status::Failed && result.severity != Severity::Error)
+    }) {
+        let reason = review_reason(result);
+        diagnostic("review", &result.rule_id, &reason, false);
     }
     if failures.is_empty() {
         ExitCode::SUCCESS
@@ -235,6 +241,37 @@ fn emit_blocks(
         diagnostic("write", "decision", &error.to_string(), true);
     }
     ExitCode::from(encoded.exit_code)
+}
+
+fn review_reason(result: &EnforcementResult) -> String {
+    let message = control_free(&result.message);
+    let remediation = result.remediation.as_deref().map(control_free);
+    let remediation_suffix = remediation
+        .as_deref()
+        .map(|text| format!("{REVIEW_REMEDIATION_SEPARATOR}{text}"));
+    let suffix_chars = remediation_suffix
+        .as_deref()
+        .map_or(0, |suffix| suffix.chars().count());
+    let fixed_chars = REVIEW_FEEDBACK_PREFIX
+        .chars()
+        .count()
+        .saturating_add(suffix_chars);
+    let message_budget = MAX_REVIEW_FEEDBACK_CHARS.saturating_sub(fixed_chars);
+    let mut reason = String::with_capacity(MAX_REVIEW_FEEDBACK_CHARS);
+    reason.push_str(REVIEW_FEEDBACK_PREFIX);
+    reason.extend(message.chars().take(message_budget));
+    if let Some(suffix) = remediation_suffix {
+        let remaining = MAX_REVIEW_FEEDBACK_CHARS.saturating_sub(reason.chars().count());
+        reason.extend(suffix.chars().take(remaining));
+    }
+    reason
+}
+
+fn control_free(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect()
 }
 
 fn block_reason(result: &EnforcementResult) -> String {

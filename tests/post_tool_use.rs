@@ -155,6 +155,58 @@ fn clean_file_exits_zero_silently_and_records_pass() {
 }
 
 #[test]
+fn cfg_test_only_unwrap_is_review_feedback_and_persists_warning_evidence() {
+    let repo = TempRepo::new();
+    repo.write(
+        "lib.rs",
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn unwrap_is_review_only() {\n        let _ = input.unwrap();\n    }\n}\n",
+    );
+    let path = repo.path().join("lib.rs");
+    let stdin = json!({
+        "session_id": "sess-review",
+        "hook_event_name": "PostToolUse",
+        "cwd": repo.path().to_string_lossy(),
+        "tool_name": "Write",
+        "tool_input": { "file_path": path.to_string_lossy() },
+    })
+    .to_string();
+
+    let (code, stdout, stderr) = run_hook(&stdin);
+    assert_eq!(code, 0, "review-only findings must exit successfully");
+    assert!(
+        stdout.trim().is_empty(),
+        "review-only findings must not block"
+    );
+    assert!(
+        stderr.contains("review failed: entity=rust-no-unwrap-expect"),
+        "review rule must be named on stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("PostToolUse review feedback:"),
+        "review feedback must use the diagnostic channel: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "Rust production paths should use typed error handling instead of unwrap/expect"
+        ),
+        "review feedback must include the finding message: {stderr}"
+    );
+    assert!(
+        stderr.contains("Remediation: Fix the finding, then rerun the native language check."),
+        "review feedback must remain actionable: {stderr}"
+    );
+
+    let record = repo
+        .read(LEDGER)
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("evidence record is JSON"))
+        .find(|record| record["result"]["rule_id"] == json!("rust-no-unwrap-expect"))
+        .expect("Rust review evidence record");
+    assert_eq!(record["result"]["status"], json!("failed"));
+    assert_eq!(record["result"]["severity"], json!("warning"));
+}
+
+#[test]
 fn non_edit_tool_is_ignored_without_evidence() {
     let repo = TempRepo::new();
     let stdin = json!({
