@@ -36,6 +36,45 @@ pub(super) fn create_dir_all(path: &Path) -> Result<(), InitError> {
     })
 }
 
+/// Create the transient evidence ancestry with private Unix directory modes.
+///
+/// The shared path-injection session store refuses group- or world-writable
+/// ancestors, so fresh repositories must not inherit the process umask here.
+pub(super) fn create_private_dir_all(path: &Path) -> Result<(), InitError> {
+    create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directories = [path, path.parent().unwrap_or(path)];
+        for directory in directories {
+            let metadata =
+                std::fs::symlink_metadata(directory).map_err(|source| InitError::CreateDir {
+                    path: directory.to_path_buf(),
+                    source,
+                })?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(InitError::CreateDir {
+                    path: directory.to_path_buf(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "evidence ancestry is not a directory",
+                    ),
+                });
+            }
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(permissions.mode() & 0o700);
+            std::fs::set_permissions(directory, permissions).map_err(|source| {
+                InitError::CreateDir {
+                    path: directory.to_path_buf(),
+                    source,
+                }
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// Validate every destination path and its parents before any write occurs.
 ///
 /// For each target this rejects: a target that already exists as a symlink (a

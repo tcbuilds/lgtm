@@ -296,9 +296,12 @@ fn instruction_fits_within_line_budget(rule: &Rule) -> bool {
 }
 
 fn persist_intent(root: &Path, session_id: Option<&str>, intent: &str) -> Result<(), String> {
-    let directory = root.join(".lgtm/evidence");
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| format!("create intent directory ({error})"))?;
+    let lgtm_directory = root.join(".lgtm");
+    crate::fsutil::ensure_directory(&lgtm_directory)
+        .map_err(|error| format!("inspect intent ancestry ({error})"))?;
+    let directory = lgtm_directory.join("evidence");
+    crate::fsutil::ensure_directory(&directory)
+        .map_err(|error| format!("inspect intent directory ({error})"))?;
     let payload = json!({ "session_id": session_id, "intent": intent });
     let bytes =
         serde_json::to_vec(&payload).map_err(|error| format!("serialize intent ({error})"))?;

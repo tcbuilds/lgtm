@@ -13,6 +13,10 @@ use super::{EncodedResponse, HookAdapter, HookEvent, HookRequest, HookResponse, 
 pub struct CodexAdapter;
 
 impl HookAdapter for CodexAdapter {
+    fn harness_name(&self) -> &'static str {
+        "codex"
+    }
+
     fn parse_request(&self, event: HookEvent, stdin_json: &str) -> Result<HookRequest, String> {
         let value = if stdin_json.trim().is_empty() {
             Value::Object(serde_json::Map::new())
@@ -73,10 +77,14 @@ impl HookAdapter for CodexAdapter {
                 HookEvent::PreToolUse | HookEvent::SubagentStop => stdout_json(json!({
                     "systemMessage": text,
                 })),
-                HookEvent::PermissionRequest | HookEvent::Stop => {
+                HookEvent::PermissionRequest | HookEvent::BeforeAgentStart | HookEvent::Stop => {
                     Err(invalid_combination(event, "InjectContext"))
                 }
             },
+            HookResponse::InjectMessage(_) => Err(invalid_combination(event, "InjectMessage")),
+            HookResponse::InjectSystemPrompt(_) => {
+                Err(invalid_combination(event, "InjectSystemPrompt"))
+            }
             HookResponse::Deny { reason } => match event {
                 HookEvent::PreToolUse => stdout_json(json!({
                     "hookSpecificOutput": {
@@ -122,6 +130,7 @@ fn event_name(event: HookEvent) -> &'static str {
     match event {
         HookEvent::SessionStart => "SessionStart",
         HookEvent::UserPromptSubmit => "UserPromptSubmit",
+        HookEvent::BeforeAgentStart => "BeforeAgentStart",
         HookEvent::PreToolUse => "PreToolUse",
         HookEvent::PermissionRequest => "PermissionRequest",
         HookEvent::SubagentStart => "SubagentStart",

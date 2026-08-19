@@ -16,6 +16,10 @@ use crate::context;
 use crate::policy::ChangeType;
 use crate::select::select_rules;
 
+pub(crate) fn validate_policy_files(root: &Path) -> Result<(), String> {
+    config::validate_policy_files(root)
+}
+
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     let adapter = ClaudeAdapter;
     run_with_adapter(input, output, &adapter)
@@ -49,12 +53,30 @@ fn run_for_event(
         eprintln!(
             "pre-tool-use failed: entity=stdin reason=malformed or oversized payload retryable=false"
         );
-        return ExitCode::SUCCESS;
+        return fail_open(adapter);
     };
     let root = match crate::hooks::root::resolve(parsed.cwd.as_deref()) {
         Ok(root) => root,
-        Err(reason) => return deny(output, adapter, event, &reason),
+        Err(reason) => return policy_failure(output, adapter, event, &reason),
     };
+    if adapter.fail_open_on_error() {
+        if let Err(reason) = config::require_policy_files(&root) {
+            return policy_failure(
+                output,
+                adapter,
+                event,
+                &format!("Pi policy files are unverified: {reason}"),
+            );
+        }
+        if let Err(reason) = crate::pi_state::validate_policy_files(&root) {
+            return policy_failure(
+                output,
+                adapter,
+                event,
+                &format!("Pi policy files are unverified: {reason}"),
+            );
+        }
+    }
     // A shell command carries no edit target, so the command policy is the only
     // gate that applies to it. Both PreToolUse and PermissionRequest reach here:
     // Claude Code routes shell calls through PreToolUse, Codex through
@@ -66,7 +88,7 @@ fn run_for_event(
             }
             Ok(None) => {}
             Err(reason) => {
-                return deny(
+                return policy_failure(
                     output,
                     adapter,
                     event,
@@ -75,7 +97,11 @@ fn run_for_event(
             }
         }
         if command::invokes_git_commit(command) {
-            match crate::hooks::stop::run_pre_commit_gate(&root, parsed.session_id.as_deref()) {
+            match crate::hooks::stop::run_pre_commit_gate_for_adapter(
+                &root,
+                parsed.session_id.as_deref(),
+                adapter.harness_name(),
+            ) {
                 Ok(None) => {}
                 Ok(Some(reason)) => {
                     return deny(
@@ -89,7 +115,7 @@ fn run_for_event(
                     );
                 }
                 Err(reason) => {
-                    return deny(
+                    return policy_failure(
                         output,
                         adapter,
                         event,
@@ -108,13 +134,13 @@ fn run_for_event(
     };
     let target = match target::resolve(&root, file) {
         Ok(target) => target,
-        Err(reason) => return deny(output, adapter, event, &reason),
+        Err(reason) => return policy_failure(output, adapter, event, &reason),
     };
     let relative = target.strip_prefix(&root).unwrap_or(&target);
     let patterns = match config::prohibited_patterns(&root) {
         Ok(patterns) => patterns,
         Err(reason) => {
-            return deny(
+            return policy_failure(
                 output,
                 adapter,
                 event,
@@ -131,7 +157,7 @@ fn run_for_event(
         );
     }
     if let Err(reason) = capture(&root, &target, parsed.session_id.as_deref()) {
-        return deny(
+        return policy_failure(
             output,
             adapter,
             event,
@@ -139,6 +165,14 @@ fn run_for_event(
         );
     }
     ExitCode::SUCCESS
+}
+
+fn fail_open(adapter: &dyn HookAdapter) -> ExitCode {
+    if adapter.fail_open_on_error() {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn bounded_reason(reason: &str) -> String {
@@ -183,6 +217,22 @@ fn capture(root: &Path, target: &Path, session: Option<&str>) -> Result<(), Stri
     let selected = select_rules(&context, &registry, ChangeType::Modify);
     let compiled = compile_selected(&selected, &context.files_touched);
     baseline::capture(root, target, session, &compiled)
+}
+
+fn policy_failure(
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    event: HookEvent,
+    reason: &str,
+) -> ExitCode {
+    if adapter.fail_open_on_error() {
+        eprintln!(
+            "pre-tool-use unverified: entity=policy reason={} retryable=false",
+            bounded_reason(reason)
+        );
+        return ExitCode::from(1);
+    }
+    deny(output, adapter, event, reason)
 }
 
 fn deny(

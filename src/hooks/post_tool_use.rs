@@ -19,7 +19,7 @@ mod target;
 
 use evidence::append_evidence;
 use input::{MAX_PAYLOAD_BYTES, edited_file, parse_input};
-use target::{repo_root, resolve_target, unverified_target};
+use target::{repo_root, resolve_read_path, resolve_target, unverified_target};
 
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     let adapter = ClaudeAdapter;
@@ -41,7 +41,7 @@ pub fn run_with_adapter(
                 "handler panicked; failing safe",
                 false,
             );
-            ExitCode::SUCCESS
+            fail_open(adapter)
         }
     }
 }
@@ -52,12 +52,15 @@ fn run_inner(
     adapter: &dyn HookAdapter,
 ) -> ExitCode {
     let Some(hook_input) = read_input(input) else {
-        return ExitCode::SUCCESS;
-    };
-    let Some(file_path) = edited_file(&hook_input) else {
-        return ExitCode::SUCCESS;
+        return fail_open(adapter);
     };
     let Some(root) = repo_root(hook_input.cwd.as_deref()) else {
+        return ExitCode::SUCCESS;
+    };
+    if adapter.harness_name() == "pi" && hook_input.tool_name.as_deref() == Some("Read") {
+        return run_pi_read_guidance(&root, &hook_input, output, adapter);
+    }
+    let Some(file_path) = edited_file(&hook_input) else {
         return ExitCode::SUCCESS;
     };
     let (edited_file, mut results) = scan_target(&root, &file_path);
@@ -66,7 +69,7 @@ fn run_inner(
             Ok(profile) => profile,
             Err(reason) => {
                 diagnostic("load", "profile", &reason, false);
-                return ExitCode::SUCCESS;
+                return fail_open(adapter);
             }
         };
     if compatibility == crate::policy::config_version::Compatibility::LegacyMissing {
@@ -89,6 +92,71 @@ fn run_inner(
         );
     }
     handle_results(output, adapter, &results)
+}
+
+fn run_pi_read_guidance(
+    root: &Path,
+    hook_input: &input::HookInput,
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+) -> ExitCode {
+    let Some(raw_path) = input::read_file(hook_input) else {
+        diagnostic(
+            "inject",
+            "path-guidance",
+            "read path is missing or invalid",
+            false,
+        );
+        return fail_open(adapter);
+    };
+    let Some(path) = resolve_read_path(root, hook_input.cwd.as_deref(), &raw_path) else {
+        diagnostic(
+            "inject",
+            "path-guidance",
+            "read path is outside the repository or unavailable",
+            false,
+        );
+        return fail_open(adapter);
+    };
+    let Some(session_id) = hook_input.session_id.clone() else {
+        diagnostic("inject", "path-guidance", "session id is missing", false);
+        return fail_open(adapter);
+    };
+    let request = crate::path_injection::PathInjectionRequest::new(vec![path], Some(session_id));
+    let store = crate::path_injection::FileSessionDedupStore::for_root(root);
+    let selection = crate::path_injection::select_rule_bodies_with_store(&request, &store);
+    if !selection.diagnostics.is_empty() {
+        diagnostic(
+            "inject",
+            "path-guidance",
+            "some guidance could not be selected",
+            false,
+        );
+    }
+    if selection.bodies.is_empty() {
+        return ExitCode::SUCCESS;
+    }
+    let packet = selection
+        .bodies
+        .into_iter()
+        .map(|body| body.body)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let encoded = match adapter.encode_response(
+        HookEvent::PostToolUse,
+        HookResponse::PostToolFeedback { reason: packet },
+    ) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            diagnostic("encode", "path-guidance", &error, false);
+            return fail_open(adapter);
+        }
+    };
+    if let Err(error) = adapter::emit(output, &mut std::io::stderr(), &encoded) {
+        diagnostic("write", "path-guidance", &error.to_string(), true);
+        return fail_open(adapter);
+    }
+    ExitCode::SUCCESS
 }
 
 fn read_input(input: &mut impl Read) -> Option<input::HookInput> {
@@ -205,9 +273,24 @@ fn handle_results(
         diagnostic("review", &result.rule_id, &result.message, false);
     }
     if failures.is_empty() {
+        if adapter.fail_open_on_error()
+            && results
+                .iter()
+                .any(|result| result.status == Status::Unverified)
+        {
+            return ExitCode::from(1);
+        }
         ExitCode::SUCCESS
     } else {
         emit_blocks(output, adapter, &failures)
+    }
+}
+
+fn fail_open(adapter: &dyn HookAdapter) -> ExitCode {
+    if adapter.fail_open_on_error() {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 

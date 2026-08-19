@@ -37,6 +37,22 @@ fn run_init_codex(repo: &TempRepo) -> std::process::Output {
         .expect("Codex init should execute")
 }
 
+fn run_init_pi(repo: &TempRepo) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["init", "--agent", "pi", "--accept-guesses"])
+        .current_dir(repo.path())
+        .output()
+        .expect("Pi init should execute")
+}
+
+fn run_init_pi_dry_run(repo: &TempRepo) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["init", "--agent", "pi", "--dry-run"])
+        .current_dir(repo.path())
+        .output()
+        .expect("Pi dry-run should execute")
+}
+
 fn run_migrate(repo: &TempRepo, dry_run: bool) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_lgtm"));
     command.arg("init").arg("--migrate-config");
@@ -103,6 +119,24 @@ fn fresh_python_repo_creates_all_files() {
             settings["hooks"][event].is_array(),
             "settings must wire {event}"
         );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn fresh_init_creates_private_evidence_ancestry() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = TempRepo::new();
+    assert!(run_init(&repo).status.success(), "init must succeed");
+
+    for path in [".lgtm", ".lgtm/evidence"] {
+        let mode = std::fs::metadata(repo.path().join(path))
+            .expect("evidence ancestry metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "{path} must be private");
     }
 }
 
@@ -1224,6 +1258,81 @@ fn codex_rules_only_keeps_an_existing_agents_md() {
         "a hand-authored AGENTS.md must never be clobbered"
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("kept (locally edited): AGENTS.md"));
+}
+
+#[test]
+fn pi_init_merges_only_compact_guidance_and_is_idempotent() {
+    let repo = TempRepo::new();
+    repo.write(
+        "AGENTS.md",
+        "# House rules\r\n\r\nKeep this byte-for-byte.\r\n",
+    );
+
+    let first = run_init_pi(&repo);
+    assert!(first.status.success(), "Pi init must succeed");
+    let first_agents = repo.read("AGENTS.md");
+    assert!(first_agents.contains("<!-- lgtm-pi-guidance:start -->"));
+    assert!(first_agents.contains("<!-- lgtm-entry-document: standards-v1 -->"));
+    assert!(first_agents.contains("# Engineering Standards"));
+    assert!(
+        !first_agents.contains("# Rust"),
+        "Pi must not inline rule bodies"
+    );
+    assert!(!repo.exists(".claude/settings.json"));
+    assert!(!repo.exists(".codex/hooks.json"));
+    assert!(first_agents.starts_with("# House rules\r\n\r\nKeep this byte-for-byte.\r\n"));
+
+    let second = run_init_pi(&repo);
+    assert!(second.status.success(), "Pi re-init must succeed");
+    assert_eq!(repo.read("AGENTS.md"), first_agents);
+}
+
+#[test]
+fn pi_dry_run_reports_guidance_without_writing_files() {
+    let repo = TempRepo::new();
+
+    let output = run_init_pi_dry_run(&repo);
+    assert!(output.status.success(), "Pi dry-run must succeed");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("dry-run: no files changed"));
+    assert!(!repo.exists("AGENTS.md"));
+    assert!(!repo.exists(".lgtm/config.json"));
+    assert!(!repo.exists(".claude/settings.json"));
+}
+
+#[test]
+fn pi_init_reports_agents_override_precedence_in_normal_dry_run_and_rules_only_modes() {
+    let repo = TempRepo::new();
+    repo.write("AGENTS.override.md", "# higher priority guidance\n");
+    let dry_run = run_init_pi_dry_run(&repo);
+    assert!(
+        String::from_utf8_lossy(&dry_run.stdout).contains("AGENTS.override.md takes precedence")
+    );
+    let rules_only = run_init_rules_only(&repo, "pi");
+    assert!(rules_only.status.success());
+    assert!(
+        String::from_utf8_lossy(&rules_only.stdout).contains("AGENTS.override.md takes precedence")
+    );
+    let normal = run_init_pi(&repo);
+    assert!(normal.status.success());
+    assert!(
+        String::from_utf8_lossy(&normal.stdout).contains("AGENTS.override.md takes precedence")
+    );
+}
+
+#[test]
+fn pi_rules_only_rejects_malformed_guidance_before_writing() {
+    let cases = [
+        "# User\n<!-- lgtm-pi-guidance:start -->\n",
+        "<!-- lgtm-pi-guidance:start -->\n<!-- lgtm-pi-guidance:end -->\n<!-- lgtm-pi-guidance:start -->\n<!-- lgtm-pi-guidance:end -->\n",
+    ];
+    for malformed in cases {
+        let repo = TempRepo::new();
+        repo.write("AGENTS.md", malformed);
+
+        let output = run_init_rules_only(&repo, "pi");
+        assert!(!output.status.success(), "malformed Pi guidance must fail");
+        assert_eq!(repo.read("AGENTS.md"), malformed);
+    }
 }
 
 /// The Claude path is unchanged: rules land under `.claude/rules/` and no

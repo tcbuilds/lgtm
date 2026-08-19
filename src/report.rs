@@ -5,13 +5,25 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::checks::{EnforcementResult, Status};
+use crate::pi_state::{self, PiEnforcementState, PiStateReport};
 
 const MAX_EVIDENCE_BYTES: u64 = 5 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct RecordedEnforcement {
+    state: PiEnforcementState,
+    scope: Option<String>,
+    reason: String,
+}
 
 #[derive(Deserialize)]
 struct Record {
     task_id: String,
     agent: String,
+    #[serde(default)]
+    harness: Option<String>,
+    #[serde(default)]
+    enforcement: Option<RecordedEnforcement>,
     profile: String,
     results: Vec<EnforcementResult>,
     #[serde(default)]
@@ -62,7 +74,7 @@ pub fn render(path: &Path, task: Option<&str>, output: &mut impl Write) -> Resul
                 |task| format!("task `{}` not found", sanitize(task)),
             )
         })?;
-    let root = evidence_root(path).or_else(current_root);
+    let root = evidence_root(path);
     write_report(&record, root.as_deref(), output)
 }
 
@@ -77,13 +89,20 @@ fn evidence_root(path: &Path) -> Option<std::path::PathBuf> {
     if evidence.file_name()? != "evidence" || lgtm.file_name()? != ".lgtm" {
         return None;
     }
+    for directory in [evidence, lgtm] {
+        let metadata = std::fs::symlink_metadata(directory).ok()?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return None;
+        }
+    }
+    let canonical_file = std::fs::canonicalize(&absolute).ok()?;
+    let canonical_evidence = canonical_file.parent()?;
+    let canonical_lgtm = canonical_evidence.parent()?;
+    if canonical_evidence.file_name()? != "evidence" || canonical_lgtm.file_name()? != ".lgtm" {
+        return None;
+    }
+    // Keep the input path's spelling for display; state inspection canonicalizes the root.
     Some(lgtm.parent()?.to_path_buf())
-}
-
-fn current_root() -> Option<std::path::PathBuf> {
-    std::env::current_dir()
-        .ok()
-        .and_then(|path| path.canonicalize().ok())
 }
 
 fn read(path: &Path) -> Result<Vec<Record>, String> {
@@ -118,6 +137,9 @@ fn write_report(
 ) -> Result<(), String> {
     writeln!(output, "Task: {}", sanitize(&record.task_id)).map_err(write_error)?;
     writeln!(output, "Agent: {}", sanitize(&record.agent)).map_err(write_error)?;
+    if let Some(harness) = &record.harness {
+        writeln!(output, "Harness: {}", sanitize(harness)).map_err(write_error)?;
+    }
     writeln!(output, "Profile: {}", sanitize(&record.profile)).map_err(write_error)?;
     if let Some(version) = &record.policy_version {
         writeln!(output, "Policy bundle: {}", sanitize(version)).map_err(write_error)?;
@@ -128,12 +150,124 @@ fn write_report(
     if let Some(version) = &record.binary_version {
         writeln!(output, "Binary version: {}", sanitize(version)).map_err(write_error)?;
     }
+    if let Some(root) = root {
+        write_enforcement_report(record, root, output)?;
+    } else if record.harness.as_deref() == Some("pi") || record.enforcement.is_some() {
+        writeln!(
+            output,
+            "Pi installation current: unavailable (evidence path is outside .lgtm/evidence)"
+        )
+        .map_err(write_error)?;
+        writeln!(
+            output,
+            "Pi enforcement effective: recorded-only; current state unavailable"
+        )
+        .map_err(write_error)?;
+    }
     write_files(record, root, output)?;
     write_results(record, output)?;
     write_commands(record, output)?;
     write_overrides(record, output)?;
     write_waivers(record, output)?;
     write_risks(record, output)
+}
+
+fn write_enforcement_report(
+    record: &Record,
+    root: &Path,
+    output: &mut impl Write,
+) -> Result<(), String> {
+    let harness = record.harness.as_deref().unwrap_or(&record.agent);
+    let current = if harness == "pi" {
+        pi_state::assess_for_session(root, &record.task_id)
+    } else {
+        pi_state::assess(root)
+    };
+    if let Some(recorded) = &record.enforcement {
+        writeln!(
+            output,
+            "Pi enforcement recorded: {} scope={} reason={}",
+            recorded.state.as_str(),
+            report_scope(recorded.scope.as_deref()),
+            sanitize(&recorded.reason)
+        )
+        .map_err(write_error)?;
+    } else {
+        writeln!(
+            output,
+            "Pi enforcement recorded: stale/unverified scope=none reason=legacy record has no Pi state"
+        )
+        .map_err(write_error)?;
+    }
+    writeln!(
+        output,
+        "Pi installation current: {} scope={} reason={}",
+        current.state.as_str(),
+        report_scope(current.scope.as_deref()),
+        sanitize(&current.reason)
+    )
+    .map_err(write_error)?;
+    let (state, scope, reason) = effective_state(record, harness, &current);
+    writeln!(
+        output,
+        "Pi enforcement effective: {} scope={} reason={}",
+        state,
+        scope,
+        sanitize(&reason)
+    )
+    .map_err(write_error)
+}
+
+fn effective_state(
+    record: &Record,
+    harness: &str,
+    current: &PiStateReport,
+) -> (&'static str, String, String) {
+    if harness != "pi" {
+        return (
+            "stale/unverified",
+            "none".to_string(),
+            "recorded harness did not establish Pi enforcement".to_string(),
+        );
+    }
+    let Some(recorded) = record.enforcement.as_ref() else {
+        return (
+            "stale/unverified",
+            "none".to_string(),
+            "Pi enforcement was not recorded for this session".to_string(),
+        );
+    };
+    if state_rank(current.state) <= state_rank(recorded.state) {
+        return (
+            current.state.as_str(),
+            report_scope(current.scope.as_deref()),
+            current.reason.clone(),
+        );
+    }
+    (
+        recorded.state.as_str(),
+        report_scope(recorded.scope.as_deref()),
+        recorded.reason.clone(),
+    )
+}
+
+fn report_scope(scope: Option<&str>) -> String {
+    match scope {
+        Some("project") => "project".to_string(),
+        Some("global") => "global".to_string(),
+        _ => "none".to_string(),
+    }
+}
+
+fn state_rank(state: PiEnforcementState) -> u8 {
+    match state {
+        PiEnforcementState::NotInstalled => 0,
+        PiEnforcementState::InstalledUnloadable => 1,
+        PiEnforcementState::ProjectUntrusted => 2,
+        PiEnforcementState::ToolContractUnverified => 3,
+        PiEnforcementState::StaleUnverified => 4,
+        PiEnforcementState::Active => 5,
+    }
 }
 
 fn write_files(

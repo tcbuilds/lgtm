@@ -36,7 +36,7 @@ enum Command {
         accept_guesses: bool,
         /// Agent hook format to install (defaults to claude for project init).
         #[arg(long, value_enum)]
-        agent: Option<AgentKind>,
+        agent: Option<InitAgentKind>,
         /// Install every supported harness under $HOME instead of this repository.
         #[arg(
             short = 'g',
@@ -132,6 +132,14 @@ enum CheckTier {
 enum AgentKind {
     Claude,
     Codex,
+    Pi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum InitAgentKind {
+    Claude,
+    Codex,
+    Pi,
 }
 
 #[derive(Debug, Subcommand)]
@@ -244,11 +252,13 @@ enum PolicyCommand {
 enum HookEvent {
     SessionStart,
     UserPromptSubmit,
+    BeforeAgentStart,
     PreToolUse,
     PermissionRequest,
     SubagentStart,
     SubagentStop,
     PostToolUse,
+    #[value(alias = "agent-settled", alias = "agent-end")]
     Stop,
 }
 
@@ -271,7 +281,7 @@ fn run(command: Command) -> ExitCode {
             global,
             rules_only,
         } => {
-            let agent = agent.unwrap_or(AgentKind::Claude);
+            let agent = agent.unwrap_or(InitAgentKind::Claude);
             if global {
                 run_init_global(dry_run)
             } else if rules_only {
@@ -938,10 +948,11 @@ fn compile_exit_code(
 /// any hooks, then prints a concise report to stdout. On failure the precise
 /// cause is written to stderr and the process exits non-zero without partially
 /// reporting success.
-fn run_init_rules_only(agent: AgentKind) -> ExitCode {
+fn run_init_rules_only(agent: InitAgentKind) -> ExitCode {
     let result = match agent {
-        AgentKind::Claude => init::install_rules(Path::new(".")),
-        AgentKind::Codex => init::install_agents(Path::new(".")),
+        InitAgentKind::Claude => init::install_rules(Path::new(".")),
+        InitAgentKind::Codex => init::install_agents(Path::new(".")),
+        InitAgentKind::Pi => init::install_pi_guidance(Path::new(".")),
     };
     match result {
         Ok(summary) => {
@@ -957,7 +968,7 @@ fn run_init_rules_only(agent: AgentKind) -> ExitCode {
 
 /// Print the rules-only report, naming the destination each agent actually reads
 /// and stating the cost of inlining every standard for Codex.
-fn report_rules_only_summary(agent: AgentKind, summary: &init::Installed) {
+fn report_rules_only_summary(agent: InitAgentKind, summary: &init::Installed) {
     println!("lgtm rules installed");
     println!("  written: {}", summary.written.len());
     if !summary.updated.is_empty() {
@@ -967,8 +978,8 @@ fn report_rules_only_summary(agent: AgentKind, summary: &init::Installed) {
         println!("  unchanged: {}", summary.unchanged.len());
     }
     let prefix = match agent {
-        AgentKind::Claude => ".claude/rules/",
-        AgentKind::Codex => "",
+        InitAgentKind::Claude => ".claude/rules/",
+        InitAgentKind::Codex | InitAgentKind::Pi => "",
     };
     for kept in &summary.kept {
         println!("  kept (locally edited): {prefix}{kept}");
@@ -976,7 +987,7 @@ fn report_rules_only_summary(agent: AgentKind, summary: &init::Installed) {
     for updated in &summary.updated {
         println!("  updated (previous LGTM template): {prefix}{updated}");
     }
-    if agent == AgentKind::Codex {
+    if agent == InitAgentKind::Codex {
         println!(
             "  note: Codex has no path-scoped rules mechanism, so every standard is inlined into AGENTS.md"
         );
@@ -984,6 +995,14 @@ fn report_rules_only_summary(agent: AgentKind, summary: &init::Installed) {
             "  note: that means no lazy loading; all {} lines enter every Codex session",
             init::agents_document_lines()
         );
+    }
+    if agent == InitAgentKind::Pi {
+        println!("  note: Pi receives compact guidance only; enforcement is not installed");
+        if Path::new("AGENTS.override.md").is_file() {
+            println!(
+                "  note: AGENTS.override.md takes precedence over AGENTS.md; review it before relying on LGTM guidance"
+            );
+        }
     }
     println!("  note: no hooks registered; these files guide but do not enforce");
     println!("  note: run `lgtm init` to install enforcement hooks as well");
@@ -1024,7 +1043,7 @@ fn run_init(
     dry_run: bool,
     migrate_config: bool,
     accept_guesses: bool,
-    agent: AgentKind,
+    agent: InitAgentKind,
 ) -> ExitCode {
     let agent = init_agent(agent);
     let result = if migrate_config {
@@ -1107,7 +1126,7 @@ fn report_rule_files(agent: init::InitAgent, summary: &init::Installed, dry_run:
     }
     let prefix = match agent {
         init::InitAgent::Claude => ".claude/rules/",
-        init::InitAgent::Codex => "",
+        init::InitAgent::Codex | init::InitAgent::Pi => "",
     };
     for kept in &summary.kept {
         println!("  rule kept (locally edited): {prefix}{kept}");
@@ -1123,6 +1142,9 @@ fn report_rule_files(agent: init::InitAgent, summary: &init::Installed, dry_run:
 /// response to stdout. Stop is the deliberate exception to the usual fail-safe
 /// success exit: it returns 2 when a rerun confirms an unresolved MUST failure.
 fn run_hook(event: HookEvent, adapter: AgentKind) -> ExitCode {
+    if adapter == AgentKind::Pi {
+        return run_pi_hook(event);
+    }
     if adapter == AgentKind::Codex {
         return run_codex_hook(event);
     }
@@ -1137,6 +1159,7 @@ fn run_hook(event: HookEvent, adapter: AgentKind) -> ExitCode {
             let stdout = io::stdout();
             user_prompt_submit::run(&mut stdin.lock(), &mut stdout.lock())
         }
+        HookEvent::BeforeAgentStart => ExitCode::SUCCESS,
         HookEvent::PreToolUse => {
             let stdin = io::stdin();
             let stdout = io::stdout();
@@ -1154,6 +1177,212 @@ fn run_hook(event: HookEvent, adapter: AgentKind) -> ExitCode {
             let stdout = io::stdout();
             stop::run(&mut stdin.lock(), &mut stdout.lock())
         }
+    }
+}
+
+fn run_pi_hook(event: HookEvent) -> ExitCode {
+    use lgtm::adapter::{HookAdapter, PiAdapter};
+
+    let mut raw = String::new();
+    if io::stdin()
+        .lock()
+        .take(1_024 * 1_024 + 1)
+        .read_to_string(&mut raw)
+        .is_err()
+        || raw.len() > 1_024 * 1_024
+    {
+        eprintln!(
+            "pi hook failed: entity=stdin reason=malformed or oversized payload retryable=false"
+        );
+        return ExitCode::FAILURE;
+    }
+    let adapter = PiAdapter;
+    let adapter_event = adapter_event(event);
+    let request = match adapter.parse_request(adapter_event, &raw) {
+        Ok(request) => request,
+        Err(reason) => {
+            eprintln!("pi hook failed: entity=stdin reason={reason} retryable=false");
+            return ExitCode::FAILURE;
+        }
+    };
+    let normalized = if matches!(event, HookEvent::PreToolUse | HookEvent::PostToolUse) {
+        match normalize_pi_payload(&raw, &request) {
+            Ok(normalized) => normalized,
+            Err(reason) => {
+                eprintln!("pi hook failed: entity=payload reason={reason} retryable=false");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        String::new()
+    };
+    let mut input = io::Cursor::new(normalized);
+    let mut output = io::stdout();
+    match event {
+        HookEvent::SessionStart => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(payload) => match lgtm::pi_state::record_attestation(Path::new("."), &payload) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(reason) => {
+                    eprintln!("pi hook failed: entity=attestation reason={reason} retryable=false");
+                    ExitCode::FAILURE
+                }
+            },
+            Err(reason) => {
+                eprintln!("pi hook failed: entity=attestation reason={reason} retryable=false");
+                ExitCode::FAILURE
+            }
+        },
+        HookEvent::PreToolUse => {
+            lgtm::hooks::pre_tool_use::run_with_adapter(&mut input, &mut output, &adapter)
+        }
+        HookEvent::PostToolUse => {
+            lgtm::hooks::post_tool_use::run_with_adapter(&mut input, &mut output, &adapter)
+        }
+        HookEvent::Stop => {
+            let event_type = serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                });
+            if event_type.as_deref() != Some("agent_settled") {
+                return ExitCode::SUCCESS;
+            }
+            let Some(session_id) = request.session_id.as_deref() else {
+                eprintln!(
+                    "pi hook failed: entity=session reason=session id is missing retryable=false"
+                );
+                return ExitCode::FAILURE;
+            };
+            match lgtm::hooks::stop::write_pi_settled_evidence(Path::new("."), session_id) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(reason) => {
+                    eprintln!("pi hook failed: entity=evidence reason={reason} retryable=false");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        _ => ExitCode::SUCCESS,
+    }
+}
+
+fn normalize_pi_payload(raw: &str, request: &lgtm::adapter::HookRequest) -> Result<String, String> {
+    let tool_name = request
+        .tool_name
+        .as_deref()
+        .ok_or_else(|| "tool name is missing".to_string())?;
+    let tool_input = request
+        .tool_input
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "tool input is not an object".to_string())?;
+    let policy_marker = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("input").cloned())
+        .and_then(|value| value.get("__lgtmPolicyInput").cloned())
+        .and_then(|value| value.as_str().map(str::to_owned));
+    let privacy_preserving_input = policy_marker.as_deref() == Some("lgtm-pi-policy-input-v1");
+    let mut object = serde_json::Map::new();
+    if let Some(cwd) = request.cwd.as_deref() {
+        object.insert("cwd".to_string(), serde_json::json!(cwd));
+    }
+    if let Some(session_id) = request.session_id.as_deref() {
+        object.insert("session_id".to_string(), serde_json::json!(session_id));
+    }
+    object.insert(
+        "tool_name".to_string(),
+        serde_json::json!(canonical_pi_tool_name(tool_name)),
+    );
+    let mut normalized = serde_json::Map::new();
+    match tool_name {
+        "Bash" => {
+            if !tool_input
+                .get("command")
+                .is_some_and(serde_json::Value::is_string)
+            {
+                return Err("tool input command is not a string".to_string());
+            }
+        }
+        "Edit" => {
+            if !tool_input
+                .get("path")
+                .is_some_and(serde_json::Value::is_string)
+            {
+                return Err("tool input path is not a string".to_string());
+            }
+            let valid_edits = tool_input
+                .get("edits")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|edits| {
+                    edits.iter().all(|edit| {
+                        edit.get("oldText")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some()
+                            && edit
+                                .get("newText")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some()
+                    })
+                });
+            if !privacy_preserving_input && !valid_edits {
+                return Err("tool input edits are invalid".to_string());
+            }
+        }
+        "Write" => {
+            if !tool_input
+                .get("path")
+                .is_some_and(serde_json::Value::is_string)
+            {
+                return Err("tool input path is not a string".to_string());
+            }
+            if !privacy_preserving_input
+                && !tool_input
+                    .get("content")
+                    .is_some_and(serde_json::Value::is_string)
+            {
+                return Err("tool input content is not a string".to_string());
+            }
+        }
+        "Read" => {
+            if !privacy_preserving_input
+                || !tool_input
+                    .get("path")
+                    .is_some_and(serde_json::Value::is_string)
+            {
+                return Err("tool input read payload is unverified".to_string());
+            }
+        }
+        _ => return Err("Pi tool input does not match its verified contract".to_string()),
+    }
+    if let Some(path) = tool_input.get("path") {
+        if !path.is_string() {
+            return Err("tool input path is not a string".to_string());
+        }
+        normalized.insert("file_path".to_string(), path.clone());
+    }
+    if let Some(command) = tool_input.get("command").or_else(|| tool_input.get("cmd")) {
+        if !command.is_string() {
+            return Err("tool input command is not a string".to_string());
+        }
+        normalized.insert("command".to_string(), command.clone());
+    }
+    object.insert(
+        "tool_input".to_string(),
+        serde_json::Value::Object(normalized),
+    );
+    serde_json::to_string(&serde_json::Value::Object(object))
+        .map_err(|error| format!("serialize normalized Pi payload ({error})"))
+}
+
+fn canonical_pi_tool_name(tool_name: &str) -> &str {
+    match tool_name {
+        "bash" => "Bash",
+        "read" => "Read",
+        "edit" => "Edit",
+        "write" => "Write",
+        other => other,
     }
 }
 
@@ -1217,6 +1446,7 @@ fn run_codex_hook(event: HookEvent) -> ExitCode {
         HookEvent::UserPromptSubmit => {
             lgtm::hooks::user_prompt_submit::run_with_adapter(&mut input, &mut output, &adapter)
         }
+        HookEvent::BeforeAgentStart => ExitCode::SUCCESS,
         HookEvent::PreToolUse => {
             lgtm::hooks::pre_tool_use::run_with_adapter(&mut input, &mut output, &adapter)
         }
@@ -1238,10 +1468,11 @@ fn run_codex_hook(event: HookEvent) -> ExitCode {
     }
 }
 
-fn init_agent(agent: AgentKind) -> init::InitAgent {
+fn init_agent(agent: InitAgentKind) -> init::InitAgent {
     match agent {
-        AgentKind::Claude => init::InitAgent::Claude,
-        AgentKind::Codex => init::InitAgent::Codex,
+        InitAgentKind::Claude => init::InitAgent::Claude,
+        InitAgentKind::Codex => init::InitAgent::Codex,
+        InitAgentKind::Pi => init::InitAgent::Pi,
     }
 }
 
@@ -1249,6 +1480,7 @@ fn adapter_event(event: HookEvent) -> lgtm::adapter::HookEvent {
     match event {
         HookEvent::SessionStart => lgtm::adapter::HookEvent::SessionStart,
         HookEvent::UserPromptSubmit => lgtm::adapter::HookEvent::UserPromptSubmit,
+        HookEvent::BeforeAgentStart => lgtm::adapter::HookEvent::BeforeAgentStart,
         HookEvent::PreToolUse => lgtm::adapter::HookEvent::PreToolUse,
         HookEvent::PermissionRequest => lgtm::adapter::HookEvent::PermissionRequest,
         HookEvent::SubagentStart => lgtm::adapter::HookEvent::SubagentStart,
@@ -1260,6 +1492,13 @@ fn adapter_event(event: HookEvent) -> lgtm::adapter::HookEvent {
 
 /// Report whether wrapped tools and repository-relevant language servers are ready.
 fn run_doctor() -> ExitCode {
+    let pi = lgtm::pi_state::assess(Path::new("."));
+    println!(
+        "pi: {} scope={} reason={}",
+        pi.state.as_str(),
+        pi.scope.as_deref().unwrap_or("none"),
+        pi.reason
+    );
     match lgtm::checks::gitleaks::installed_version() {
         Some(version) => println!("gitleaks: ready ({version})"),
         None => {
@@ -1355,6 +1594,57 @@ mod tests {
 
     use clap::CommandFactory;
     use clap::error::ErrorKind;
+
+    #[test]
+    fn generated_pi_edit_payload_accepts_path_without_user_content() {
+        use lgtm::adapter::{HookAdapter, HookEvent, PiAdapter};
+
+        let raw = r#"{"type":"tool_call","toolName":"edit","input":{"path":"secret.txt","__lgtmPolicyInput":"lgtm-pi-policy-input-v1"},"cwd":"/repo","sessionId":"session"}"#;
+        let request = PiAdapter
+            .parse_request(HookEvent::PreToolUse, raw)
+            .expect("generated Pi payload parses");
+        let normalized = normalize_pi_payload(raw, &request).expect("path-only payload normalizes");
+        assert!(normalized.contains("secret.txt"));
+        assert!(!normalized.contains("oldText"));
+        assert!(!normalized.contains("newText"));
+    }
+
+    #[test]
+    fn generated_pi_read_result_accepts_path_without_result_content() {
+        use lgtm::adapter::{HookAdapter, HookEvent, PiAdapter};
+
+        let raw = r#"{"type":"tool_result","toolName":"read","input":{"path":"src/app.py","__lgtmPolicyInput":"lgtm-pi-policy-input-v1"},"cwd":"/repo","sessionId":"session"}"#;
+        let request = PiAdapter
+            .parse_request(HookEvent::PostToolUse, raw)
+            .expect("generated Pi read result parses");
+        let normalized =
+            normalize_pi_payload(raw, &request).expect("path-only read result normalizes");
+        assert!(normalized.contains("src/app.py"));
+        assert!(!normalized.contains("offset"));
+        assert!(!normalized.contains("limit"));
+    }
+
+    #[test]
+    fn direct_pi_read_payload_without_marker_remains_rejected() {
+        use lgtm::adapter::{HookAdapter, HookEvent, PiAdapter};
+
+        let raw = r#"{"type":"tool_result","toolName":"read","input":{"path":"src/app.py"},"cwd":"/repo","sessionId":"session"}"#;
+        let request = PiAdapter
+            .parse_request(HookEvent::PostToolUse, raw)
+            .expect("request shape parses before contract validation");
+        assert!(normalize_pi_payload(raw, &request).is_err());
+    }
+
+    #[test]
+    fn direct_pi_edit_payload_without_edits_remains_rejected() {
+        use lgtm::adapter::{HookAdapter, HookEvent, PiAdapter};
+
+        let raw = r#"{"type":"tool_call","toolName":"edit","input":{"path":"secret.txt"},"cwd":"/repo","sessionId":"session"}"#;
+        let request = PiAdapter
+            .parse_request(HookEvent::PreToolUse, raw)
+            .expect("request shape parses before contract validation");
+        assert!(normalize_pi_payload(raw, &request).is_err());
+    }
 
     #[test]
     fn version_flag_requests_version_display() {
@@ -1474,6 +1764,7 @@ mod tests {
         let cases = [
             ("session-start", HookEvent::SessionStart),
             ("user-prompt-submit", HookEvent::UserPromptSubmit),
+            ("before-agent-start", HookEvent::BeforeAgentStart),
             ("pre-tool-use", HookEvent::PreToolUse),
             ("permission-request", HookEvent::PermissionRequest),
             ("subagent-start", HookEvent::SubagentStart),
@@ -1510,7 +1801,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Init {
-                agent: Some(AgentKind::Codex),
+                agent: Some(InitAgentKind::Codex),
                 ..
             }
         ));
@@ -1524,6 +1815,29 @@ mod tests {
             Command::Init {
                 global: true,
                 agent: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_pi_for_init_and_hook_adapter() {
+        let init = Cli::try_parse_from(["lgtm", "init", "--agent", "pi"])
+            .expect("Pi init agent should parse");
+        assert!(matches!(
+            init.command,
+            Command::Init {
+                agent: Some(InitAgentKind::Pi),
+                ..
+            }
+        ));
+
+        let hook = Cli::try_parse_from(["lgtm", "hook", "stop", "--adapter", "pi"])
+            .expect("Pi hook adapter should parse in M23.3");
+        assert!(matches!(
+            hook.command,
+            Command::Hook {
+                adapter: AgentKind::Pi,
                 ..
             }
         ));

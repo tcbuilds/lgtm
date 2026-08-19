@@ -3,7 +3,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    ClaudeAdapter, EncodedResponse, HookAdapter, HookEvent, HookResponse, OutputStream, emit,
+    ClaudeAdapter, EncodedResponse, HookAdapter, HookEvent, HookResponse, OutputStream, PiAdapter,
+    emit,
 };
 
 /// Parse the encoded body of an inject/deny/block response as JSON.
@@ -187,6 +188,7 @@ fn parse_request_prefers_user_prompt_then_prompt() {
 fn claude_delegates_rule_loading_to_the_harness() {
     assert!(ClaudeAdapter.loads_rules_natively());
     assert!(!super::CodexAdapter.loads_rules_natively());
+    assert!(!PiAdapter.loads_rules_natively());
 }
 
 #[test]

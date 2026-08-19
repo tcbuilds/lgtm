@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[path = "report.rs"]
 pub(crate) mod report;
@@ -12,7 +13,7 @@ pub(crate) mod runner;
 
 use report::{ReportDir, ScanOutcome};
 use result::{failed, passed, passed_with_version, unverified};
-use runner::{run_captured, run_scan};
+use runner::{run_captured, run_scan_with_deadline};
 
 const GITLEAKS_BIN: &str = "gitleaks";
 
@@ -35,7 +36,44 @@ fn scan_with_binary(binary: &str, files: &[String]) -> crate::checks::Enforcemen
     let version = tool_version(binary);
     let mut aggregated = Vec::new();
     for file in existing {
-        match run_gitleaks(binary, file) {
+        match run_gitleaks(binary, file, deadline_after(Duration::from_secs(30))) {
+            ScanOutcome::Unverified(reason) => return unverified(reason, version),
+            ScanOutcome::Findings(findings) => aggregated.extend(findings),
+        }
+    }
+    if aggregated.is_empty() {
+        passed_with_version(version)
+    } else {
+        failed(&aggregated, version)
+    }
+}
+
+pub fn scan_with_deadline(files: &[String], deadline: Instant) -> crate::checks::EnforcementResult {
+    scan_with_binary_until(GITLEAKS_BIN, files, deadline)
+}
+
+fn scan_with_binary_until(
+    binary: &str,
+    files: &[String],
+    deadline: Instant,
+) -> crate::checks::EnforcementResult {
+    let existing: Vec<_> = files
+        .iter()
+        .filter(|file| Path::new(file).exists())
+        .collect();
+    if existing.is_empty() {
+        return passed();
+    }
+    let version = tool_version_until(binary, deadline);
+    let mut aggregated = Vec::new();
+    for file in existing {
+        if Instant::now() >= deadline {
+            return unverified(
+                "gitleaks scan exceeded its enclosing deadline".to_string(),
+                version,
+            );
+        }
+        match run_gitleaks(binary, file, deadline) {
             ScanOutcome::Unverified(reason) => return unverified(reason, version),
             ScanOutcome::Findings(findings) => aggregated.extend(findings),
         }
@@ -59,7 +97,7 @@ fn tool_version(binary: &str) -> Option<String> {
     (!version.is_empty()).then(|| format!("gitleaks {version}"))
 }
 
-fn run_gitleaks(binary: &str, file: &str) -> ScanOutcome {
+fn run_gitleaks(binary: &str, file: &str, deadline: Instant) -> ScanOutcome {
     let report_dir = match ReportDir::create() {
         Ok(directory) => directory,
         Err(reason) => return ScanOutcome::Unverified(reason),
@@ -91,7 +129,25 @@ fn run_gitleaks(binary: &str, file: &str) -> ScanOutcome {
     if repository_file && Path::new(".gitleaks.toml").is_file() {
         command.arg("--config").arg(".gitleaks.toml");
     }
-    run_scan(command, &report_path)
+    run_scan_with_deadline(command, &report_path, deadline)
+}
+
+fn tool_version_until(binary: &str, deadline: Instant) -> Option<String> {
+    let mut command = Command::new(binary);
+    command.arg("version").stdin(Stdio::null());
+    let (code, stdout) = runner::run_captured_with_deadline(command, deadline)?;
+    if code != Some(0) {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&stdout);
+    let version = raw.trim();
+    (!version.is_empty()).then(|| format!("gitleaks {version}"))
+}
+
+fn deadline_after(duration: Duration) -> Instant {
+    Instant::now()
+        .checked_add(duration)
+        .unwrap_or_else(Instant::now)
 }
 
 #[cfg(test)]

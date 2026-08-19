@@ -78,13 +78,20 @@ pub fn preview_with_agent(root: &Path, agent: InitAgent) -> Result<InitSummary, 
     let workspaces = crate::discovery::discover(root)?;
     let settings_path = hooks_path(root, agent);
     let config_path = root.join(".lgtm").join("config.json");
-    let _ = validate_settings(&settings_path)?;
+    if let Some(path) = settings_path.as_deref() {
+        let _ = validate_settings(path)?;
+    }
     let _ = validate_config(&config_path)?;
     let mut notes = vec!["dry-run: no files changed".to_string()];
     note_unsupported_repo(&detection, &mut notes);
     notes.push(track_note(agent));
-    if agent == InitAgent::Codex {
-        notes.push(codex::trust_note(&settings_path));
+    if let Some(note) = override_precedence_note(root, agent) {
+        notes.push(note);
+    }
+    if agent == InitAgent::Codex
+        && let Some(path) = settings_path.as_deref()
+    {
+        notes.push(codex::trust_note(path));
     }
     for workspace in &workspaces {
         if workspace.commands.is_empty() {
@@ -94,16 +101,44 @@ pub fn preview_with_agent(root: &Path, agent: InitAgent) -> Result<InitSummary, 
             ));
         }
     }
+    let pi_plan = (agent == InitAgent::Pi)
+        .then(|| {
+            let target = root.join(".pi/extensions/lgtm.ts");
+            let backup = root.join(".pi/extensions/lgtm.ts.bak");
+            pi::plan(
+                &target,
+                &backup,
+                &pi::hook_binary()?,
+                pi::ExtensionScope::Project,
+            )
+        })
+        .transpose()?;
+    if pi_plan
+        .as_ref()
+        .is_some_and(|plan| plan.preserved_collision)
+    {
+        notes.push(
+            "preserved existing .pi/extensions/lgtm.ts; Pi enforcement is not installed at project scope"
+                .to_string(),
+        );
+    }
     let (_, guidance_summary) = rules::plan(root, agent)?;
+    let mut files_written = vec![
+        ".lgtm/config.json".to_string(),
+        ".lgtm/execpolicy.json".to_string(),
+        ".gitignore".to_string(),
+    ];
+    if let Some(label) = hooks_label(agent)
+        && pi_plan
+            .as_ref()
+            .is_none_or(|plan| plan.target_contents.is_some())
+    {
+        files_written.push(label.to_string());
+    }
     Ok(InitSummary {
         detection,
         workspaces,
-        files_written: vec![
-            ".lgtm/config.json".to_string(),
-            ".lgtm/execpolicy.json".to_string(),
-            ".gitignore".to_string(),
-            hooks_label(agent).to_string(),
-        ],
+        files_written,
         notes,
         rules: Some(guidance_summary),
     })
@@ -148,7 +183,14 @@ pub fn run_with_agent(
 
     let settings_path = hooks_path(root, agent);
     let rules_path = root.join(".codex/rules/lgtm.rules");
-    let validated_settings = validate_settings(&settings_path)?;
+    let pi_extension_path = (agent == InitAgent::Pi).then(|| root.join(".pi/extensions/lgtm.ts"));
+    let pi_backup_path = pi_extension_path
+        .as_ref()
+        .map(|path| path.with_file_name("lgtm.ts.bak"));
+    let validated_settings = settings_path
+        .as_deref()
+        .map(validate_settings)
+        .transpose()?;
 
     let config_path = root.join(".lgtm").join("config.json");
     let existing_config = validate_config(&config_path)?;
@@ -169,12 +211,20 @@ pub fn run_with_agent(
         config_path.as_path(),
         execpolicy_path.as_path(),
         gitignore_path.as_path(),
-        settings_path.as_path(),
     ];
+    if let Some(path) = settings_path.as_deref() {
+        targets.push(path);
+    }
     let guidance_targets = rules::target_paths(root, agent);
     targets.extend(guidance_targets.iter().map(PathBuf::as_path));
     if agent == InitAgent::Codex {
         targets.push(rules_path.as_path());
+    }
+    if let Some(path) = pi_extension_path.as_deref() {
+        targets.push(path);
+    }
+    if let Some(path) = pi_backup_path.as_deref() {
+        targets.push(path);
     }
     preflight_targets(root, &targets)?;
     let file_targets: Vec<&Path> = targets
@@ -184,13 +234,40 @@ pub fn run_with_agent(
         .collect();
     preflight_file_targets(&file_targets)?;
 
+    let pi_plan = pi_extension_path
+        .as_deref()
+        .zip(pi_backup_path.as_deref())
+        .map(|(target, backup)| {
+            pi::plan(
+                target,
+                backup,
+                &pi::hook_binary()?,
+                pi::ExtensionScope::Project,
+            )
+        })
+        .transpose()?;
+
     let mut files_written = Vec::new();
     let mut notes = Vec::new();
 
     note_unsupported_repo(&detection, &mut notes);
     notes.push(track_note(agent));
-    if agent == InitAgent::Codex {
-        notes.push(codex::trust_note(&settings_path));
+    if let Some(note) = override_precedence_note(root, agent) {
+        notes.push(note);
+    }
+    if agent == InitAgent::Codex
+        && let Some(path) = settings_path.as_deref()
+    {
+        notes.push(codex::trust_note(path));
+    }
+    if pi_plan
+        .as_ref()
+        .is_some_and(|plan| plan.preserved_collision)
+    {
+        notes.push(
+            "preserved existing .pi/extensions/lgtm.ts; Pi enforcement is not installed at project scope"
+                .to_string(),
+        );
     }
 
     let config_render = render_config(
@@ -204,14 +281,16 @@ pub fn run_with_agent(
         execpolicy::render_defaults(&execpolicy_path, &mut notes)?;
     let gitignore_render = render_gitignore(&gitignore_path, &mut notes)?;
     let settings_render = match agent {
-        InitAgent::Claude => render_settings(validated_settings),
-        InitAgent::Codex => codex::render_hooks(validated_settings),
+        InitAgent::Claude => validated_settings.and_then(render_settings),
+        InitAgent::Codex => validated_settings.and_then(codex::render_hooks),
+        InitAgent::Pi => None,
     };
     let (rules_render, rules_notes) = match agent {
         InitAgent::Claude => (None, Vec::new()),
         InitAgent::Codex => {
             codex::render_execpolicy(&execpolicy_path, &execpolicy_contents, &rules_path)?
         }
+        InitAgent::Pi => (None, Vec::new()),
     };
     notes.extend(rules_notes);
 
@@ -219,10 +298,11 @@ pub fn run_with_agent(
 
     create_output_directories(
         &evidence_dir,
-        &settings_path,
+        settings_path.as_deref(),
         rules_render.is_some(),
         &rules_path,
         &guidance_plan,
+        pi_extension_path.as_deref(),
     )?;
 
     let mut planned: Vec<PlannedWrite<'_>> = vec![
@@ -233,17 +313,29 @@ pub fn run_with_agent(
             execpolicy_default_render,
         ),
         (&gitignore_path, ".gitignore".to_string(), gitignore_render),
-        (
-            &settings_path,
-            hooks_label(agent).to_string(),
-            settings_render,
-        ),
-        (
-            &rules_path,
-            ".codex/rules/lgtm.rules".to_string(),
-            rules_render,
-        ),
     ];
+    if let (Some(path), Some(label)) = (settings_path.as_deref(), hooks_label(agent)) {
+        planned.push((path, label.to_string(), settings_render));
+    }
+    planned.push((
+        &rules_path,
+        ".codex/rules/lgtm.rules".to_string(),
+        rules_render,
+    ));
+    if let Some(plan) = pi_plan.as_ref() {
+        if let Some(contents) = plan.backup_contents.as_ref() {
+            planned.push((
+                &plan.backup,
+                ".pi/extensions/lgtm.ts.bak".to_string(),
+                Some(contents.clone()),
+            ));
+        }
+        planned.push((
+            &plan.target,
+            ".pi/extensions/lgtm.ts".to_string(),
+            plan.target_contents.clone(),
+        ));
+    }
     planned.extend(guidance_plan.iter().map(|write| {
         (
             write.path.as_path(),
@@ -263,24 +355,39 @@ pub fn run_with_agent(
     })
 }
 
-fn hooks_path(root: &Path, agent: InitAgent) -> PathBuf {
+fn hooks_path(root: &Path, agent: InitAgent) -> Option<PathBuf> {
     match agent {
-        InitAgent::Claude => root.join(".claude").join("settings.json"),
-        InitAgent::Codex => root.join(".codex").join("hooks.json"),
+        InitAgent::Claude => Some(root.join(".claude").join("settings.json")),
+        InitAgent::Codex => Some(root.join(".codex").join("hooks.json")),
+        InitAgent::Pi => None,
     }
 }
 
-fn hooks_label(agent: InitAgent) -> &'static str {
+fn hooks_label(agent: InitAgent) -> Option<&'static str> {
     match agent {
-        InitAgent::Claude => ".claude/settings.json",
-        InitAgent::Codex => ".codex/hooks.json",
+        InitAgent::Claude => Some(".claude/settings.json"),
+        InitAgent::Codex => Some(".codex/hooks.json"),
+        InitAgent::Pi => Some(".pi/extensions/lgtm.ts"),
+    }
+}
+
+fn override_precedence_note(root: &Path, agent: InitAgent) -> Option<String> {
+    if matches!(agent, InitAgent::Codex | InitAgent::Pi)
+        && root.join("AGENTS.override.md").is_file()
+    {
+        Some(
+            "AGENTS.override.md takes precedence over AGENTS.md; review it before relying on LGTM guidance"
+                .to_string(),
+        )
+    } else {
+        None
     }
 }
 
 fn track_note(agent: InitAgent) -> String {
+    let hook_target = hooks_label(agent).unwrap_or("no hook configuration (guidance only)");
     format!(
-        "track .lgtm/config.json, .lgtm/execpolicy.json, and {}; **/.lgtm/evidence/ is transient",
-        hooks_label(agent)
+        "track .lgtm/config.json, .lgtm/execpolicy.json, and {hook_target}; **/.lgtm/evidence/ is transient"
     )
 }
 
@@ -288,7 +395,7 @@ fn track_note(agent: InitAgent) -> String {
 fn guidance_label(agent: InitAgent, label: &str) -> String {
     match agent {
         InitAgent::Claude => format!(".claude/rules/{label}"),
-        InitAgent::Codex => label.to_string(),
+        InitAgent::Codex | InitAgent::Pi => label.to_string(),
     }
 }
 
@@ -302,13 +409,14 @@ fn note_unsupported_repo(detection: &Detection, notes: &mut Vec<String>) {
 
 fn create_output_directories(
     evidence_dir: &Path,
-    settings_path: &Path,
+    settings_path: Option<&Path>,
     create_rules: bool,
     rules_path: &Path,
     guidance_plan: &[rules::PlannedRuleWrite],
+    pi_extension_path: Option<&Path>,
 ) -> Result<(), InitError> {
-    create_dir_all(evidence_dir)?;
-    if let Some(parent) = settings_path.parent() {
+    create_private_dir_all(evidence_dir)?;
+    if let Some(parent) = settings_path.and_then(Path::parent) {
         create_dir_all(parent)?;
     }
     if create_rules && let Some(parent) = rules_path.parent() {
@@ -318,6 +426,11 @@ fn create_output_directories(
         if let Some(parent) = write.path.parent() {
             create_dir_all(parent)?;
         }
+    }
+    if let Some(path) = pi_extension_path
+        && let Some(parent) = path.parent()
+    {
+        create_dir_all(parent)?;
     }
     Ok(())
 }

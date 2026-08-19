@@ -33,7 +33,12 @@ fn global_init_installs_every_supported_harness_under_home() {
     assert!(home.exists(".claude/rules/patterns/core.md"));
     assert!(home.exists(".codex/hooks.json"));
     assert!(home.exists(".codex/AGENTS.md"));
+    assert!(home.exists(".pi/agent/extensions/lgtm.ts"));
     assert!(!home.exists(".lgtm/config.json"));
+    let pi_extension = home.read(".pi/agent/extensions/lgtm.ts");
+    assert!(pi_extension.contains("// lgtm-pi-extension: v1"));
+    assert!(pi_extension.contains("// lgtm-pi-scope: global"));
+    assert!(pi_extension.contains("shell: false"));
 
     let claude = home.read_json(".claude/settings.json");
     assert!(claude["hooks"]["SessionStart"].is_array());
@@ -48,11 +53,13 @@ fn global_init_installs_every_supported_harness_under_home() {
     let settings_before = home.read(".claude/settings.json");
     let hooks_before = home.read(".codex/hooks.json");
     let agents_before = agents;
+    let pi_before = pi_extension;
     let second = run_global(&home, &["init", "--global"]);
     assert!(second.status.success(), "global re-init must succeed");
     assert_eq!(settings_before, home.read(".claude/settings.json"));
     assert_eq!(hooks_before, home.read(".codex/hooks.json"));
     assert_eq!(agents_before, home.read(".codex/AGENTS.md"));
+    assert_eq!(pi_before, home.read(".pi/agent/extensions/lgtm.ts"));
 }
 
 #[test]
@@ -87,6 +94,8 @@ fn global_init_preserves_existing_hooks_and_instruction_text() {
         ".codex/AGENTS.md",
         "# Personal defaults\n\n- Keep this exact.\n",
     );
+    let user_extension = "export default function userExtension() {}\n";
+    home.write(".pi/agent/extensions/lgtm.ts", user_extension);
 
     let output = run_global(&home, &["init", "-g"]);
     assert!(output.status.success(), "global merge must succeed");
@@ -101,6 +110,11 @@ fn global_init_preserves_existing_hooks_and_instruction_text() {
     let agents = home.read(".codex/AGENTS.md");
     assert!(agents.starts_with("# Personal defaults\n\n- Keep this exact.\n"));
     assert_eq!(agents.matches("lgtm-global-guidance:start").count(), 1);
+    assert_eq!(home.read(".pi/agent/extensions/lgtm.ts"), user_extension);
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("preserved existing .pi/agent/extensions/lgtm.ts")
+    );
 }
 
 #[test]
@@ -115,8 +129,10 @@ fn global_dry_run_reports_everything_without_writing() {
     assert!(stdout.contains(".claude/settings.json"));
     assert!(stdout.contains(".codex/hooks.json"));
     assert!(stdout.contains(".codex/AGENTS.md"));
+    assert!(stdout.contains(".pi/agent/extensions/lgtm.ts"));
     assert!(!home.exists(".claude"));
     assert!(!home.exists(".codex"));
+    assert!(!home.exists(".pi"));
 }
 
 #[test]
