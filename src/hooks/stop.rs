@@ -1616,6 +1616,7 @@ fn collect_check_paths(
             let name = entry.file_name().to_string_lossy().to_string();
             let relative = path.strip_prefix(root).unwrap_or(&path);
             if relative != Path::new("tests/fixtures/semgrep-python")
+                && relative != Path::new("tests/fixtures/pi/0.84.2/captures")
                 && !matches!(
                     name.as_str(),
                     ".git"
@@ -2478,16 +2479,24 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).expect("source directory");
         std::fs::create_dir_all(root.join("tests/fixtures/semgrep-python"))
             .expect("fixture directory");
+        std::fs::create_dir_all(root.join("tests/fixtures/pi/0.84.2/captures"))
+            .expect("Pi capture directory");
         std::fs::write(root.join("src/app.py"), "value = 1\n").expect("source file");
         std::fs::write(
             root.join("tests/fixtures/semgrep-python/violations.py"),
             "eval(input())\n",
         )
         .expect("fixture file");
+        std::fs::write(
+            root.join("tests/fixtures/pi/0.84.2/captures/types.d.ts"),
+            "declare const captured: any;\n",
+        )
+        .expect("Pi capture fixture");
 
         let paths = check_paths(&root).expect("check paths");
         assert!(paths.iter().any(|path| path.ends_with("src/app.py")));
         assert!(!paths.iter().any(|path| path.contains("semgrep-python")));
+        assert!(!paths.iter().any(|path| path.contains("pi/0.84.2/captures")));
         std::fs::remove_dir_all(root).ok();
     }
 

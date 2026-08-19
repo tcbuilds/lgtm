@@ -101,7 +101,8 @@ fn evidence_root(path: &Path) -> Option<std::path::PathBuf> {
     if canonical_evidence.file_name()? != "evidence" || canonical_lgtm.file_name()? != ".lgtm" {
         return None;
     }
-    Some(canonical_lgtm.parent()?.to_path_buf())
+    // Keep the input path's spelling for display; state inspection canonicalizes the root.
+    Some(lgtm.parent()?.to_path_buf())
 }
 
 fn read(path: &Path) -> Result<Vec<Record>, String> {
