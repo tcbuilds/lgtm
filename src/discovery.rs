@@ -2197,7 +2197,7 @@ mod tests {
         assert!(workspace_roots(&root).is_empty());
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn wildcard_rules_fail_closed_for_invalid_native_path_components() {
         use std::ffi::OsString;
