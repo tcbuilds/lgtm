@@ -59,6 +59,10 @@ impl HookAdapter for ClaudeAdapter {
                 }
                 _ => Err(invalid_combination(event, "InjectContext")),
             },
+            HookResponse::InjectMessage(_) => Err(invalid_combination(event, "InjectMessage")),
+            HookResponse::InjectSystemPrompt(_) => {
+                Err(invalid_combination(event, "InjectSystemPrompt"))
+            }
             HookResponse::Deny { reason } => match event {
                 HookEvent::PreToolUse => Ok(stdout_line(deny_envelope(&reason))),
                 _ => Err(invalid_combination(event, "Deny")),
@@ -85,6 +89,7 @@ fn event_name(event: HookEvent) -> &'static str {
     match event {
         HookEvent::SessionStart => "SessionStart",
         HookEvent::UserPromptSubmit => "UserPromptSubmit",
+        HookEvent::BeforeAgentStart => "BeforeAgentStart",
         HookEvent::PreToolUse => "PreToolUse",
         HookEvent::PermissionRequest => "PermissionRequest",
         HookEvent::SubagentStart => "SubagentStart",

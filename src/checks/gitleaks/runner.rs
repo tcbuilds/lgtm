@@ -13,6 +13,13 @@ pub(crate) fn run_captured(command: Command) -> Option<(Option<i32>, Vec<u8>)> {
     run_details(command).map(|details| (details.code, details.stdout))
 }
 
+pub(crate) fn run_captured_with_deadline(
+    command: Command,
+    deadline: Instant,
+) -> Option<(Option<i32>, Vec<u8>)> {
+    run_details_with_deadline(command, deadline).map(|details| (details.code, details.stdout))
+}
+
 pub(crate) struct Captured {
     pub(crate) code: Option<i32>,
     pub(crate) stdout: Vec<u8>,
@@ -71,7 +78,11 @@ pub(crate) fn run_details_with_deadline_and_limit(
     })
 }
 
-pub(super) fn run_scan(mut command: Command, report_path: &Path) -> ScanOutcome {
+pub(super) fn run_scan_with_deadline(
+    mut command: Command,
+    report_path: &Path,
+    deadline: Instant,
+) -> ScanOutcome {
     set_own_process_group(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -85,7 +96,6 @@ pub(super) fn run_scan(mut command: Command, report_path: &Path) -> ScanOutcome 
     let pid = child.id();
     let stdout = drain_bounded(child.stdout.take(), MAX_CAPTURE_BYTES);
     let stderr = drain_bounded(child.stderr.take(), MAX_CAPTURE_BYTES);
-    let deadline = deadline_after(SUBPROCESS_TIMEOUT);
     let status = wait_bounded(&mut child, pid, deadline);
     if status.is_none() {
         kill_child(&mut child, pid);

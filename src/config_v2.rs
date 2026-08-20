@@ -187,6 +187,13 @@ pub fn validate(config: &ConfigV2) -> Result<(), ConfigV2Error> {
 }
 
 /// Convert a validated V1 object into V2 without interpreting shell syntax.
+pub fn validate_legacy(value: &Value) -> Result<(), ConfigV2Error> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| ConfigV2Error::Invalid("V1 config must be an object".to_string()))?;
+    validate_legacy_shape(object)
+}
+
 pub fn migrate_v1(value: &Value) -> Result<ConfigV2, ConfigV2Error> {
     let object = value
         .as_object()
@@ -273,6 +280,130 @@ pub fn render(config: &ConfigV2) -> Result<Vec<u8>, ConfigV2Error> {
     let mut rendered = serde_json::to_string_pretty(config)?;
     rendered.push('\n');
     Ok(rendered.into_bytes())
+}
+
+fn validate_legacy_shape(object: &Map<String, Value>) -> Result<(), ConfigV2Error> {
+    const FIELDS: &[&str] = &[
+        "version",
+        "profile",
+        "languages",
+        "disabled_rules",
+        "severity_overrides",
+        "command_timeout_seconds",
+        "required_commands",
+        "prohibited_paths",
+    ];
+    if let Some(field) = object
+        .keys()
+        .find(|field| !FIELDS.contains(&field.as_str()))
+    {
+        return Err(ConfigV2Error::Invalid(format!(
+            "V1 field `{field}` is not supported"
+        )));
+    }
+    if let Some(profile) = object.get("profile")
+        && !profile.as_str().is_some_and(|value| {
+            !value.is_empty() && value.len() <= 64 && !value.chars().any(char::is_control)
+        })
+    {
+        return Err(ConfigV2Error::Invalid("V1 profile is invalid".to_string()));
+    }
+    for field in ["languages", "disabled_rules"] {
+        if let Some(value) = object.get(field) {
+            validate_legacy_strings(value, 256, 256, field)?;
+        }
+    }
+    if let Some(value) = object.get("severity_overrides") {
+        let map = value.as_object().ok_or_else(|| {
+            ConfigV2Error::Invalid("V1 severity_overrides must be an object".to_string())
+        })?;
+        if map.len() > 256
+            || map.iter().any(|(key, value)| {
+                key.is_empty()
+                    || key.len() > 256
+                    || !value.as_str().is_some_and(|value| {
+                        matches!(value, "error" | "warning" | "info")
+                            && value.len() <= 256
+                            && !value.chars().any(char::is_control)
+                    })
+            })
+        {
+            return Err(ConfigV2Error::Invalid(
+                "V1 severity_overrides is out of bounds".to_string(),
+            ));
+        }
+    }
+    if let Some(value) = object.get("command_timeout_seconds")
+        && !value
+            .as_u64()
+            .is_some_and(|seconds| (1..=3600).contains(&seconds))
+    {
+        return Err(ConfigV2Error::Invalid(
+            "V1 command_timeout_seconds is out of bounds".to_string(),
+        ));
+    }
+    if let Some(value) = object.get("required_commands") {
+        let commands = value.as_object().ok_or_else(|| {
+            ConfigV2Error::Invalid("V1 required_commands must be an object".to_string())
+        })?;
+        if commands.len() > 256 {
+            return Err(ConfigV2Error::Invalid(
+                "V1 required_commands exceeds bounds".to_string(),
+            ));
+        }
+        for (language, values) in commands {
+            if language.is_empty() || language.len() > 64 {
+                return Err(ConfigV2Error::Invalid(
+                    "V1 command language is invalid".to_string(),
+                ));
+            }
+            validate_legacy_strings(values, 256, 4096, "required_commands")?;
+        }
+    }
+    if let Some(value) = object.get("prohibited_paths") {
+        let paths = value.as_array().ok_or_else(|| {
+            ConfigV2Error::Invalid("V1 prohibited_paths must be an array".to_string())
+        })?;
+        if paths.len() > 256
+            || paths.iter().any(|value| {
+                value.as_str().is_none_or(|path| {
+                    path.is_empty()
+                        || path.len() > 4096
+                        || path.starts_with('/')
+                        || path.split('/').any(|part| part == "..")
+                        || path.chars().any(char::is_control)
+                })
+            })
+        {
+            return Err(ConfigV2Error::Invalid(
+                "V1 prohibited_paths is invalid".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_legacy_strings(
+    value: &Value,
+    max_items: usize,
+    max_length: usize,
+    field: &str,
+) -> Result<(), ConfigV2Error> {
+    let values = value
+        .as_array()
+        .ok_or_else(|| ConfigV2Error::Invalid(format!("V1 {field} must be an array")))?;
+    if values.len() > max_items
+        || values.iter().any(|value| {
+            value.as_str().is_none_or(|value| {
+                value.is_empty() || value.len() > max_length || value.chars().any(char::is_control)
+            })
+        })
+    {
+        return Err(ConfigV2Error::Invalid(format!(
+            "V1 {field} is out of bounds"
+        )));
+    }
+    Ok(())
 }
 
 fn string_array(object: &Map<String, Value>, field: &str) -> Result<Vec<String>, ConfigV2Error> {

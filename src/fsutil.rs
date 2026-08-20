@@ -351,6 +351,22 @@ fn is_symlink_open_rejection(_error: &io::Error) -> bool {
     false
 }
 
+/// Ensure one repository-controlled directory exists without following a symlink.
+///
+/// Callers create each required directory from the trusted root downward so a
+/// symlinked `.lgtm` or `evidence` component cannot redirect writes elsewhere.
+pub fn ensure_directory(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path is not a regular directory",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => std::fs::create_dir(path),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

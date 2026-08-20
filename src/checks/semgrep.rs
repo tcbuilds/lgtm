@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -42,6 +43,10 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
     scan_with_binary(SEMGREP_BIN, files)
 }
 
+pub fn scan_with_deadline(files: &[String], deadline: Instant) -> Vec<EnforcementResult> {
+    scan_with_binary_until(SEMGREP_BIN, files, deadline)
+}
+
 pub fn installed_version() -> Option<String> {
     version_with_binary(SEMGREP_BIN)
 }
@@ -55,7 +60,7 @@ fn scan_with_binary(binary: &str, files: &[String]) -> Vec<EnforcementResult> {
         return RULE_IDS.iter().map(|rule| not_applicable(rule)).collect();
     }
     let version = version_with_binary(binary);
-    match run(binary, &files) {
+    match run_with_deadline(binary, &files, deadline_after(Duration::from_secs(30))) {
         Ok(findings) => normalize(findings, version),
         Err(reason) => RULE_IDS
             .iter()
@@ -64,7 +69,33 @@ fn scan_with_binary(binary: &str, files: &[String]) -> Vec<EnforcementResult> {
     }
 }
 
-fn run(binary: &str, files: &[&String]) -> Result<Vec<Finding>, String> {
+fn scan_with_binary_until(
+    binary: &str,
+    files: &[String],
+    deadline: Instant,
+) -> Vec<EnforcementResult> {
+    let files: Vec<_> = files
+        .iter()
+        .filter(|file| file.ends_with(".py") && Path::new(file).is_file())
+        .collect();
+    if files.is_empty() {
+        return RULE_IDS.iter().map(|rule| not_applicable(rule)).collect();
+    }
+    let version = version_with_binary_until(binary, deadline);
+    match run_with_deadline(binary, &files, deadline) {
+        Ok(findings) => normalize(findings, version),
+        Err(reason) => RULE_IDS
+            .iter()
+            .map(|rule| unverified(rule, &reason, version.clone()))
+            .collect(),
+    }
+}
+
+fn run_with_deadline(
+    binary: &str,
+    files: &[&String],
+    deadline: Instant,
+) -> Result<Vec<Finding>, String> {
     let directory = crate::checks::gitleaks::report::ReportDir::create()
         .map_err(|reason| format!("prepare embedded Semgrep rules ({reason})"))?;
     let rules_path = directory.report_path().with_file_name("semgrep-python.yml");
@@ -81,7 +112,9 @@ fn run(binary: &str, files: &[&String]) -> Result<Vec<Finding>, String> {
         .arg("off")
         .args(files)
         .stdin(Stdio::null());
-    let Some((code, stdout)) = crate::checks::gitleaks::runner::run_captured(command) else {
+    let Some((code, stdout)) =
+        crate::checks::gitleaks::runner::run_captured_with_deadline(command, deadline)
+    else {
         return Err("semgrep missing, timed out, or could not be waited on".to_string());
     };
     if !matches!(code, Some(0 | 1)) {
@@ -109,15 +142,26 @@ fn run(binary: &str, files: &[&String]) -> Result<Vec<Finding>, String> {
 }
 
 fn version_with_binary(binary: &str) -> Option<String> {
+    version_with_binary_until(binary, deadline_after(Duration::from_secs(30)))
+}
+
+fn version_with_binary_until(binary: &str, deadline: Instant) -> Option<String> {
     let mut command = Command::new(binary);
     command.arg("--version").stdin(Stdio::null());
-    let (code, stdout) = crate::checks::gitleaks::runner::run_captured(command)?;
+    let (code, stdout) =
+        crate::checks::gitleaks::runner::run_captured_with_deadline(command, deadline)?;
     if code != Some(0) {
         return None;
     }
     let value = String::from_utf8_lossy(&stdout);
     let value = value.trim();
     (!value.is_empty()).then(|| format!("semgrep {value}"))
+}
+
+fn deadline_after(duration: Duration) -> Instant {
+    Instant::now()
+        .checked_add(duration)
+        .unwrap_or_else(Instant::now)
 }
 
 fn normalize(findings: Vec<Finding>, version: Option<String>) -> Vec<EnforcementResult> {

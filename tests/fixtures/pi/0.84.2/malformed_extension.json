@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "pi_version": "0.84.2",
+  "fixture_id": "live-malformed-extension-001",
+  "capture_method": "discoverAndLoadExtensions probe with a temporary extension exporting a non-function",
+  "loaded_extensions": [
+    "<agent>/extensions/good.ts"
+  ],
+  "errors": [
+    {
+      "path": "<project>/.pi/extensions/bad.ts",
+      "error": "Extension does not export a valid factory function: <project>/.pi/extensions/bad.ts"
+    }
+  ],
+  "interpretation": "The malformed extension is reported and skipped; another extension still loads."
+}

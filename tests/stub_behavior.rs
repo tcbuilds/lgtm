@@ -83,6 +83,7 @@ fn doctor_reports_gitleaks_state_and_guidance() {
     let (code, stdout, stderr) = run_full(&["doctor"]);
     assert_eq!(code, 0);
     assert!(stderr.is_empty());
+    assert!(stdout.contains("pi: not-installed scope=none"));
     assert!(stdout.contains("gitleaks:"));
     if stdout.contains("MISSING") {
         assert!(stdout.contains("Install:"));

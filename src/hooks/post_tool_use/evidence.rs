@@ -42,8 +42,12 @@ pub(super) fn append_evidence(
     edited_file: Option<&str>,
     result: &EnforcementResult,
 ) -> Result<(), String> {
-    let dir = root.join(".lgtm").join("evidence");
-    std::fs::create_dir_all(&dir).map_err(|error| format!("mkdir ({error})"))?;
+    let lgtm_dir = root.join(".lgtm");
+    crate::fsutil::ensure_directory(&lgtm_dir)
+        .map_err(|error| format!("inspect evidence ancestry ({error})"))?;
+    let dir = lgtm_dir.join("evidence");
+    crate::fsutil::ensure_directory(&dir)
+        .map_err(|error| format!("inspect evidence directory ({error})"))?;
     let path = dir.join("current-task.results.jsonl");
 
     let (line, rotation_session) = match serialize_record(session_id, edited_file, result) {
@@ -56,16 +60,28 @@ pub(super) fn append_evidence(
     // (not the ledger itself) so a rotation that renames the ledger away does not
     // invalidate the lock every writer is coordinating on.
     let lock_path = dir.join("current-task.results.lock");
-    let _lock = EvidenceLock::acquire(&lock_path)?;
+    let _lock = crate::hooks::evidence_lock::EvidenceLock::acquire(&lock_path)?;
 
     let needs_delimiter = rotate_for_incoming(&path, rotation_session, line.len() as u64)?;
 
     use std::fs::OpenOptions;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let mut file = options
         .open(&path)
         .map_err(|error| format!("open ({error})"))?;
+    if !file
+        .metadata()
+        .map_err(|error| format!("inspect ({error})"))?
+        .is_file()
+    {
+        return Err("evidence path is not a regular file".to_string());
+    }
     // Coalesce the delimiter and record so an interrupted append cannot leave a
     // second write to interleave between the JSONL framing bytes and the record.
     let mut append = Vec::with_capacity(line.len() + (if needs_delimiter { 1 } else { 0 }));
@@ -76,105 +92,6 @@ pub(super) fn append_evidence(
     file.write_all(&append)
         .map_err(|error| format!("write ({error})"))?;
     Ok(())
-}
-
-/// An exclusive advisory lock (`flock(LOCK_EX)`) on a lock file, released on
-/// drop.
-///
-/// Held for the whole evidence read-modify-write so two concurrent PostToolUse
-/// hooks writing to the same repo cannot interleave a rotation and an append and
-/// lose or corrupt records. The lock is advisory and process-scoped; every writer
-/// of this ledger takes it, so mutual exclusion holds among lgtm hooks. On unix
-/// this is a real `flock`; on non-unix (unsupported for hooks) the guard is a
-/// no-op so the crate still builds.
-struct EvidenceLock {
-    #[cfg(unix)]
-    file: std::fs::File,
-}
-
-/// The number of non-blocking lock attempts before the acquire gives up.
-/// Combined with [`LOCK_RETRY_INTERVAL`] this bounds the total wait at roughly
-/// two seconds so a wedged lock holder can never stall this hook indefinitely.
-#[cfg(unix)]
-const LOCK_RETRY_ATTEMPTS: u32 = 20;
-
-/// The pause between non-blocking lock attempts. Short enough that the common
-/// case (a brief overlap between two hooks) still acquires quickly, long enough
-/// not to spin the CPU.
-#[cfg(unix)]
-const LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
-
-impl EvidenceLock {
-    /// Open (creating if needed) the lock file and take an exclusive `flock`,
-    /// bounded so a wedged holder cannot block the hook forever.
-    ///
-    /// The lock is taken with `LOCK_EX | LOCK_NB` and retried up to
-    /// [`LOCK_RETRY_ATTEMPTS`] times spaced [`LOCK_RETRY_INTERVAL`] apart (a ~2s
-    /// deadline). A blocking `LOCK_EX` is deliberately avoided: if some other hook
-    /// (or a stuck process) holds the lock and never releases it, a blocking
-    /// acquire would wedge every subsequent hook. On the deadline the acquire
-    /// returns an error; the caller (`persist`) writes a stderr diagnostic and
-    /// skips the append, so this one result's evidence is lost but the hook still
-    /// exits fail-safe rather than hanging the agent session.
-    #[cfg(unix)]
-    fn acquire(path: &Path) -> Result<Self, String> {
-        use std::os::unix::io::AsRawFd;
-
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(path)
-            .map_err(|error| format!("lock open ({error})"))?;
-
-        for attempt in 0..LOCK_RETRY_ATTEMPTS {
-            // SAFETY: `flock` takes a valid open file descriptor and a flag; the
-            // fd is owned by `file` and outlives the call. `LOCK_EX | LOCK_NB`
-            // returns 0 with the lock held, or -1 with errno `EWOULDBLOCK` when
-            // another holder has it, or -1 with another errno on a real error —
-            // all three handled here.
-            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-            if rc == 0 {
-                return Ok(Self { file });
-            }
-            let error = std::io::Error::last_os_error();
-            let contended = matches!(
-                error.raw_os_error(),
-                Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN
-            );
-            if !contended {
-                return Err(format!("lock acquire ({error})"));
-            }
-            if attempt + 1 < LOCK_RETRY_ATTEMPTS {
-                std::thread::sleep(LOCK_RETRY_INTERVAL);
-            }
-        }
-
-        Err(format!(
-            "lock contended for {LOCK_RETRY_ATTEMPTS} attempts (~{}ms); skipping evidence persistence this once",
-            LOCK_RETRY_ATTEMPTS as u128 * LOCK_RETRY_INTERVAL.as_millis()
-        ))
-    }
-
-    #[cfg(not(unix))]
-    fn acquire(_path: &Path) -> Result<Self, String> {
-        Ok(Self {})
-    }
-}
-
-#[cfg(unix)]
-impl Drop for EvidenceLock {
-    /// Release the advisory lock. Closing the descriptor releases the `flock`;
-    /// the explicit `LOCK_UN` makes the release eager rather than waiting for the
-    /// close, and its result is ignored because the drop cannot fail meaningfully.
-    fn drop(&mut self) {
-        use std::os::unix::io::AsRawFd;
-        // SAFETY: `self.file` is a valid, still-open descriptor for the lifetime
-        // of this guard; LOCK_UN on it is always well-defined.
-        unsafe {
-            let _ = libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
-        }
-    }
 }
 
 /// The read bound applied when loading the ledger to rotate it. It is larger

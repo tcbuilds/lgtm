@@ -31,6 +31,7 @@ pub(crate) mod execpolicy;
 mod fs;
 mod gitignore;
 mod global;
+pub(crate) mod pi;
 mod rules;
 mod runner;
 mod settings;
@@ -38,8 +39,8 @@ mod template_digests;
 
 use config::{ValidatedSettings, render_config, validate_config, validate_settings};
 use fs::{
-    commit_write, create_dir_all, preflight_file_targets, preflight_targets, read_if_exists,
-    stage_write,
+    commit_write, create_dir_all, create_private_dir_all, preflight_file_targets,
+    preflight_targets, read_if_exists, stage_write,
 };
 #[cfg(test)]
 use gitignore::evidence_is_ignored;
@@ -47,7 +48,8 @@ use gitignore::{render_gitignore, render_settings};
 pub use global::{GlobalInitSummary, run as run_global};
 pub use rules::{
     ENTRY_DOCUMENT_MARKER, Installed, agents_document_lines, install as install_rules,
-    install_agents_md as install_agents, planned as planned_rules, planned_agents_md,
+    install_agents_md as install_agents, install_pi_guidance, planned as planned_rules,
+    planned_agents_md,
 };
 pub use runner::{
     migrate_config, preview, preview_with_agent, run, run_with_agent, run_with_options,
@@ -59,6 +61,7 @@ pub use settings::{build_config, merge_settings};
 pub enum InitAgent {
     Claude,
     Codex,
+    Pi,
 }
 #[cfg(test)]
 use settings::{commands_match, entry_runs_command};

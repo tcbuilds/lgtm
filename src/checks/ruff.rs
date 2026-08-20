@@ -10,6 +10,7 @@ use super::{EnforcementResult, Location, ResultEvidence, Status};
 use crate::policy::Severity;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
 const RULES: [(&str, &str); 2] = [
@@ -34,6 +35,10 @@ pub fn scan(files: &[String]) -> Vec<EnforcementResult> {
     scan_with_binary("ruff", files)
 }
 
+pub fn scan_with_deadline(files: &[String], deadline: Instant) -> Vec<EnforcementResult> {
+    scan_with_binary_until("ruff", files, deadline)
+}
+
 pub fn installed_version() -> Option<String> {
     version_with_binary("ruff")
 }
@@ -45,6 +50,21 @@ fn version_with_binary(binary: &str) -> Option<String> {
     status
         .success()
         .then(|| String::from_utf8_lossy(&stdout).trim().to_string())
+}
+
+fn version_with_binary_until(binary: &str, deadline: Instant) -> Option<String> {
+    let mut command = Command::new(binary);
+    command.arg("--version");
+    let (status, stdout) = run_bounded_until(command, deadline).ok()?;
+    status
+        .success()
+        .then(|| String::from_utf8_lossy(&stdout).trim().to_string())
+}
+
+fn deadline_after(duration: Duration) -> Instant {
+    Instant::now()
+        .checked_add(duration)
+        .unwrap_or_else(Instant::now)
 }
 
 fn scan_with_binary(binary: &str, files: &[String]) -> Vec<EnforcementResult> {
@@ -82,7 +102,56 @@ fn scan_with_binary(binary: &str, files: &[String]) -> Vec<EnforcementResult> {
     normalize(findings, version_with_binary(binary))
 }
 
-fn run_bounded(mut command: Command) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
+fn scan_with_binary_until(
+    binary: &str,
+    files: &[String],
+    deadline: Instant,
+) -> Vec<EnforcementResult> {
+    if files.is_empty() {
+        return RULES
+            .map(|(rule, _)| unverified(rule, "no Python files were provided", None))
+            .to_vec();
+    }
+    let mut command = Command::new(binary);
+    command.args([
+        "check",
+        "--output-format",
+        "json",
+        "--select",
+        "S110,S112,BLE001,E722",
+    ]);
+    command
+        .args(files)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (status, stdout) = match run_bounded_until(command, deadline) {
+        Ok(output) => output,
+        Err(reason) => return unverified_all(&reason, None),
+    };
+    if !matches!(status.code(), Some(0 | 1)) {
+        return unverified_all(&format!("ruff exited with status {status}"), None);
+    }
+    let findings: Vec<Finding> = match serde_json::from_slice(&stdout) {
+        Ok(findings) => findings,
+        Err(error) => {
+            return unverified_all(&format!("could not parse ruff output ({error})"), None);
+        }
+    };
+    normalize(findings, version_with_binary_until(binary, deadline))
+}
+
+fn run_bounded(command: Command) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
+    run_bounded_until(command, deadline_after(TIMEOUT))
+}
+
+fn run_bounded_until(
+    mut command: Command,
+    deadline: Instant,
+) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
+    if Instant::now() >= deadline {
+        return Err("ruff deadline expired".to_string());
+    }
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -93,7 +162,6 @@ fn run_bounded(mut command: Command) -> Result<(std::process::ExitStatus, Vec<u8
         .map_err(|error| format!("could not start ruff ({error})"))?;
     let stdout_reader = drain(child.stdout.take());
     let stderr_reader = drain(child.stderr.take());
-    let deadline = Instant::now() + TIMEOUT;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
@@ -107,8 +175,8 @@ fn run_bounded(mut command: Command) -> Result<(std::process::ExitStatus, Vec<u8
         }
     };
     kill_process_group(child.id());
-    let stdout = join_bounded(stdout_reader);
-    let _ = join_bounded(stderr_reader);
+    let stdout = join_bounded_until(stdout_reader, deadline);
+    let _ = join_bounded_until(stderr_reader, deadline);
     let status = status.ok_or_else(|| "ruff timed out or could not be waited on".to_string())?;
     if stdout.len() as u64 > MAX_OUTPUT_BYTES {
         return Err("ruff output exceeded maximum size".to_string());
@@ -116,7 +184,7 @@ fn run_bounded(mut command: Command) -> Result<(std::process::ExitStatus, Vec<u8
     Ok((status, stdout))
 }
 
-fn join_bounded(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
+fn join_bounded_until(handle: Option<thread::JoinHandle<Vec<u8>>>, deadline: Instant) -> Vec<u8> {
     let Some(handle) = handle else {
         return Vec::new();
     };
@@ -124,7 +192,9 @@ fn join_bounded(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
     thread::spawn(move || {
         let _ = sender.send(handle.join().unwrap_or_default());
     });
-    receiver.recv_timeout(DRAIN_TIMEOUT).unwrap_or_default()
+    receiver
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_default()
 }
 
 #[cfg(unix)]

@@ -29,8 +29,9 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
     let claude_settings = home.join(".claude/settings.json");
     let codex_hooks = home.join(".codex/hooks.json");
     let codex_agents = home.join(".codex/AGENTS.md");
+    let pi_extension = home.join(".pi/agent/extensions/lgtm.ts");
+    let pi_backup = pi_extension.with_file_name("lgtm.ts.bak");
     let binary = codex::hook_binary();
-
     let claude_render = render_claude_hooks(config::validate_settings(&claude_settings)?, &binary);
     let codex_render = codex::render_hooks(config::validate_settings(&codex_hooks)?);
     let agents_render = render_agents(&codex_agents)?;
@@ -40,11 +41,20 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
         claude_settings.clone(),
         codex_hooks.clone(),
         codex_agents.clone(),
+        pi_extension.clone(),
+        pi_backup.clone(),
     ];
     targets.extend(rules::target_paths(home, InitAgent::Claude));
     let target_refs: Vec<&Path> = targets.iter().map(PathBuf::as_path).collect();
     preflight_targets(home, &target_refs)?;
     preflight_file_targets(&target_refs)?;
+
+    let pi_plan = pi::plan(
+        &pi_extension,
+        &pi_backup,
+        &pi::hook_binary()?,
+        pi::ExtensionScope::Global,
+    )?;
 
     let mut planned = vec![
         (
@@ -55,6 +65,18 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
         (codex_hooks, ".codex/hooks.json".to_string(), codex_render),
         (codex_agents, ".codex/AGENTS.md".to_string(), agents_render),
     ];
+    if let Some(contents) = pi_plan.backup_contents.as_ref() {
+        planned.push((
+            pi_plan.backup.clone(),
+            ".pi/agent/extensions/lgtm.ts.bak".to_string(),
+            Some(contents.clone()),
+        ));
+    }
+    planned.push((
+        pi_plan.target.clone(),
+        ".pi/agent/extensions/lgtm.ts".to_string(),
+        pi_plan.target_contents.clone(),
+    ));
     planned.extend(guidance_plan.iter().map(|write| {
         (
             write.path.clone(),
@@ -70,11 +92,19 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
         .collect();
     let mut notes = vec![
         "global install targets $HOME; no repository .lgtm config was written".to_string(),
+        "Pi global extension handles initialized repositories, including nested cwd launches"
+            .to_string(),
         "Codex global hooks require review in `/hooks` after changes".to_string(),
     ];
     if home.join(".codex/AGENTS.override.md").is_file() {
         notes.push(
             "Codex AGENTS.override.md is active; it hides .codex/AGENTS.md until removed"
+                .to_string(),
+        );
+    }
+    if pi_plan.preserved_collision {
+        notes.push(
+            "preserved existing .pi/agent/extensions/lgtm.ts; Pi enforcement is not installed globally"
                 .to_string(),
         );
     }

@@ -7,8 +7,9 @@
 //!
 //! Codex has no path-scoped rule mechanism and does not read `.claude/rules/`,
 //! so it gets [`install_agents_md`] instead: every template concatenated into a
-//! single `AGENTS.md`. That trades away lazy loading — the whole document enters
-//! every session — which the CLI states plainly rather than hiding.
+//! single `AGENTS.md`. Pi gets only the compact entry document in a managed
+//! block; enforcement is added by a later Pi extension slice. These choices
+//! trade away or preserve lazy loading explicitly rather than hiding it.
 
 use std::path::{Path, PathBuf};
 
@@ -27,8 +28,10 @@ const PREFIX: &str = ".claude/rules";
 /// native Claude hook before it suppresses fallback guidance.
 pub const ENTRY_DOCUMENT_MARKER: &str = "<!-- lgtm-entry-document: standards-v1 -->";
 
-/// The single file Codex reads for repository guidance.
+/// The single file Codex and Pi read for repository guidance.
 const AGENTS_FILE: &str = "AGENTS.md";
+const PI_GUIDANCE_START: &str = "<!-- lgtm-pi-guidance:start -->";
+const PI_GUIDANCE_END: &str = "<!-- lgtm-pi-guidance:end -->";
 
 /// Embedded templates as (path relative to `.claude/rules`, contents).
 const TEMPLATES: &[(&str, &str)] = &[
@@ -182,7 +185,7 @@ pub(super) fn target_paths(root: &Path, agent: InitAgent) -> Vec<PathBuf> {
             .iter()
             .map(|(relative, _)| root.join(PREFIX).join(relative))
             .collect(),
-        InitAgent::Codex => vec![root.join(AGENTS_FILE)],
+        InitAgent::Codex | InitAgent::Pi => vec![root.join(AGENTS_FILE)],
     }
 }
 
@@ -217,8 +220,93 @@ pub(super) fn plan(
                 &mut outcome,
             )?;
         }
+        InitAgent::Pi => {
+            let target = root.join(AGENTS_FILE);
+            plan_pi_guidance(&target, &mut planned, &mut outcome)?;
+        }
     }
     Ok((planned, outcome))
+}
+
+/// Plan the compact Pi entry while preserving all user-authored content.
+fn plan_pi_guidance(
+    target: &Path,
+    planned: &mut Vec<PlannedRuleWrite>,
+    outcome: &mut Installed,
+) -> Result<(), InitError> {
+    let managed = pi_guidance_document();
+    match read_if_exists(target)? {
+        Some(existing) => {
+            let merged = merge_pi_guidance(target, &existing, &managed)?;
+            if merged == existing {
+                outcome.unchanged.push(AGENTS_FILE.to_string());
+            } else {
+                planned.push(PlannedRuleWrite {
+                    path: target.to_path_buf(),
+                    label: AGENTS_FILE.to_string(),
+                    contents: merged.into_bytes(),
+                });
+                outcome.updated.push(AGENTS_FILE.to_string());
+            }
+        }
+        None => {
+            planned.push(PlannedRuleWrite {
+                path: target.to_path_buf(),
+                label: AGENTS_FILE.to_string(),
+                contents: managed.into_bytes(),
+            });
+            outcome.written.push(AGENTS_FILE.to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Wrap the frontmatter-free entry document in the owned Pi marker block.
+fn pi_guidance_document() -> String {
+    format!(
+        "{PI_GUIDANCE_START}\n{}\n{PI_GUIDANCE_END}\n",
+        entry_document()
+    )
+}
+
+/// Merge the owned Pi block without changing bytes outside its markers.
+fn merge_pi_guidance(path: &Path, existing: &str, managed: &str) -> Result<String, InitError> {
+    let start_count = existing.matches(PI_GUIDANCE_START).count();
+    let end_count = existing.matches(PI_GUIDANCE_END).count();
+    if start_count > 1 || end_count > 1 {
+        return Err(InitError::MalformedGuidance {
+            path: path.to_path_buf(),
+            reason: "found duplicate Pi managed-block markers".to_string(),
+        });
+    }
+
+    let start = existing.find(PI_GUIDANCE_START);
+    let end = existing.find(PI_GUIDANCE_END);
+    match (start, end) {
+        (Some(start), Some(end)) if start <= end => {
+            let after = end + PI_GUIDANCE_END.len();
+            let mut merged = String::with_capacity(existing.len() + managed.len());
+            merged.push_str(&existing[..start]);
+            merged.push_str(managed.trim_end_matches('\n'));
+            merged.push_str(&existing[after..]);
+            Ok(merged)
+        }
+        (None, None) if existing.is_empty() => Ok(managed.to_string()),
+        (None, None) => {
+            let separator = if existing.ends_with("\n\n") {
+                ""
+            } else if existing.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
+            Ok(format!("{existing}{separator}{managed}"))
+        }
+        _ => Err(InitError::MalformedGuidance {
+            path: path.to_path_buf(),
+            reason: "found only one Pi managed-block marker".to_string(),
+        }),
+    }
 }
 
 /// Classify one destination and add it to the staged batch when it is new or stale.
@@ -331,6 +419,11 @@ pub fn install(root: &Path) -> Result<Installed, String> {
 /// as [`install`] treats an edited rules file.
 pub fn install_agents_md(root: &Path) -> Result<Installed, String> {
     install_transaction(root, InitAgent::Codex).map_err(|error| error.to_string())
+}
+
+/// Merge the compact Pi entry document into the repository guidance file.
+pub fn install_pi_guidance(root: &Path) -> Result<Installed, String> {
+    install_transaction(root, InitAgent::Pi).map_err(|error| error.to_string())
 }
 
 /// Apply guidance files only after every destination has passed preflight.

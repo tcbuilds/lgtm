@@ -8,6 +8,16 @@
   "properties": {
     "task_id": { "type": "string", "minLength": 1 },
     "agent": { "const": "claude-code" },
+    "harness": { "enum": ["claude-code", "codex", "pi", "internal-gate"] },
+    "enforcement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "scope", "reason"],
+      "properties": {
+        "state": { "enum": ["not-installed", "installed-unloadable", "project-untrusted", "tool-contract-unverified", "stale/unverified", "active"] },
+        "scope": { "enum": ["project", "global", null] },
+        "reason": { "type": "string" }
+      }
+    },
     "profile": { "type": "string", "minLength": 1 },
     "commit": { "type": ["string", "null"] },
     "rules": {

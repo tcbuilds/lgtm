@@ -9,6 +9,7 @@
 //! any internal error exits 0 with a diagnostic on stderr and no contract on
 //! stdout, so a broken harness can never corrupt or block an agent session.
 
+mod evidence_lock;
 pub mod post_tool_use;
 pub mod pre_tool_use;
 mod root;

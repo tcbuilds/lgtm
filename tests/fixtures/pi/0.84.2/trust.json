@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "pi_version": "0.84.2",
+  "fixture_id": "live-project-trust-yes-no-001",
+  "capture_method": "emitProjectTrustEvent probe with temporary global extensions and remember=false",
+  "decisions": {
+    "yes": {
+      "trusted": "yes",
+      "remember": false
+    },
+    "no": {
+      "trusted": "no",
+      "remember": false
+    }
+  },
+  "notes": "The first handler returning yes or no wins; undecided handlers fall through."
+}
