@@ -130,6 +130,138 @@ fn post_tool_native_language_check_reports_rust_violation() {
 }
 
 #[test]
+fn cfg_test_only_unwrap_is_review_feedback_without_blocking() {
+    let temp = TempDir::new();
+    let file = temp.path.join("lib.rs");
+    std::fs::write(
+        &file,
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn unwrap_is_review_only() {\n        let _ = input.unwrap();\n    }\n}\n",
+    )
+    .expect("fixture source");
+
+    let (_, results) = scan_target(&temp.path, &file.to_string_lossy());
+    let finding = results
+        .iter()
+        .find(|result| result.rule_id == "rust-no-unwrap-expect")
+        .expect("native Rust rule result");
+    assert_eq!(finding.status, Status::Failed);
+    assert_eq!(finding.severity, Severity::Warning);
+    assert_eq!(finding.locations[0].line, Some(5));
+
+    let mut output = Vec::new();
+    let code = handle_results(&mut output, &ClaudeAdapter, std::slice::from_ref(finding));
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(
+        output.is_empty(),
+        "warning-severity test-only findings must not emit a block decision"
+    );
+}
+
+#[test]
+fn review_reason_is_single_line_bounded_and_keeps_remediation_at_exact_limit() {
+    let remediation = "repair this finding";
+    let suffix = format!("{REVIEW_REMEDIATION_SEPARATOR}{remediation}");
+    let message_len = MAX_REVIEW_FEEDBACK_CHARS
+        .saturating_sub(REVIEW_FEEDBACK_PREFIX.chars().count())
+        .saturating_sub(suffix.chars().count());
+    let result = EnforcementResult {
+        rule_id: "warning-rule".to_string(),
+        status: Status::Failed,
+        severity: Severity::Warning,
+        message: format!("{}\n\t", "m".repeat(message_len)),
+        locations: Vec::new(),
+        remediation: Some(format!("{remediation}\r")),
+        evidence: crate::checks::ResultEvidence {
+            check: "native.warning-rule".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    };
+
+    let reason = review_reason(&result);
+    assert_eq!(reason.chars().count(), 1_024);
+    assert!(reason.chars().all(|character| !character.is_control()));
+    assert!(reason.ends_with(suffix.as_str()));
+}
+
+#[test]
+fn review_reason_keeps_remediation_when_message_exceeds_budget() {
+    let result = EnforcementResult {
+        rule_id: "warning-rule".to_string(),
+        status: Status::Failed,
+        severity: Severity::Warning,
+        message: "m".repeat(MAX_REVIEW_FEEDBACK_CHARS * 2),
+        locations: Vec::new(),
+        remediation: Some("repair the finding".to_string()),
+        evidence: crate::checks::ResultEvidence {
+            check: "native.warning-rule".to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    };
+
+    let reason = review_reason(&result);
+    assert!(reason.contains("repair the finding"));
+    assert!(reason.chars().count() <= 1_024);
+}
+
+#[test]
+fn authorization_blocks_only_failed_error_results() {
+    let cases = [
+        ("failed-error", Status::Failed, Severity::Error, true),
+        ("failed-warning", Status::Failed, Severity::Warning, false),
+        ("failed-info", Status::Failed, Severity::Info, false),
+        ("warning-error", Status::Warning, Severity::Error, false),
+        ("passed-error", Status::Passed, Severity::Error, false),
+        ("skipped-error", Status::Skipped, Severity::Error, false),
+        (
+            "not-applicable-error",
+            Status::NotApplicable,
+            Severity::Error,
+            false,
+        ),
+        (
+            "unverified-error",
+            Status::Unverified,
+            Severity::Error,
+            false,
+        ),
+        (
+            "overridden-error",
+            Status::Overridden,
+            Severity::Error,
+            false,
+        ),
+        ("waived-error", Status::Waived, Severity::Error, false),
+    ];
+
+    for (rule_id, status, severity, should_block) in cases {
+        let result = EnforcementResult {
+            rule_id: rule_id.to_string(),
+            status,
+            severity,
+            message: "authorization finding".to_string(),
+            locations: Vec::new(),
+            remediation: Some("repair the finding".to_string()),
+            evidence: crate::checks::ResultEvidence {
+                check: format!("native.{rule_id}"),
+                tool_version: None,
+                finding_descriptions: Vec::new(),
+            },
+        };
+        let mut output = Vec::new();
+        let code = handle_results(&mut output, &ClaudeAdapter, &[result]);
+        assert_eq!(code, ExitCode::SUCCESS, "case {rule_id}");
+        assert_eq!(!output.is_empty(), should_block, "case {rule_id}");
+        if should_block {
+            let decision: Value =
+                serde_json::from_slice(&output).expect("blocking response is JSON");
+            assert_eq!(decision["decision"], json!("block"), "case {rule_id}");
+        }
+    }
+}
+
+#[test]
 fn post_tool_native_language_check_reports_go_violation() {
     let temp = TempDir::new();
     let file = temp.path.join("main.go");
