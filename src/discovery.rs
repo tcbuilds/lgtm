@@ -1,17 +1,21 @@
 //! Bounded, deterministic discovery of nested workspaces and quality gates.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::fsutil::read_optional_bounded;
+use crate::fsutil::{open_regular_file, read_optional_bounded};
 
 const MAX_DEPTH: usize = 8;
 const MAX_WORKSPACES: usize = 64;
 const MAX_ENTRIES: usize = 4096;
+const MAX_FILESYSTEM_ENTRIES: usize = 64 * 1024;
 const MAX_METADATA_BYTES: u64 = 256 * 1024;
+const MAX_GITIGNORE_MATCHING_WORK: usize = 4 * 1024 * 1024;
+const MAX_GITIGNORE_PATTERN_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Workspace {
@@ -50,14 +54,23 @@ pub enum DiscoveryError {
     RootNotDirectory { path: PathBuf },
     #[error("discovery refused symlink: {path}")]
     SymlinkRefused { path: PathBuf },
-    #[error("discovery exceeded {limit} filesystem entries")]
+    #[error("discovery exceeded {limit} admitted entries")]
     EntryLimit { limit: usize },
+    #[error("discovery exceeded {limit} filesystem scan entries")]
+    FilesystemEntryLimit { limit: usize },
     #[error("discovery found more than {limit} workspaces")]
     WorkspaceLimit { limit: usize },
 }
 
 /// Find supported nested workspaces without executing repository code.
 pub fn discover(root: &Path) -> Result<Vec<Workspace>, DiscoveryError> {
+    discover_with_filesystem_limit(root, MAX_FILESYSTEM_ENTRIES)
+}
+
+fn discover_with_filesystem_limit(
+    root: &Path,
+    filesystem_entry_limit: usize,
+) -> Result<Vec<Workspace>, DiscoveryError> {
     let metadata =
         std::fs::symlink_metadata(root).map_err(|_| DiscoveryError::RootNotDirectory {
             path: root.to_path_buf(),
@@ -70,21 +83,30 @@ pub fn discover(root: &Path) -> Result<Vec<Workspace>, DiscoveryError> {
 
     let mut candidates = Vec::new();
     let mut entries_seen = 0_usize;
-    let gitignore = read_gitignore_patterns(root);
-    walk(
-        root,
-        root,
-        0,
-        &gitignore,
-        &mut entries_seen,
-        &mut candidates,
-    )?;
+    let mut filesystem_entries_seen = 0_usize;
+    let mut gitignore_matching_work = 0_usize;
+    let gitignore = read_gitignore_patterns(root, &mut gitignore_matching_work);
+    let mut state = WalkState {
+        entries_seen: &mut entries_seen,
+        filesystem_entries_seen: &mut filesystem_entries_seen,
+        filesystem_entry_limit,
+        gitignore_matching_work: &mut gitignore_matching_work,
+        candidates: &mut candidates,
+    };
+    walk(root, root, 0, &gitignore, &mut state)?;
     candidates.sort();
     candidates.dedup();
 
     let mut workspaces = Vec::new();
     for path in candidates {
-        if let Some(workspace) = workspace_for(root, &path) {
+        if let Some(workspace) = workspace_for(
+            root,
+            &path,
+            &gitignore,
+            &mut gitignore_matching_work,
+            &mut filesystem_entries_seen,
+            filesystem_entry_limit,
+        )? {
             workspaces.push(workspace);
             if workspaces.len() > MAX_WORKSPACES {
                 return Err(DiscoveryError::WorkspaceLimit {
@@ -97,13 +119,34 @@ pub fn discover(root: &Path) -> Result<Vec<Workspace>, DiscoveryError> {
     Ok(workspaces)
 }
 
+#[cfg(test)]
+fn discover_with_test_filesystem_limit(
+    root: &Path,
+    filesystem_entry_limit: usize,
+) -> Result<Vec<Workspace>, DiscoveryError> {
+    discover_with_filesystem_limit(root, filesystem_entry_limit)
+}
+
+struct WalkState<'a> {
+    entries_seen: &'a mut usize,
+    filesystem_entries_seen: &'a mut usize,
+    filesystem_entry_limit: usize,
+    gitignore_matching_work: &'a mut usize,
+    candidates: &'a mut Vec<PathBuf>,
+}
+
+struct ScannedEntry {
+    entry: std::fs::DirEntry,
+    is_dir: bool,
+    is_file: bool,
+}
+
 fn walk(
     root: &Path,
     current: &Path,
     depth: usize,
-    gitignore: &[String],
-    entries_seen: &mut usize,
-    candidates: &mut Vec<PathBuf>,
+    gitignore: &[GitignorePattern],
+    state: &mut WalkState<'_>,
 ) -> Result<(), DiscoveryError> {
     if depth > MAX_DEPTH {
         return Ok(());
@@ -111,29 +154,67 @@ fn walk(
     let entries = std::fs::read_dir(current).map_err(|_| DiscoveryError::RootNotDirectory {
         path: current.to_path_buf(),
     })?;
+    let mut scanned_entries = Vec::new();
     for entry in entries {
-        *entries_seen += 1;
-        if *entries_seen > MAX_ENTRIES {
-            return Err(DiscoveryError::EntryLimit { limit: MAX_ENTRIES });
-        }
         let entry = entry.map_err(|_| DiscoveryError::RootNotDirectory {
             path: current.to_path_buf(),
         })?;
         let path = entry.path();
+        consume_filesystem_entry(state.filesystem_entries_seen, state.filesystem_entry_limit)?;
         let metadata = std::fs::symlink_metadata(&path)
             .map_err(|_| DiscoveryError::RootNotDirectory { path: path.clone() })?;
         if metadata.file_type().is_symlink() {
             return Err(DiscoveryError::SymlinkRefused { path });
         }
-        if metadata.is_dir() {
-            if !ignored_dir(entry.file_name().to_string_lossy().as_ref())
-                && !gitignored(root, &path, gitignore)
-            {
-                walk(root, &path, depth + 1, gitignore, entries_seen, candidates)?;
-            }
-        } else if metadata.is_file() && is_marker(path.file_name().and_then(|name| name.to_str())) {
-            candidates.push(path.parent().unwrap_or(root).to_path_buf());
+        scanned_entries.push(ScannedEntry {
+            entry,
+            is_dir: metadata.is_dir(),
+            is_file: metadata.is_file(),
+        });
+    }
+    scanned_entries.sort_by(|left, right| left.entry.path().cmp(&right.entry.path()));
+    for entry in scanned_entries {
+        let path = entry.entry.path();
+        let file_name = entry.entry.file_name();
+        let gitignore_ignored = gitignored(
+            root,
+            &path,
+            gitignore,
+            entry.is_dir,
+            state.gitignore_matching_work,
+        );
+        if (entry.is_dir && ignored_dir(file_name.to_string_lossy().as_ref())) || gitignore_ignored
+        {
+            continue;
         }
+        consume_admitted_entry(state.entries_seen)?;
+        if entry.is_dir {
+            walk(root, &path, depth + 1, gitignore, state)?;
+        } else if entry.is_file && is_marker(path.file_name().and_then(|name| name.to_str())) {
+            state
+                .candidates
+                .push(path.parent().unwrap_or(root).to_path_buf());
+        }
+    }
+    Ok(())
+}
+
+fn consume_filesystem_entry(entries_seen: &mut usize, limit: usize) -> Result<(), DiscoveryError> {
+    *entries_seen = entries_seen
+        .checked_add(1)
+        .ok_or(DiscoveryError::FilesystemEntryLimit { limit })?;
+    if *entries_seen > limit {
+        return Err(DiscoveryError::FilesystemEntryLimit { limit });
+    }
+    Ok(())
+}
+
+fn consume_admitted_entry(entries_seen: &mut usize) -> Result<(), DiscoveryError> {
+    *entries_seen = entries_seen
+        .checked_add(1)
+        .ok_or(DiscoveryError::EntryLimit { limit: MAX_ENTRIES })?;
+    if *entries_seen > MAX_ENTRIES {
+        return Err(DiscoveryError::EntryLimit { limit: MAX_ENTRIES });
     }
     Ok(())
 }
@@ -174,27 +255,478 @@ fn ignored_dir(name: &str) -> bool {
     )
 }
 
-fn read_gitignore_patterns(root: &Path) -> Vec<String> {
-    read_optional_bounded(&root.join(".gitignore"), MAX_METADATA_BYTES)
-        .lines()
-        .filter_map(|line| {
-            let pattern = line.trim();
-            (!pattern.is_empty() && !pattern.starts_with('#') && !pattern.starts_with('!'))
-                .then(|| pattern.trim_end_matches('/').to_string())
-        })
-        .collect()
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitignorePattern {
+    segments: Vec<String>,
+    negated: bool,
+    anchored: bool,
+    directory_only: bool,
+    unsupported: bool,
 }
 
-fn gitignored(root: &Path, path: &Path, patterns: &[String]) -> bool {
-    let relative = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
-    let basename = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    patterns.iter().any(|pattern| {
-        let pattern = pattern.strip_prefix("**/").unwrap_or(pattern);
-        pattern == basename || pattern == relative || relative.ends_with(&format!("/{pattern}"))
-    })
+impl GitignorePattern {
+    fn fail_closed() -> Self {
+        Self {
+            segments: Vec::new(),
+            negated: false,
+            anchored: false,
+            directory_only: false,
+            unsupported: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobMatch {
+    NoMatch,
+    Matched,
+    Unsupported,
+    BudgetExceeded,
+}
+
+enum GitignoreContents {
+    Missing,
+    Invalid,
+    Valid(String),
+}
+
+fn read_gitignore_contents(root: &Path) -> GitignoreContents {
+    let path = root.join(".gitignore");
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return GitignoreContents::Missing;
+        }
+        Err(_) => return GitignoreContents::Invalid,
+    };
+    if !metadata.file_type().is_file() {
+        return GitignoreContents::Invalid;
+    }
+    let Ok(Some(file)) = open_regular_file(&path) else {
+        return GitignoreContents::Invalid;
+    };
+    let mut contents = String::new();
+    if file
+        .take(MAX_METADATA_BYTES.saturating_add(1))
+        .read_to_string(&mut contents)
+        .is_err()
+        || contents.len() as u64 > MAX_METADATA_BYTES
+    {
+        return GitignoreContents::Invalid;
+    }
+    GitignoreContents::Valid(contents)
+}
+
+fn read_gitignore_patterns(root: &Path, matching_work: &mut usize) -> Vec<GitignorePattern> {
+    let contents = match read_gitignore_contents(root) {
+        GitignoreContents::Missing => return Vec::new(),
+        GitignoreContents::Invalid => return vec![GitignorePattern::fail_closed()],
+        GitignoreContents::Valid(contents) => contents,
+    };
+    let mut patterns = Vec::new();
+    let contents = contents.replace("\r\n", "\n");
+    for line in contents.lines() {
+        if line.bytes().any(|byte| byte.is_ascii_control()) {
+            return vec![GitignorePattern::fail_closed()];
+        }
+        let pattern = line.trim_end();
+        if pattern.is_empty() || pattern.starts_with('#') {
+            continue;
+        }
+        let cost = pattern.len().saturating_add(1);
+        if !consume_matching_work(matching_work, cost) {
+            return vec![GitignorePattern::fail_closed()];
+        }
+        let pattern_is_overlong = pattern.len() > MAX_GITIGNORE_PATTERN_BYTES;
+        let (negated, pattern) = pattern
+            .strip_prefix('!')
+            .map_or((false, pattern), |pattern| (true, pattern));
+        let directory_only = pattern.ends_with('/');
+        let directory_pattern = pattern.trim_end_matches('/');
+        let anchored = directory_pattern.starts_with('/');
+        let directory_pattern = directory_pattern.trim_start_matches('/');
+        let segments: Vec<_> = directory_pattern
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .map(str::to_string)
+            .collect();
+        if segments.is_empty() {
+            return vec![GitignorePattern::fail_closed()];
+        }
+        let unsupported = pattern_is_overlong
+            || segments
+                .iter()
+                .any(|segment| pattern_is_unsupported(segment));
+        if unsupported {
+            return vec![GitignorePattern::fail_closed()];
+        }
+        patterns.push(GitignorePattern {
+            segments,
+            negated,
+            anchored,
+            directory_only,
+            unsupported: false,
+        });
+    }
+    patterns
+}
+
+fn gitignored(
+    root: &Path,
+    path: &Path,
+    patterns: &[GitignorePattern],
+    is_directory: bool,
+    matching_work: &mut usize,
+) -> bool {
+    if patterns.is_empty() || !consume_matching_work(matching_work, 1) {
+        return !patterns.is_empty();
+    }
+    let Some(path_segments) = relative_path_segments(root, path, matching_work) else {
+        return true;
+    };
+    let mut ignored = false;
+    let mut directory_scoped_ignore = false;
+    let mut direct_file_ignore = false;
+    for pattern in patterns {
+        if !consume_matching_work(matching_work, 1) {
+            return true;
+        }
+        let result = if !is_directory && pattern.directory_only {
+            if !pattern.negated {
+                continue;
+            }
+            gitignore_directory_ancestor_matches(pattern, &path_segments, matching_work)
+        } else if pattern.unsupported {
+            GlobMatch::Unsupported
+        } else {
+            gitignore_pattern_matches(pattern, &path_segments, matching_work)
+        };
+        match result {
+            GlobMatch::Matched if pattern.negated => {
+                if is_directory || !pattern.directory_only {
+                    ignored = false;
+                    directory_scoped_ignore = false;
+                    direct_file_ignore = false;
+                } else if directory_scoped_ignore && !direct_file_ignore {
+                    ignored = false;
+                    directory_scoped_ignore = false;
+                }
+            }
+            GlobMatch::Matched => {
+                ignored = true;
+                if !is_directory && !pattern.directory_only {
+                    let matches_ancestor =
+                        match matches_directory_ancestor(pattern, &path_segments, matching_work) {
+                            GlobMatch::Matched => true,
+                            GlobMatch::NoMatch => false,
+                            GlobMatch::Unsupported | GlobMatch::BudgetExceeded => return true,
+                        };
+                    let pattern_is_directory_scoped =
+                        (pattern.anchored || pattern.segments.len() > 1) && matches_ancestor;
+                    if pattern_is_directory_scoped {
+                        // Preserve an independent direct-file ignore while adding an
+                        // inherited directory-scoped source.
+                        directory_scoped_ignore = true;
+                    } else {
+                        direct_file_ignore = true;
+                    }
+                } else {
+                    direct_file_ignore = false;
+                    directory_scoped_ignore = false;
+                }
+            }
+            GlobMatch::Unsupported => return true,
+            GlobMatch::NoMatch => {}
+            GlobMatch::BudgetExceeded => return true,
+        }
+    }
+    ignored
+}
+
+fn relative_path_segments(
+    root: &Path,
+    path: &Path,
+    matching_work: &mut usize,
+) -> Option<Vec<String>> {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let mut cost = 1_usize;
+    for component in relative.components() {
+        let Component::Normal(segment) = component else {
+            continue;
+        };
+        cost = cost.checked_add(segment.len().checked_add(1)?)?;
+    }
+    if !consume_matching_work(matching_work, cost) {
+        return None;
+    }
+    let mut segments = Vec::new();
+    for component in relative.components() {
+        if let Component::Normal(segment) = component {
+            segments.push(segment.to_str()?.to_owned());
+        }
+    }
+    Some(segments)
+}
+
+fn matches_directory_ancestor(
+    pattern: &GitignorePattern,
+    relative: &[String],
+    matching_work: &mut usize,
+) -> GlobMatch {
+    gitignore_directory_ancestor_matches(pattern, relative, matching_work)
+}
+
+fn gitignore_directory_ancestor_matches(
+    pattern: &GitignorePattern,
+    relative: &[String],
+    matching_work: &mut usize,
+) -> GlobMatch {
+    if pattern.unsupported || relative.is_empty() {
+        return if pattern.unsupported {
+            GlobMatch::Unsupported
+        } else {
+            GlobMatch::NoMatch
+        };
+    }
+    if !pattern.negated
+        && pattern.segments.len() > 1
+        && pattern
+            .segments
+            .last()
+            .is_some_and(|segment| segment == "**")
+    {
+        let prefix = &pattern.segments[..pattern.segments.len() - 1];
+        for end in 1..relative.len() {
+            match glob_match_path(prefix, &relative[..end], matching_work) {
+                GlobMatch::Matched => return GlobMatch::Matched,
+                GlobMatch::BudgetExceeded => return GlobMatch::BudgetExceeded,
+                GlobMatch::Unsupported => return GlobMatch::Unsupported,
+                GlobMatch::NoMatch => {}
+            }
+        }
+    }
+    for end in 1..relative.len() {
+        match gitignore_pattern_matches(pattern, &relative[..end], matching_work) {
+            GlobMatch::Matched => return GlobMatch::Matched,
+            GlobMatch::BudgetExceeded => return GlobMatch::BudgetExceeded,
+            GlobMatch::Unsupported => return GlobMatch::Unsupported,
+            GlobMatch::NoMatch => {}
+        }
+    }
+    GlobMatch::NoMatch
+}
+
+fn gitignore_pattern_matches(
+    pattern: &GitignorePattern,
+    relative: &[String],
+    matching_work: &mut usize,
+) -> GlobMatch {
+    if pattern.segments.is_empty() {
+        return GlobMatch::NoMatch;
+    }
+    if !pattern.negated
+        && pattern.segments.len() > 1
+        && pattern
+            .segments
+            .last()
+            .is_some_and(|segment| segment == "**")
+    {
+        let prefix = &pattern.segments[..pattern.segments.len() - 1];
+        let mut matches_parent = false;
+        let mut matches_descendant = false;
+        for end in 0..=relative.len() {
+            match glob_match_path(prefix, &relative[..end], matching_work) {
+                GlobMatch::Matched if end == relative.len() => matches_parent = true,
+                GlobMatch::Matched => matches_descendant = true,
+                GlobMatch::BudgetExceeded => return GlobMatch::BudgetExceeded,
+                GlobMatch::NoMatch | GlobMatch::Unsupported => {}
+            }
+        }
+        if matches_parent && !matches_descendant {
+            return GlobMatch::NoMatch;
+        }
+    }
+    if pattern.anchored || pattern.segments.len() > 1 {
+        return glob_match_path(&pattern.segments, relative, matching_work);
+    }
+    let mut unsupported = false;
+    for segment in relative {
+        match glob_match_segment(&pattern.segments[0], segment, matching_work) {
+            GlobMatch::Matched => return GlobMatch::Matched,
+            GlobMatch::Unsupported => unsupported = true,
+            GlobMatch::BudgetExceeded => return GlobMatch::BudgetExceeded,
+            GlobMatch::NoMatch => {}
+        }
+    }
+    if unsupported {
+        GlobMatch::Unsupported
+    } else {
+        GlobMatch::NoMatch
+    }
+}
+
+fn glob_match_path(pattern: &[String], path: &[String], matching_work: &mut usize) -> GlobMatch {
+    let Some(cells) = (pattern.len() + 1).checked_mul(path.len() + 1) else {
+        return GlobMatch::BudgetExceeded;
+    };
+    if !consume_matching_work(matching_work, cells) {
+        return GlobMatch::BudgetExceeded;
+    }
+    let mut matches = vec![vec![false; path.len() + 1]; pattern.len() + 1];
+    matches[0][0] = true;
+    for pattern_index in 0..pattern.len() {
+        for path_index in 0..=path.len() {
+            if !matches[pattern_index][path_index] {
+                continue;
+            }
+            if pattern[pattern_index] == "**" {
+                matches[pattern_index + 1][path_index] = true;
+                if path_index < path.len() {
+                    matches[pattern_index][path_index + 1] = true;
+                }
+            } else if path_index < path.len() {
+                match glob_match_segment(&pattern[pattern_index], &path[path_index], matching_work)
+                {
+                    GlobMatch::Matched => matches[pattern_index + 1][path_index + 1] = true,
+                    GlobMatch::BudgetExceeded => return GlobMatch::BudgetExceeded,
+                    GlobMatch::NoMatch => {}
+                    GlobMatch::Unsupported => return GlobMatch::Unsupported,
+                }
+            }
+        }
+    }
+    if matches[pattern.len()][path.len()] {
+        GlobMatch::Matched
+    } else {
+        GlobMatch::NoMatch
+    }
+}
+
+fn glob_match_segment(pattern: &str, text: &str, matching_work: &mut usize) -> GlobMatch {
+    let classification_cost = pattern.len().saturating_add(1);
+    if !consume_matching_work(matching_work, classification_cost) {
+        return GlobMatch::BudgetExceeded;
+    }
+    if pattern_is_unsupported(pattern) {
+        return GlobMatch::Unsupported;
+    }
+    if !text.is_ascii()
+        && pattern
+            .bytes()
+            .any(|byte| matches!(byte, b'*' | b'?' | b'['))
+    {
+        return GlobMatch::Unsupported;
+    }
+    let pattern = pattern.as_bytes();
+    let text = text.as_bytes();
+    let Some(cells) = (pattern.len() + 1).checked_mul(text.len() + 1) else {
+        return GlobMatch::BudgetExceeded;
+    };
+    if !consume_matching_work(matching_work, cells) {
+        return GlobMatch::BudgetExceeded;
+    }
+    let mut matches = vec![vec![false; text.len() + 1]; pattern.len() + 1];
+    matches[0][0] = true;
+    for pattern_index in 0..pattern.len() {
+        for text_index in 0..=text.len() {
+            if !matches[pattern_index][text_index] {
+                continue;
+            }
+            match pattern[pattern_index] {
+                b'*' => {
+                    matches[pattern_index + 1][text_index] = true;
+                    if text_index < text.len() {
+                        matches[pattern_index][text_index + 1] = true;
+                    }
+                }
+                b'?' if text_index < text.len() => {
+                    matches[pattern_index + 1][text_index + 1] = true;
+                }
+                b'[' if text_index < text.len() => {
+                    let Some((end, matched)) =
+                        character_class(pattern, pattern_index, text[text_index])
+                    else {
+                        return GlobMatch::Unsupported;
+                    };
+                    if matched {
+                        matches[end][text_index + 1] = true;
+                    }
+                }
+                byte if text_index < text.len() && byte == text[text_index] => {
+                    matches[pattern_index + 1][text_index + 1] = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    if matches[pattern.len()][text.len()] {
+        GlobMatch::Matched
+    } else {
+        GlobMatch::NoMatch
+    }
+}
+
+fn pattern_is_unsupported(pattern: &str) -> bool {
+    if pattern.len() > MAX_GITIGNORE_PATTERN_BYTES
+        || pattern
+            .bytes()
+            .any(|byte| matches!(byte, b'\\' | b'{' | b'}'))
+    {
+        return true;
+    }
+    let pattern = pattern.as_bytes();
+    let mut index = 0;
+    while index < pattern.len() {
+        if pattern[index] == b'[' {
+            let Some((end, _)) = character_class(pattern, index, 0) else {
+                return true;
+            };
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+    false
+}
+
+fn consume_matching_work(matching_work: &mut usize, amount: usize) -> bool {
+    let Some(next) = matching_work.checked_add(amount) else {
+        return false;
+    };
+    if next > MAX_GITIGNORE_MATCHING_WORK {
+        return false;
+    }
+    *matching_work = next;
+    true
+}
+
+fn character_class(pattern: &[u8], start: usize, byte: u8) -> Option<(usize, bool)> {
+    let mut index = start + 1;
+    let negated = matches!(pattern.get(index), Some(b'!') | Some(b'^'));
+    if negated {
+        index += 1;
+    }
+    let mut matched = false;
+    let mut has_item = false;
+    while index < pattern.len() {
+        if pattern[index] == b']' && has_item {
+            return Some((index + 1, if negated { !matched } else { matched }));
+        }
+        let first = pattern[index];
+        has_item = true;
+        index += 1;
+        if pattern.get(index) == Some(&b'-') && pattern.get(index + 1).is_some() {
+            let last = pattern[index + 1];
+            if first > last {
+                return None;
+            }
+            matched |= first <= byte && byte <= last;
+            index += 2;
+        } else {
+            matched |= first == byte;
+        }
+    }
+    None
 }
 
 fn is_marker(name: Option<&str>) -> bool {
@@ -224,14 +756,30 @@ fn is_marker(name: Option<&str>) -> bool {
         || name.ends_with(".sql")
 }
 
-fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
-    let relative = path.strip_prefix(root).ok()?.to_path_buf();
-    let relative = if relative.as_os_str().is_empty() {
+fn workspace_for(
+    root: &Path,
+    path: &Path,
+    gitignore: &[GitignorePattern],
+    gitignore_matching_work: &mut usize,
+    filesystem_entries_seen: &mut usize,
+    filesystem_entry_limit: usize,
+) -> Result<Option<Workspace>, DiscoveryError> {
+    let Some(mut relative) = path.strip_prefix(root).ok().map(Path::to_path_buf) else {
+        return Ok(None);
+    };
+    relative = if relative.as_os_str().is_empty() {
         PathBuf::from(".")
     } else {
         relative
     };
-    let markers = marker_set(path);
+    let markers = marker_set(
+        root,
+        path,
+        gitignore,
+        gitignore_matching_work,
+        filesystem_entries_seen,
+        filesystem_entry_limit,
+    )?;
     let (language, commands) = if markers.contains("pyproject.toml")
         || markers.contains("setup.py")
         || markers.contains("setup.cfg")
@@ -266,14 +814,14 @@ fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
     } else if markers.iter().any(|marker| marker.ends_with(".sql")) {
         ("sql", sql_commands())
     } else {
-        return None;
+        return Ok(None);
     };
     let id = if relative == Path::new(".") {
         language.to_string()
     } else {
         relative.to_string_lossy().replace(['/', '\\'], "-")
     };
-    Some(Workspace {
+    Ok(Some(Workspace {
         id,
         language: language.to_string(),
         root: relative.clone(),
@@ -290,7 +838,7 @@ fn workspace_for(root: &Path, path: &Path) -> Option<Workspace> {
             })
             .collect(),
         coverage: Vec::new(),
-    })
+    }))
 }
 
 fn command_tier(purpose: &str) -> &'static str {
@@ -301,14 +849,59 @@ fn command_tier(purpose: &str) -> &'static str {
     }
 }
 
-fn marker_set(path: &Path) -> BTreeSet<String> {
-    std::fs::read_dir(path)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
-        .collect()
+fn marker_set(
+    root: &Path,
+    path: &Path,
+    gitignore: &[GitignorePattern],
+    gitignore_matching_work: &mut usize,
+    filesystem_entries_seen: &mut usize,
+    filesystem_entry_limit: usize,
+) -> Result<BTreeSet<String>, DiscoveryError> {
+    let entries = std::fs::read_dir(path).map_err(|_| DiscoveryError::RootNotDirectory {
+        path: path.to_path_buf(),
+    })?;
+    let mut marker_entries = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|_| DiscoveryError::RootNotDirectory {
+            path: path.to_path_buf(),
+        })?;
+        consume_filesystem_entry(filesystem_entries_seen, filesystem_entry_limit)?;
+        let marker_path = entry.path();
+        let metadata = std::fs::symlink_metadata(&marker_path).map_err(|_| {
+            DiscoveryError::RootNotDirectory {
+                path: marker_path.clone(),
+            }
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(DiscoveryError::SymlinkRefused { path: marker_path });
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if is_marker(Some(name)) {
+            marker_entries.push((marker_path, name.to_string()));
+        }
+    }
+    marker_entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut markers = BTreeSet::new();
+    for (marker_path, name) in marker_entries {
+        if gitignored(
+            root,
+            &marker_path,
+            gitignore,
+            false,
+            gitignore_matching_work,
+        ) {
+            continue;
+        }
+        markers.insert(name);
+    }
+    Ok(markers)
 }
 
 fn python_commands(root: &Path) -> Vec<(Vec<String>, &'static str, &'static str)> {
@@ -820,6 +1413,62 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    struct TemporaryDiscoveryRoot(PathBuf);
+
+    impl std::ops::Deref for TemporaryDiscoveryRoot {
+        type Target = Path;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TemporaryDiscoveryRoot {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TemporaryDiscoveryRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn unique_discovery_root(label: &str) -> TemporaryDiscoveryRoot {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        for attempt in 0..16 {
+            let root = std::env::temp_dir().join(format!(
+                "lgtm-discovery-{label}-{}-{id}-{attempt}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&root) {
+                Ok(()) => return TemporaryDiscoveryRoot(root),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("temporary discovery root should be creatable: {error}"),
+            }
+        }
+        panic!("could not reserve a unique temporary discovery root")
+    }
+
+    fn add_cargo_workspace(root: &Path, relative: &str) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(&path).expect("workspace directory");
+        std::fs::write(path.join("Cargo.toml"), "[package]\nname = \"fixture\"\n")
+            .expect("workspace marker");
+    }
+
+    fn workspace_roots(root: &Path) -> Vec<String> {
+        discover(root)
+            .expect("discovery succeeds")
+            .into_iter()
+            .map(|workspace| workspace.root.to_string_lossy().replace('\\', "/"))
+            .collect()
+    }
+
     #[test]
     fn skips_build_artifacts_and_gitignored_workspace_markers() {
         let root =
@@ -832,6 +1481,769 @@ mod tests {
         std::fs::write(root.join("generated/package.json"), "{}").expect("ignored marker");
         assert!(discover(&root).expect("discovery").is_empty());
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn applies_gitignore_literal_nested_anchored_and_wildcard_directory_rules() {
+        let root = unique_discovery_root("gitignore-globs");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(
+            root.join(".gitignore"),
+            "generated-*/\npackages/generated/\n/anchored/\nbuild-?/\nalpha-[a-z]/\n",
+        )
+        .expect("gitignore");
+        add_cargo_workspace(&root, "generated-cache");
+        add_cargo_workspace(&root, "generated");
+        add_cargo_workspace(&root, "alpha-a");
+        add_cargo_workspace(&root, "alpha-1");
+        add_cargo_workspace(&root, "packages/generated");
+        add_cargo_workspace(&root, "packages/kept");
+        add_cargo_workspace(&root, "anchored");
+        add_cargo_workspace(&root, "nested/anchored");
+        add_cargo_workspace(&root, "build-a");
+        add_cargo_workspace(&root, "build-aa");
+
+        assert_eq!(
+            workspace_roots(&root),
+            [
+                "alpha-1",
+                "build-aa",
+                "generated",
+                "nested/anchored",
+                "packages/kept"
+            ]
+        );
+    }
+
+    #[test]
+    fn accepts_crlf_gitignore_lines_without_accepting_control_syntax() {
+        let root = unique_discovery_root("gitignore-crlf");
+        std::fs::write(root.join(".gitignore"), b"ignored/\r\n").expect("gitignore");
+        add_cargo_workspace(&root, "ignored");
+        add_cargo_workspace(&root, "visible");
+
+        assert_eq!(workspace_roots(&root), ["visible"]);
+    }
+
+    #[test]
+    fn fails_closed_for_unicode_wildcard_and_class_matching() {
+        for (label, rule) in [("question", "caf?/\n"), ("class", "caf[a-z]/\n")] {
+            let root = unique_discovery_root(&format!("gitignore-unicode-{label}"));
+            std::fs::write(root.join(".gitignore"), rule).expect("gitignore");
+            add_cargo_workspace(&root, "café");
+
+            assert!(
+                workspace_roots(&root).is_empty(),
+                "Unicode wildcard rule must fail closed: {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn applies_nested_double_star_rules_and_ordered_negation() {
+        let root = unique_discovery_root("gitignore-negation");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(
+            root.join(".gitignore"),
+            "external/**/generated-*/\ngenerated-*/\n!/generated-cache/\n",
+        )
+        .expect("gitignore");
+        add_cargo_workspace(&root, "external/generated-docs");
+        add_cargo_workspace(&root, "external/packages/generated-cache");
+        add_cargo_workspace(&root, "generated-other");
+        add_cargo_workspace(&root, "generated-cache");
+        add_cargo_workspace(&root, "service");
+
+        assert_eq!(workspace_roots(&root), ["generated-cache", "service"]);
+    }
+
+    #[test]
+    fn trailing_double_star_does_not_hide_parent_reopened_by_negation() {
+        let root = unique_discovery_root("gitignore-trailing-double-star-negation");
+        std::fs::write(root.join(".gitignore"), "foo/**\n!foo/bar/\n").expect("gitignore");
+        add_cargo_workspace(&root, "foo/bar");
+
+        assert_eq!(workspace_roots(&root), ["foo/bar"]);
+    }
+
+    #[test]
+    fn trailing_double_star_keeps_complex_prefix_parents_traversable() {
+        for (label, rule, workspace) in [
+            ("leading-double-star", "**/foo/**\n", "foo"),
+            ("repeated-double-star", "foo/**/**\n", "foo"),
+            ("nested-double-star", "foo/**/bar/**\n", "foo/bar"),
+        ] {
+            let root = unique_discovery_root(&format!("gitignore-trailing-double-star-{label}"));
+            std::fs::write(root.join(".gitignore"), rule).expect("gitignore");
+            let mut matching_work = 0;
+            let patterns = read_gitignore_patterns(&root, &mut matching_work);
+            matching_work = 0;
+            let parent = root.join(workspace);
+            assert!(
+                !gitignored(&root, &parent, &patterns, true, &mut matching_work,),
+                "parent must remain traversable for rule: {rule}"
+            );
+            assert!(
+                gitignored(
+                    &root,
+                    &parent.join("Cargo.toml"),
+                    &patterns,
+                    false,
+                    &mut matching_work,
+                ),
+                "descendant must remain ignored for rule: {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn negated_trailing_double_star_reopens_descendant_parent() {
+        let root = unique_discovery_root("gitignore-trailing-double-star-descendant-negation");
+        std::fs::write(root.join(".gitignore"), "foo/**\n!foo/bar/**\n").expect("gitignore");
+        add_cargo_workspace(&root, "foo/bar");
+
+        assert_eq!(workspace_roots(&root), ["foo/bar"]);
+    }
+
+    #[test]
+    fn unsupported_gitignore_syntax_fails_closed() {
+        for (label, rule, directory) in [
+            ("brace", "generated-{cache,docs}/", "generated-cache"),
+            ("escape", r"generated\*/", "generated-cache"),
+            ("malformed", "[", "generated-cache"),
+            ("reversed", "generated[z-a]/", "generatedx"),
+        ] {
+            let root = unique_discovery_root(label);
+            std::fs::write(root.join(".gitignore"), rule).expect("gitignore");
+            add_cargo_workspace(&root, directory);
+            assert!(
+                workspace_roots(&root).is_empty(),
+                "rule should fail closed: {rule}"
+            );
+        }
+
+        let overlong_root = unique_discovery_root("overlong");
+        let overlong = format!("{}/\n", "x".repeat(MAX_GITIGNORE_PATTERN_BYTES + 1));
+        std::fs::write(overlong_root.join(".gitignore"), overlong).expect("gitignore");
+        add_cargo_workspace(&overlong_root, "generated-cache");
+        assert!(workspace_roots(&overlong_root).is_empty());
+
+        let multi_segment_overlong_root = unique_discovery_root("overlong-multi-segment");
+        let multi_segment_overlong = format!(
+            "{}target/\n",
+            "**/".repeat((MAX_GITIGNORE_PATTERN_BYTES / 3) + 1)
+        );
+        std::fs::write(
+            multi_segment_overlong_root.join(".gitignore"),
+            multi_segment_overlong,
+        )
+        .expect("gitignore");
+        add_cargo_workspace(&multi_segment_overlong_root, "generated-cache");
+        assert!(workspace_roots(&multi_segment_overlong_root).is_empty());
+    }
+
+    #[test]
+    fn negated_pattern_length_bound_includes_negation_marker() {
+        let root = unique_discovery_root("gitignore-negated-length-bound");
+        let exact = format!("!{}", "x".repeat(MAX_GITIGNORE_PATTERN_BYTES - 1));
+        std::fs::write(root.join(".gitignore"), exact).expect("gitignore");
+        let mut matching_work = 0;
+        assert_ne!(
+            read_gitignore_patterns(&root, &mut matching_work),
+            vec![GitignorePattern::fail_closed()]
+        );
+
+        let root = unique_discovery_root("gitignore-negated-length-overlong");
+        let overlong = format!("!{}", "x".repeat(MAX_GITIGNORE_PATTERN_BYTES));
+        std::fs::write(root.join(".gitignore"), overlong).expect("gitignore");
+        let mut matching_work = 0;
+        assert_eq!(
+            read_gitignore_patterns(&root, &mut matching_work),
+            vec![GitignorePattern::fail_closed()]
+        );
+    }
+
+    #[test]
+    fn control_byte_negation_cannot_reopen_ignored_directory() {
+        let root = unique_discovery_root("gitignore-control-tab");
+        std::fs::write(
+            root.join(".gitignore"),
+            "generated-*/\n!generated-cache/\t\n",
+        )
+        .expect("gitignore");
+        add_cargo_workspace(&root, "generated-cache");
+
+        assert!(workspace_roots(&root).is_empty());
+    }
+
+    #[test]
+    fn gitignored_marker_files_do_not_create_workspaces() {
+        for (label, rule, workspace) in [
+            ("nested-file", "foo/**\n", "foo/service"),
+            ("direct-file", "foo/*.toml\n", "foo"),
+            ("basename-file", "*.toml\n", "service"),
+        ] {
+            let root = unique_discovery_root(&format!("gitignore-marker-files-{label}"));
+            std::fs::write(root.join(".gitignore"), rule).expect("gitignore");
+            add_cargo_workspace(&root, workspace);
+            assert!(
+                workspace_roots(&root).is_empty(),
+                "rule should ignore marker: {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn ignored_marker_cannot_override_visible_marker_classification() {
+        let root = unique_discovery_root("gitignore-marker-classification");
+        std::fs::write(root.join(".gitignore"), "Cargo.toml\n").expect("gitignore");
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n")
+            .expect("ignored rust marker");
+        std::fs::write(root.join("package.json"), "{}\n").expect("visible typescript marker");
+
+        let workspaces = discover(&root).expect("discovery");
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].language, "typescript");
+    }
+
+    #[test]
+    fn marker_rescan_matching_budget_is_stable_across_creation_order() {
+        let pattern = GitignorePattern {
+            segments: vec!["x".to_string()],
+            negated: false,
+            anchored: false,
+            directory_only: false,
+            unsupported: false,
+        };
+        let mut probe_work = 0;
+        assert!(!gitignored(
+            Path::new("/root"),
+            Path::new("/root/Cargo.toml"),
+            std::slice::from_ref(&pattern),
+            false,
+            &mut probe_work,
+        ));
+        let initial_work = MAX_GITIGNORE_MATCHING_WORK - probe_work;
+
+        let marker_names = |reverse: bool| {
+            let root = unique_discovery_root("marker-rescan-order");
+            let names = ["Cargo.toml", "package.json"];
+            let order = if reverse { [names[1], names[0]] } else { names };
+            for name in order {
+                std::fs::write(root.join(name), "marker").expect("marker");
+            }
+            let mut matching_work = initial_work;
+            let mut filesystem_entries_seen = 0;
+            marker_set(
+                &root,
+                &root,
+                std::slice::from_ref(&pattern),
+                &mut matching_work,
+                &mut filesystem_entries_seen,
+                MAX_FILESYSTEM_ENTRIES,
+            )
+            .expect("marker rescan")
+        };
+
+        let expected = BTreeSet::from(["Cargo.toml".to_string()]);
+        assert_eq!(marker_names(false), expected);
+        assert_eq!(marker_names(true), expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn marker_rescan_refuses_symlink_before_filtering() {
+        let root = unique_discovery_root("marker-rescan-symlink");
+        let outside = unique_discovery_root("marker-rescan-symlink-outside");
+        std::fs::write(root.join("package.json"), "{}\n").expect("visible marker");
+        std::os::unix::fs::symlink(outside.join("Cargo.toml"), root.join("Cargo.toml"))
+            .expect("marker symlink");
+
+        let mut matching_work = 0;
+        let mut filesystem_entries_seen = 0;
+        assert!(matches!(
+            marker_set(
+                &root,
+                &root,
+                &[],
+                &mut matching_work,
+                &mut filesystem_entries_seen,
+                MAX_FILESYSTEM_ENTRIES,
+            ),
+            Err(DiscoveryError::SymlinkRefused { path }) if path == root.join("Cargo.toml")
+        ));
+    }
+
+    #[test]
+    fn directory_only_negation_does_not_clear_file_pattern_ignore() {
+        for (label, rule) in [
+            ("extension", "*.toml\n!service/\n"),
+            ("generic", "*\n!service/\n"),
+        ] {
+            let root =
+                unique_discovery_root(&format!("gitignore-directory-negation-file-rule-{label}"));
+            std::fs::write(root.join(".gitignore"), rule).expect("gitignore");
+            add_cargo_workspace(&root, "service");
+
+            assert!(
+                workspace_roots(&root).is_empty(),
+                "directory-only negation must not clear direct file rule: {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn directory_only_negation_preserves_file_ignore_after_directory_rule() {
+        let root = unique_discovery_root("gitignore-directory-negation-after-directory-rule");
+        std::fs::write(
+            root.join(".gitignore"),
+            "*.toml\nfoo/**/bar/**\n!foo/x/bar/\n",
+        )
+        .expect("gitignore");
+        add_cargo_workspace(&root, "foo/x/bar");
+
+        assert!(workspace_roots(&root).is_empty());
+    }
+
+    #[test]
+    fn directory_only_negation_preserves_multisegment_direct_file_ignore_after_directory_rule() {
+        let root = unique_discovery_root("gitignore-directory-negation-multisegment-file-rule");
+        std::fs::write(
+            root.join(".gitignore"),
+            "foo/x/bar/*.toml\nfoo/**/bar/**\n!foo/x/bar/\n",
+        )
+        .expect("gitignore");
+        add_cargo_workspace(&root, "foo/x/bar");
+
+        assert!(workspace_roots(&root).is_empty());
+    }
+
+    #[test]
+    fn directory_only_negation_reopens_complex_trailing_double_star_descendant() {
+        let root = unique_discovery_root("gitignore-directory-negation-complex-trailing-star");
+        std::fs::write(root.join(".gitignore"), "foo/**/bar/**\n!foo/x/bar/\n").expect("gitignore");
+        add_cargo_workspace(&root, "foo/x/bar");
+
+        assert_eq!(workspace_roots(&root), ["foo/x/bar"]);
+    }
+
+    #[test]
+    fn directory_only_gitignore_rules_do_not_hide_matching_files() {
+        let root = unique_discovery_root("gitignore-directory-only-file");
+        std::fs::write(root.join(".gitignore"), "generated-*/\n").expect("gitignore");
+        std::fs::write(root.join("generated-check.sh"), "#!/bin/sh\n").expect("shell marker");
+
+        let workspaces = discover(&root).expect("discovery");
+        assert_eq!(
+            workspaces
+                .iter()
+                .map(|workspace| workspace.language.as_str())
+                .collect::<Vec<_>>(),
+            ["shell"]
+        );
+    }
+
+    #[test]
+    fn ignored_directory_is_not_reopened_by_leading_space_negation() {
+        let root = unique_discovery_root("gitignore-leading-space-negation");
+        std::fs::write(
+            root.join(".gitignore"),
+            "generated-*/\n! generated-cache/\n",
+        )
+        .expect("gitignore");
+        add_cargo_workspace(&root, "generated-cache");
+        assert!(workspace_roots(&root).is_empty());
+    }
+
+    #[test]
+    fn standalone_unsupported_and_overlong_negations_fail_closed() {
+        for (label, rule) in [
+            ("standalone-malformed-negation", "![\n"),
+            ("standalone-brace-negation", "!generated-{cache}/\n"),
+            ("standalone-escape-negation", "!generated\\*/\n"),
+            ("standalone-reversed-negation", "!generated[z-a]/\n"),
+        ] {
+            let root = unique_discovery_root(label);
+            std::fs::write(root.join(".gitignore"), rule).expect("gitignore");
+            add_cargo_workspace(&root, "generated-cache");
+            assert!(
+                workspace_roots(&root).is_empty(),
+                "rule should fail closed: {rule}"
+            );
+        }
+
+        let root = unique_discovery_root("overlong-negated-multi-segment");
+        let rule = format!(
+            "!{}target/\n",
+            "**/".repeat((MAX_GITIGNORE_PATTERN_BYTES / 3) + 1)
+        );
+        std::fs::write(root.join(".gitignore"), rule).expect("gitignore");
+        add_cargo_workspace(&root, "generated-cache");
+        assert!(workspace_roots(&root).is_empty());
+
+        let root = unique_discovery_root("overlong-separator-only");
+        std::fs::write(
+            root.join(".gitignore"),
+            "/".repeat(MAX_GITIGNORE_PATTERN_BYTES + 1),
+        )
+        .expect("gitignore");
+        add_cargo_workspace(&root, "generated-cache");
+        assert!(workspace_roots(&root).is_empty());
+    }
+
+    #[test]
+    fn oversized_or_invalid_gitignore_fails_closed() {
+        let oversized_root = unique_discovery_root("oversized-gitignore");
+        let mut oversized = b"generated-/\n".to_vec();
+        oversized.resize(MAX_METADATA_BYTES as usize + 1, b'x');
+        std::fs::write(oversized_root.join(".gitignore"), oversized).expect("gitignore");
+        add_cargo_workspace(&oversized_root, "generated-cache");
+        assert!(workspace_roots(&oversized_root).is_empty());
+
+        let invalid_root = unique_discovery_root("invalid-gitignore");
+        std::fs::write(invalid_root.join(".gitignore"), b"generated-/\n\xff").expect("gitignore");
+        add_cargo_workspace(&invalid_root, "generated-cache");
+        assert!(workspace_roots(&invalid_root).is_empty());
+    }
+
+    #[test]
+    fn nul_in_gitignore_fails_closed() {
+        let root = unique_discovery_root("nul-gitignore");
+        std::fs::write(root.join(".gitignore"), b"ignored/\0\n").expect("gitignore");
+        add_cargo_workspace(&root, "ignored");
+        assert!(workspace_roots(&root).is_empty());
+    }
+
+    #[test]
+    fn valid_character_class_classification_is_budgeted() {
+        let mut matching_work = MAX_GITIGNORE_MATCHING_WORK - "[a-z]".len() - 1;
+        assert_eq!(
+            glob_match_segment("[a-z]", "a", &mut matching_work),
+            GlobMatch::BudgetExceeded
+        );
+        assert_eq!(matching_work, MAX_GITIGNORE_MATCHING_WORK);
+    }
+
+    #[test]
+    fn unsupported_negated_gitignore_syntax_cannot_reopen_ignored_directories() {
+        for (label, rule) in [
+            ("brace", "generated-*/\n!generated-{cache}/\n"),
+            (
+                "escape",
+                r"generated-*/
+!generated\*/
+",
+            ),
+            ("malformed", "generated-*/\n![\n"),
+            ("reversed", "generated-*/\n!generated[z-a]/\n"),
+        ] {
+            let root = unique_discovery_root(label);
+            std::fs::write(root.join(".gitignore"), rule).expect("gitignore");
+            add_cargo_workspace(&root, "generated-cache");
+            assert!(
+                workspace_roots(&root).is_empty(),
+                "rule should remain ignored: {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn ignored_directories_do_not_consume_entry_or_workspace_limits() {
+        let root = unique_discovery_root("gitignore-entry-budget");
+        std::fs::write(root.join(".gitignore"), "ignored-*/\n").expect("gitignore");
+        for index in 0..=MAX_ENTRIES {
+            add_cargo_workspace(&root, &format!("ignored-{index}"));
+        }
+        add_cargo_workspace(&root, "kept");
+        assert_eq!(workspace_roots(&root), ["kept"]);
+    }
+
+    #[test]
+    fn visible_entries_still_hit_entry_limit() {
+        let root = unique_discovery_root("entry-limit");
+        for index in 0..=MAX_ENTRIES {
+            std::fs::write(root.join(format!("visible-{index}.txt")), "entry")
+                .expect("visible entry");
+        }
+        assert!(matches!(
+            discover(&root),
+            Err(DiscoveryError::EntryLimit { limit: MAX_ENTRIES })
+        ));
+    }
+
+    #[test]
+    fn visible_workspace_markers_still_hit_workspace_limit() {
+        let root = unique_discovery_root("workspace-limit");
+        for index in 0..=MAX_WORKSPACES {
+            add_cargo_workspace(&root, &format!("workspace-{index}"));
+        }
+        assert!(matches!(
+            discover(&root),
+            Err(DiscoveryError::WorkspaceLimit {
+                limit: MAX_WORKSPACES
+            })
+        ));
+    }
+
+    #[test]
+    fn matching_budget_advances_for_available_negation_and_fails_closed_when_exhausted() {
+        let pattern = GitignorePattern {
+            segments: vec!["*".to_string()],
+            negated: true,
+            anchored: false,
+            directory_only: false,
+            unsupported: false,
+        };
+        let mut matching_work = 0;
+        assert!(!gitignored(
+            Path::new("/root"),
+            Path::new("/root/workspace"),
+            std::slice::from_ref(&pattern),
+            true,
+            &mut matching_work,
+        ));
+        assert!(matching_work > 0);
+        matching_work = MAX_GITIGNORE_MATCHING_WORK;
+        assert!(gitignored(
+            Path::new("/root"),
+            Path::new("/root/workspace"),
+            &[pattern],
+            true,
+            &mut matching_work,
+        ));
+    }
+
+    #[test]
+    fn directory_only_rules_consume_matching_budget_for_files() {
+        let pattern = GitignorePattern {
+            segments: vec!["generated".to_string()],
+            negated: false,
+            anchored: false,
+            directory_only: true,
+            unsupported: false,
+        };
+        let mut matching_work = MAX_GITIGNORE_MATCHING_WORK - 3;
+        assert!(!gitignored(
+            Path::new("/root"),
+            Path::new("/root"),
+            std::slice::from_ref(&pattern),
+            false,
+            &mut matching_work,
+        ));
+        assert_eq!(matching_work, MAX_GITIGNORE_MATCHING_WORK);
+    }
+
+    #[test]
+    fn valid_nonmatching_rules_consume_matching_budget_during_discovery() {
+        let discover_in_creation_order = |reverse: bool| {
+            let root = unique_discovery_root("matching-budget");
+            let rules = "x\n".repeat(1_000);
+            std::fs::write(root.join(".gitignore"), rules).expect("gitignore");
+            let mut indices: Vec<_> = (0..50).collect();
+            if reverse {
+                indices.reverse();
+            }
+            for index in indices {
+                add_cargo_workspace(&root, &format!("workspace-{index:02}"));
+            }
+            workspace_roots(&root)
+        };
+
+        let forward = discover_in_creation_order(false);
+        let reverse = discover_in_creation_order(true);
+        assert_eq!(forward, reverse);
+        assert!(!forward.is_empty());
+        assert!(forward.len() < 50);
+    }
+
+    #[test]
+    fn unsupported_rule_is_charged_before_fail_closed_sentinel() {
+        let root = unique_discovery_root("unsupported-gitignore-budget");
+        std::fs::write(root.join(".gitignore"), "generated-{cache,docs}/\n").expect("gitignore");
+        let mut matching_work = 0;
+
+        let patterns = read_gitignore_patterns(&root, &mut matching_work);
+        assert_eq!(patterns, vec![GitignorePattern::fail_closed()]);
+        assert!(matching_work > "generated-{cache,docs}/".len());
+    }
+
+    #[test]
+    fn discover_scan_budget_counts_ignored_entries() {
+        let root = unique_discovery_root("discover-ignored-scan-budget");
+        std::fs::write(root.join(".gitignore"), "ignored-*/\n").expect("gitignore");
+        std::fs::create_dir(root.join("ignored-a")).expect("ignored directory");
+        std::fs::create_dir(root.join("ignored-b")).expect("ignored directory");
+        assert!(matches!(
+            discover_with_test_filesystem_limit(&root, 2),
+            Err(DiscoveryError::FilesystemEntryLimit { limit: 2 })
+        ));
+    }
+
+    #[test]
+    fn discover_scan_budget_propagates_through_workspace_marker_rescan() {
+        let root = unique_discovery_root("discover-marker-scan-budget");
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n")
+            .expect("workspace marker");
+        assert!(matches!(
+            discover_with_test_filesystem_limit(&root, 1),
+            Err(DiscoveryError::FilesystemEntryLimit { limit: 1 })
+        ));
+    }
+
+    #[test]
+    fn matcher_cell_budget_exhaustion_fails_inside_the_matcher() {
+        let mut matching_work = MAX_GITIGNORE_MATCHING_WORK - 5;
+        assert_eq!(
+            glob_match_path(
+                &["**".to_string()],
+                &["nested".to_string(), "child".to_string()],
+                &mut matching_work,
+            ),
+            GlobMatch::BudgetExceeded
+        );
+
+        let pattern = GitignorePattern {
+            segments: vec!["**".to_string(), "a*".to_string()],
+            negated: false,
+            anchored: false,
+            directory_only: false,
+            unsupported: false,
+        };
+        let relative = vec!["nested".to_string(), "aaaa".to_string()];
+        let mut matching_work = MAX_GITIGNORE_MATCHING_WORK - 9;
+        assert_eq!(
+            gitignore_pattern_matches(&pattern, &relative, &mut matching_work),
+            GlobMatch::BudgetExceeded
+        );
+    }
+
+    #[test]
+    fn filesystem_scan_budget_is_distinct_from_admitted_entry_budget() {
+        let root = unique_discovery_root("filesystem-scan-budget");
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n")
+            .expect("workspace marker");
+        std::fs::write(root.join("README.md"), "fixture").expect("non-marker entry");
+        let mut filesystem_entries_seen = MAX_FILESYSTEM_ENTRIES;
+        let mut entries_seen = 0;
+        let mut matching_work = 0;
+        let mut candidates = Vec::new();
+        let mut state = WalkState {
+            entries_seen: &mut entries_seen,
+            filesystem_entries_seen: &mut filesystem_entries_seen,
+            filesystem_entry_limit: MAX_FILESYSTEM_ENTRIES,
+            gitignore_matching_work: &mut matching_work,
+            candidates: &mut candidates,
+        };
+        assert!(matches!(
+            walk(&root, &root, 0, &[], &mut state),
+            Err(DiscoveryError::FilesystemEntryLimit {
+                limit: MAX_FILESYSTEM_ENTRIES
+            })
+        ));
+
+        let mut marker_filesystem_entries_seen = MAX_FILESYSTEM_ENTRIES;
+        let mut marker_matching_work = 0;
+        assert!(matches!(
+            marker_set(
+                &root,
+                &root,
+                &[],
+                &mut marker_matching_work,
+                &mut marker_filesystem_entries_seen,
+                MAX_FILESYSTEM_ENTRIES,
+            ),
+            Err(DiscoveryError::FilesystemEntryLimit {
+                limit: MAX_FILESYSTEM_ENTRIES
+            })
+        ));
+
+        let mut workspace_for_filesystem_entries_seen = MAX_FILESYSTEM_ENTRIES - 1;
+        let mut workspace_for_matching_work = 0;
+        assert!(matches!(
+            workspace_for(
+                &root,
+                &root,
+                &[],
+                &mut workspace_for_matching_work,
+                &mut workspace_for_filesystem_entries_seen,
+                MAX_FILESYSTEM_ENTRIES,
+            ),
+            Err(DiscoveryError::FilesystemEntryLimit {
+                limit: MAX_FILESYSTEM_ENTRIES
+            })
+        ));
+
+        let mut filesystem_entries = MAX_FILESYSTEM_ENTRIES;
+        assert!(matches!(
+            consume_filesystem_entry(&mut filesystem_entries, MAX_FILESYSTEM_ENTRIES),
+            Err(DiscoveryError::FilesystemEntryLimit {
+                limit: MAX_FILESYSTEM_ENTRIES
+            })
+        ));
+        let mut admitted_entries = MAX_ENTRIES;
+        assert!(matches!(
+            consume_admitted_entry(&mut admitted_entries),
+            Err(DiscoveryError::EntryLimit { limit: MAX_ENTRIES })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_backslash_path_is_not_reincluded_as_nested_path() {
+        let root = unique_discovery_root("gitignore-backslash");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(root.join(".gitignore"), "*\n!safe/outside/\n").expect("gitignore");
+        add_cargo_workspace(&root, "safe\\outside");
+        assert!(workspace_roots(&root).is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wildcard_rules_fail_closed_for_invalid_native_path_components() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = unique_discovery_root("gitignore-invalid-native-component");
+        std::fs::write(root.join(".gitignore"), "*\n!*\n").expect("gitignore");
+        let invalid_name = OsString::from_vec(vec![0xff]);
+        let invalid_directory = root.join(&invalid_name);
+        std::fs::create_dir(&invalid_directory).expect("invalid native directory");
+        std::fs::write(
+            invalid_directory.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("workspace marker");
+        assert!(workspace_roots(&root).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filesystem_budget_counts_symlink_before_refusal() {
+        let root = unique_discovery_root("symlink-budget-boundary");
+        let outside = unique_discovery_root("symlink-budget-boundary-outside");
+        std::os::unix::fs::symlink(&outside, root.join("linked")).expect("symlink");
+
+        assert!(matches!(
+            discover_with_test_filesystem_limit(&root, 0),
+            Err(DiscoveryError::FilesystemEntryLimit { limit: 0 })
+        ));
+        assert!(matches!(
+            discover(&root),
+            Err(DiscoveryError::SymlinkRefused { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlink_even_when_name_is_gitignored() {
+        let root = unique_discovery_root("ignored-symlink");
+        let outside = unique_discovery_root("ignored-symlink-outside");
+        std::fs::write(root.join(".gitignore"), "ignored/\n").expect("gitignore");
+        std::os::unix::fs::symlink(&outside, root.join("ignored")).expect("symlink");
+        assert!(matches!(
+            discover(&root),
+            Err(DiscoveryError::SymlinkRefused { .. })
+        ));
     }
 
     #[test]
