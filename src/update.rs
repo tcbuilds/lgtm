@@ -563,13 +563,41 @@ fn cleanup_child(
     process_group: libc::pid_t,
     deadline: Instant,
 ) -> Result<Option<i32>, String> {
-    let terminate_error = terminate_process_group(child, process_group).err();
-    let reap_result = reap_child_before_deadline(child, deadline);
+    // A reaped leader's PID may already belong to an unrelated process. Group-only termination is
+    // therefore required after try_wait reports that the leader has exited.
+    let initial_status = child.try_wait();
+    let (reap_result, termination_errors) = match initial_status {
+        Ok(Some(status)) => (
+            Ok(status.code()),
+            terminate_process_group_only(process_group)
+                .err()
+                .into_iter()
+                .collect(),
+        ),
+        Ok(None) => {
+            let first_termination_error = terminate_process_group(child, process_group).err();
+            let reap_result = reap_child_before_deadline(child, deadline);
+            let mut termination_errors = first_termination_error.into_iter().collect::<Vec<_>>();
+            if !termination_errors.is_empty()
+                && let Err(error) = terminate_process_group_only(process_group)
+            {
+                termination_errors.push(error);
+            }
+            (reap_result, termination_errors)
+        }
+        Err(error) => (
+            Err(format!("check command completion ({error})")),
+            terminate_process_group_only(process_group)
+                .err()
+                .into_iter()
+                .collect(),
+        ),
+    };
     let gone_result = prove_process_group_gone(process_group, deadline);
     match (reap_result, gone_result) {
-        (Ok(status), Ok(())) if terminate_error.is_none() => Ok(status),
+        (Ok(status), Ok(())) if termination_errors.is_empty() => Ok(status),
         (reap_result, gone_result) => {
-            let mut cleanup_errors = terminate_error.into_iter().collect::<Vec<_>>();
+            let mut cleanup_errors = termination_errors;
             if let Err(reap_error) = reap_result {
                 cleanup_errors.push(reap_error);
             }
@@ -624,20 +652,29 @@ fn prove_process_group_gone(process_group: libc::pid_t, deadline: Instant) -> Re
 }
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+fn terminate_process_group_only(process_group: libc::pid_t) -> Result<(), String> {
+    let result = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+    if result == -1 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(format!("kill command group ({error})"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 fn terminate_process_group(
     child: &std::process::Child,
     process_group: libc::pid_t,
 ) -> Result<(), String> {
-    let group_result = unsafe { libc::kill(-process_group, libc::SIGKILL) };
-    if group_result == -1 {
-        let group_error = std::io::Error::last_os_error();
-        if group_error.raw_os_error() != Some(libc::ESRCH) {
-            let direct_error = kill_direct_child(child).err();
-            return Err(match direct_error {
-                Some(direct_error) => format!("kill command group ({group_error}); {direct_error}"),
-                None => format!("kill command group ({group_error})"),
-            });
-        }
+    let group_result = terminate_process_group_only(process_group);
+    if let Err(group_error) = group_result {
+        let direct_error = kill_direct_child(child).err();
+        return Err(match direct_error {
+            Some(direct_error) => format!("{group_error}; {direct_error}"),
+            None => group_error,
+        });
     }
     kill_direct_child(child)
 }
