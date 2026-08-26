@@ -1,6 +1,6 @@
 use std::io::Read;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -100,18 +100,15 @@ pub(super) fn run_scan_with_deadline(
     if status.is_none() {
         kill_child(&mut child, pid);
     }
+    let cleanup = cleanup_process_group(pid, deadline);
     let captured_stdout = join_bounded(stdout, deadline);
     let captured_stderr = join_bounded(stderr, deadline);
     if captured_stdout.is_none() || captured_stderr.is_none() {
-        kill_process_group(pid);
         return ScanOutcome::Unverified(
             "gitleaks output did not close before the deadline".to_string(),
         );
     }
-    status.map_or_else(
-        || ScanOutcome::Unverified("gitleaks timed out or could not be waited on".to_string()),
-        |status| classify_exit(status.code(), report_path),
-    )
+    classify_after_cleanup(cleanup, status, report_path)
 }
 
 fn prepare_command(command: &mut Command) {
@@ -202,31 +199,106 @@ fn set_own_process_group(command: &mut Command) {
 #[cfg(not(unix))]
 fn set_own_process_group(_command: &mut Command) {}
 
-#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessGroupState {
+    Gone,
+    Alive,
+}
+
 fn kill_process_group(pid: u32) {
-    // SAFETY: kill has no memory-safety preconditions; negative pid selects the child group.
-    unsafe {
-        let _ = libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-    }
+    let _ = terminate_process_group(pid);
 }
 
-#[cfg(not(unix))]
-fn kill_process_group(_pid: u32) {}
-
-#[cfg(unix)]
-fn process_group_exists(pid: u32) -> bool {
-    // SAFETY: signal zero performs existence/permission checking only.
-    unsafe {
-        if libc::kill(-(pid as libc::pid_t), 0) == 0 {
-            return true;
+fn terminate_process_group(pid: u32) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        // SAFETY: kill has no memory-safety preconditions; negative pid selects the child group.
+        let result = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+        if result == 0 {
+            return Ok(());
         }
-        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        Err(format!("kill process group {pid}: {error}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Err("process-group cleanup is unsupported on this target".to_string())
     }
 }
 
-#[cfg(not(unix))]
-fn process_group_exists(_pid: u32) -> bool {
-    false
+fn cleanup_process_group(pid: u32, deadline: Instant) -> Result<(), String> {
+    match process_group_state(pid)? {
+        ProcessGroupState::Gone => Ok(()),
+        ProcessGroupState::Alive => {
+            terminate_process_group(pid)?;
+            prove_process_group_gone(pid, deadline)
+        }
+    }
+}
+
+fn prove_process_group_gone(pid: u32, deadline: Instant) -> Result<(), String> {
+    loop {
+        match process_group_state(pid)? {
+            ProcessGroupState::Gone => return Ok(()),
+            ProcessGroupState::Alive => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(format!(
+                        "process group {pid} remained alive at the cleanup deadline"
+                    ));
+                }
+                thread::sleep(POLL_INTERVAL.min(remaining));
+            }
+        }
+    }
+}
+
+fn process_group_exists(pid: u32) -> bool {
+    matches!(process_group_state(pid), Ok(ProcessGroupState::Alive))
+}
+
+fn process_group_state(pid: u32) -> Result<ProcessGroupState, String> {
+    #[cfg(unix)]
+    {
+        // SAFETY: signal zero performs existence/permission checking only.
+        let result = unsafe { libc::kill(-(pid as libc::pid_t), 0) };
+        if result == 0 {
+            return Ok(ProcessGroupState::Alive);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(ProcessGroupState::Gone);
+        }
+        if error.raw_os_error() == Some(libc::EPERM) {
+            return Ok(ProcessGroupState::Alive);
+        }
+        Err(format!("probe process group {pid}: {error}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Err("process-group probing is unsupported on this target".to_string())
+    }
+}
+
+fn classify_after_cleanup(
+    cleanup: Result<(), String>,
+    status: Option<ExitStatus>,
+    report_path: &Path,
+) -> ScanOutcome {
+    let Some(status) = status else {
+        return ScanOutcome::Unverified("gitleaks timed out or could not be waited on".to_string());
+    };
+    if let Err(error) = cleanup {
+        return ScanOutcome::Unverified(format!(
+            "could not prove gitleaks process-group cleanup: {error}"
+        ));
+    }
+    classify_exit(status.code(), report_path)
 }
 
 #[cfg(all(test, unix))]
@@ -266,5 +338,69 @@ mod tests {
         let captured = run_details_with_timeout(command, Duration::from_millis(100));
         assert!(captured.is_none());
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn successful_scan_kills_pipe_closing_descendant_before_classifying() {
+        let group_path =
+            std::env::temp_dir().join(format!("lgtm-gitleaks-group-{}.pid", std::process::id()));
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            // Close both captured pipes in the surviving descendant. The
+            // process-group proof, not pipe draining, must gate classification.
+            .arg("(sleep 120) >/dev/null 2>&1 & printf '%s' \"$$\" > \"$1\"; exit 0")
+            .arg("lgtm-gitleaks-test")
+            .arg(&group_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let outcome = run_scan_with_deadline(
+            command,
+            Path::new("unused-report.json"),
+            deadline_after(Duration::from_secs(2)),
+        );
+        let group_id = std::fs::read_to_string(&group_path)
+            .expect("scan wrote its process-group id")
+            .trim()
+            .parse::<u32>()
+            .expect("scan wrote a numeric process-group id");
+        let cleanup = prove_process_group_gone(group_id, deadline_after(Duration::from_secs(2)));
+        if cleanup.is_err() {
+            // Keep the mutation proof from leaking its intentionally surviving
+            // descendant after this test fails.
+            kill_process_group(group_id);
+            let _ = prove_process_group_gone(group_id, deadline_after(Duration::from_secs(2)));
+        }
+        std::fs::remove_file(group_path).ok();
+        assert!(cleanup.is_ok(), "process group survived the returned scan");
+        assert!(matches!(
+            outcome,
+            ScanOutcome::Findings(findings) if findings.is_empty()
+        ));
+    }
+
+    #[test]
+    fn cleanup_failure_is_unverified_before_classifying_exit() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let outcome = classify_after_cleanup(
+            Err("group remained alive".to_string()),
+            Some(ExitStatus::from_raw(0)),
+            Path::new("unused-report.json"),
+        );
+        assert!(matches!(
+            outcome,
+            ScanOutcome::Unverified(reason) if reason.contains("process-group cleanup")
+        ));
+    }
+
+    #[test]
+    fn live_process_group_is_unproven_after_expired_deadline() {
+        // The current test process owns this group, so it is a stable live
+        // group for proving that an expired cleanup deadline cannot pass.
+        let group_id = unsafe { libc::getpgrp() } as u32;
+        assert_eq!(process_group_state(group_id), Ok(ProcessGroupState::Alive));
+        assert!(prove_process_group_gone(group_id, Instant::now()).is_err());
     }
 }
