@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -27,6 +28,8 @@ struct Record {
     profile: String,
     results: Vec<EnforcementResult>,
     #[serde(default)]
+    coverage: Vec<CoverageRecord>,
+    #[serde(default)]
     commands: Vec<CommandRecord>,
     #[serde(default)]
     overrides: Vec<OverrideRecord>,
@@ -38,6 +41,55 @@ struct Record {
     policy_digest: Option<String>,
     #[serde(default)]
     binary_version: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CoverageStatus {
+    Passed,
+    Failed,
+    Unverified,
+    NotApplicable,
+}
+
+impl CoverageStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Unverified => "unverified",
+            Self::NotApplicable => "not_applicable",
+        }
+    }
+}
+
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CoverageRecord {
+    workspace_id: String,
+    status: CoverageStatus,
+    #[serde(deserialize_with = "required_nullable")]
+    tool: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    scope: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    line_percent: Option<f64>,
+    #[serde(deserialize_with = "required_nullable")]
+    branch_percent: Option<f64>,
+    #[serde(deserialize_with = "required_nullable")]
+    measured_at_ms: Option<u128>,
+    #[serde(default, rename = "cwd")]
+    _cwd: Option<String>,
+    #[serde(default, rename = "cwd_identity")]
+    _cwd_identity: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -124,10 +176,47 @@ fn read(path: &Path) -> Result<Vec<Record>, String> {
     raw.lines()
         .enumerate()
         .map(|(index, line)| {
-            serde_json::from_str(line)
-                .map_err(|error| format!("malformed evidence line {} ({error})", index + 1))
+            let record: Record = serde_json::from_str(line)
+                .map_err(|error| malformed_evidence(index + 1, &error))?;
+            validate_coverage(&record)
+                .map_err(|error| format!("malformed evidence line {} ({error})", index + 1))?;
+            Ok(record)
         })
         .collect()
+}
+
+fn malformed_evidence(line: usize, error: &serde_json::Error) -> String {
+    let reason = match error.classify() {
+        serde_json::error::Category::Syntax => "invalid JSON syntax",
+        serde_json::error::Category::Eof => "unexpected end of JSON",
+        serde_json::error::Category::Data => "evidence schema mismatch",
+        serde_json::error::Category::Io => "JSON input failure",
+    };
+    format!(
+        "malformed evidence line {line} ({reason} at column {})",
+        error.column()
+    )
+}
+
+fn validate_coverage(record: &Record) -> Result<(), String> {
+    for coverage in &record.coverage {
+        if coverage.workspace_id.is_empty() {
+            return Err("coverage workspace_id must not be empty".to_string());
+        }
+        for (name, value) in [
+            ("line_percent", coverage.line_percent),
+            ("branch_percent", coverage.branch_percent),
+        ] {
+            if let Some(value) = value
+                && (!value.is_finite() || !(0.0..=100.0).contains(&value))
+            {
+                return Err(format!(
+                    "coverage {name} must be finite and between 0 and 100"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn write_report(
@@ -166,6 +255,7 @@ fn write_report(
     }
     write_files(record, root, output)?;
     write_results(record, output)?;
+    write_coverage(record, output)?;
     write_commands(record, output)?;
     write_overrides(record, output)?;
     write_waivers(record, output)?;
@@ -335,6 +425,79 @@ fn write_results(record: &Record, output: &mut impl Write) -> Result<(), String>
     Ok(())
 }
 
+struct CoverageProjectionNumber<T> {
+    value: Option<T>,
+    rendered: String,
+}
+
+struct CoverageProjection {
+    workspace: String,
+    status: String,
+    tool: String,
+    scope: String,
+    line_percent: CoverageProjectionNumber<f64>,
+    branch_percent: CoverageProjectionNumber<f64>,
+    measured_at_ms: CoverageProjectionNumber<u128>,
+}
+
+fn project_coverage(item: &CoverageRecord) -> CoverageProjection {
+    CoverageProjection {
+        workspace: coverage_workspace(&item.workspace_id),
+        status: item.status.as_str().to_string(),
+        tool: coverage_tool(item.tool.as_deref()),
+        scope: optional_coverage_text(item.scope.as_deref()),
+        line_percent: CoverageProjectionNumber {
+            value: item.line_percent,
+            rendered: optional_number(item.line_percent),
+        },
+        branch_percent: CoverageProjectionNumber {
+            value: item.branch_percent,
+            rendered: optional_number(item.branch_percent),
+        },
+        measured_at_ms: CoverageProjectionNumber {
+            value: item.measured_at_ms,
+            rendered: optional_integer(item.measured_at_ms),
+        },
+    }
+}
+
+fn write_coverage(record: &Record, output: &mut impl Write) -> Result<(), String> {
+    if record.coverage.is_empty() {
+        return Ok(());
+    }
+    let mut coverage: Vec<_> = record.coverage.iter().map(project_coverage).collect();
+    coverage.sort_by(|left, right| {
+        left.workspace
+            .cmp(&right.workspace)
+            .then_with(|| left.status.cmp(&right.status))
+            .then_with(|| left.tool.cmp(&right.tool))
+            .then_with(|| left.scope.cmp(&right.scope))
+            .then_with(|| {
+                compare_coverage_number(left.line_percent.value, right.line_percent.value)
+            })
+            .then_with(|| {
+                compare_coverage_number(left.branch_percent.value, right.branch_percent.value)
+            })
+            .then_with(|| left.measured_at_ms.value.cmp(&right.measured_at_ms.value))
+    });
+    writeln!(output, "Coverage ({}):", coverage.len()).map_err(write_error)?;
+    for item in coverage {
+        writeln!(
+            output,
+            "- workspace={} status={} tool={} scope={} line_percent={} branch_percent={} measured_at_ms={}",
+            item.workspace,
+            item.status,
+            item.tool,
+            item.scope,
+            item.line_percent.rendered,
+            item.branch_percent.rendered,
+            item.measured_at_ms.rendered,
+        )
+        .map_err(write_error)?;
+    }
+    Ok(())
+}
+
 fn write_commands(record: &Record, output: &mut impl Write) -> Result<(), String> {
     writeln!(output, "Commands ({}):", record.commands.len()).map_err(write_error)?;
     for command in &record.commands {
@@ -445,6 +608,123 @@ fn sanitize(value: &str) -> String {
         .take(512)
         .collect()
 }
+struct SanitizedCoverageText {
+    text: String,
+    has_substantive_character: bool,
+}
+
+fn coverage_workspace(value: &str) -> String {
+    let sanitized = sanitize_coverage_with_origin(value);
+    if sanitized.text.is_empty() || !sanitized.has_substantive_character {
+        "redacted-workspace".to_string()
+    } else {
+        sanitized.text
+    }
+}
+
+fn coverage_tool(value: Option<&str>) -> String {
+    value.map_or_else(
+        || "null".to_string(),
+        |value| {
+            let component = value.rsplit(['/', '\\']).next().unwrap_or(value);
+            let sanitized = sanitize_coverage(component);
+            let bytes = sanitized.as_bytes();
+            let without_drive =
+                if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+                    &sanitized[2..]
+                } else {
+                    &sanitized
+                };
+            if without_drive.is_empty() {
+                "tool".to_string()
+            } else {
+                without_drive.to_string()
+            }
+        },
+    )
+}
+
+fn optional_coverage_text(value: Option<&str>) -> String {
+    value.map_or_else(|| "null".to_string(), sanitize_coverage)
+}
+
+fn sanitize_coverage(value: &str) -> String {
+    sanitize_coverage_with_origin(value).text
+}
+
+fn sanitize_coverage_with_origin(value: &str) -> SanitizedCoverageText {
+    let mut text = String::new();
+    let mut output_len = 0;
+    let mut has_substantive_character = false;
+    for character in value.chars() {
+        let emitted = if character.is_control()
+            || matches!(character, '\u{2028}' | '\u{2029}')
+            || is_coverage_default_ignorable(character)
+        {
+            None
+        } else if character.is_whitespace() || character == '=' {
+            Some('_')
+        } else {
+            Some(character)
+        };
+        let Some(emitted) = emitted else {
+            continue;
+        };
+        if output_len >= 512 {
+            break;
+        }
+        if !character.is_whitespace() {
+            has_substantive_character = true;
+        }
+        text.push(emitted);
+        output_len += 1;
+    }
+    SanitizedCoverageText {
+        text,
+        has_substantive_character,
+    }
+}
+
+fn is_coverage_default_ignorable(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00ad}'
+            | '\u{034f}'
+            | '\u{061c}'
+            | '\u{115f}'..='\u{1160}'
+            | '\u{17b4}'..='\u{17b5}'
+            | '\u{180b}'..='\u{180f}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{feff}'
+            | '\u{ffa0}'
+            | '\u{fff0}'..='\u{fff8}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0000}'..='\u{e0fff}'
+    )
+}
+
+fn compare_coverage_number(left: Option<f64>, right: Option<f64>) -> Ordering {
+    match (left, right) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (Some(left), Some(right)) => left.total_cmp(&right),
+    }
+}
+
+fn optional_number(value: Option<f64>) -> String {
+    value.map_or_else(|| "null".to_string(), |value| value.to_string())
+}
+
+fn optional_integer(value: Option<u128>) -> String {
+    value.map_or_else(|| "null".to_string(), |value| value.to_string())
+}
+
 fn write_error(error: std::io::Error) -> String {
     format!("write report ({error})")
 }
