@@ -8,12 +8,25 @@ pub(super) fn add_path_observations(
 ) {
     let lower = path.to_ascii_lowercase();
     add_language(&lower, languages);
-    for (needle, domain) in DOMAIN_PATHS {
-        if lower.contains(needle) {
+    for (name, domain) in DOMAIN_DIRECTORY_PATHS {
+        if has_directory_component(&lower, name) {
             domains.insert((*domain).to_string());
         }
     }
-    if SECURITY_PATHS.iter().any(|needle| lower.contains(needle)) {
+    for (name, domain) in DOMAIN_COMPONENT_PATHS {
+        if has_component_or_filename_stem(&lower, name) {
+            domains.insert((*domain).to_string());
+        }
+    }
+    for (first, second, domain) in DOMAIN_DIRECTORY_SEQUENCES {
+        if has_directory_sequence(&lower, first, second) {
+            domains.insert((*domain).to_string());
+        }
+    }
+    if SECURITY_PATHS
+        .iter()
+        .any(|name| has_component_or_filename_stem(&lower, name))
+    {
         risks.insert("authentication".to_string());
     }
     if DEPENDENCY_FILES.iter().any(|name| lower.ends_with(name)) {
@@ -59,18 +72,63 @@ fn add_matches(text: &str, mappings: &[(&str, &str)], output: &mut BTreeSet<Stri
     }
 }
 
-const DOMAIN_PATHS: &[(&str, &str)] = &[
-    ("/routes/", "api"),
-    ("/api/", "api"),
-    ("/models/", "database"),
-    ("/migrations/", "database"),
-    ("/workers/", "worker"),
-    ("terraform", "infrastructure"),
-    (".github/workflows", "infrastructure"),
-    ("/components/", "frontend"),
-];
+fn has_directory_component(path: &str, name: &str) -> bool {
+    let mut components = path_components(path).peekable();
+    while let Some(component) = components.next() {
+        if component == name && components.peek().is_some() {
+            return true;
+        }
+    }
+    false
+}
 
-const SECURITY_PATHS: &[&str] = &["/auth", "/security", "permissions", "oauth"];
+fn has_directory_sequence(path: &str, first: &str, second: &str) -> bool {
+    let mut components = path_components(path).peekable();
+    while let Some(component) = components.next() {
+        if component == first && components.peek().copied() == Some(second) {
+            components.next();
+            if components.peek().is_some() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn has_component_or_filename_stem(path: &str, name: &str) -> bool {
+    let mut components = path_components(path).peekable();
+    while let Some(component) = components.next() {
+        if component == name {
+            return true;
+        }
+        if components.peek().is_none()
+            && component
+                .rsplit_once('.')
+                .is_some_and(|(stem, _)| stem == name)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn path_components(path: &str) -> impl Iterator<Item = &str> {
+    path.split('/')
+        .filter(|component| !component.is_empty() && *component != ".")
+}
+
+const DOMAIN_DIRECTORY_PATHS: &[(&str, &str)] = &[
+    ("routes", "api"),
+    ("api", "api"),
+    ("models", "database"),
+    ("migrations", "database"),
+    ("workers", "worker"),
+    ("components", "frontend"),
+];
+const DOMAIN_COMPONENT_PATHS: &[(&str, &str)] = &[("terraform", "infrastructure")];
+const DOMAIN_DIRECTORY_SEQUENCES: &[(&str, &str, &str)] =
+    &[(".github", "workflows", "infrastructure")];
+const SECURITY_PATHS: &[&str] = &["auth", "security", "permissions", "oauth"];
 const DEPENDENCY_FILES: &[&str] = &[
     "pyproject.toml",
     "requirements.txt",

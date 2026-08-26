@@ -1,12 +1,235 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
 use crate::context;
 use crate::policy::load_embedded_registry;
 
+static NEXT_METADATA_FREE_ROOT: AtomicU64 = AtomicU64::new(0);
+
+struct MetadataFreeRoot(PathBuf);
+
+impl MetadataFreeRoot {
+    fn new() -> Self {
+        Self::new_in(&std::env::temp_dir(), &NEXT_METADATA_FREE_ROOT)
+    }
+
+    fn new_in(base: &Path, counter: &AtomicU64) -> Self {
+        for _ in 0..64 {
+            let unique = counter.fetch_add(1, Ordering::Relaxed);
+            let path = base.join(format!(
+                "lgtm-select-path-signals-{}-{unique}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("metadata-free root should be creatable: {error}"),
+            }
+        }
+        panic!("metadata-free root exhausted unique candidates");
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for MetadataFreeRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn fixture_root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context-python")
+}
+
+#[test]
+fn metadata_free_root_atomically_creates_a_process_local_unique_root_and_cannot_reuse_existing_contents()
+ {
+    let (first_path, second_path);
+    {
+        let first = MetadataFreeRoot::new();
+        let marker = first.path().join("pre-existing-marker");
+        std::fs::write(&marker, "contaminated").expect("marker should be writable");
+
+        let second = MetadataFreeRoot::new();
+        first_path = first.path().to_path_buf();
+        second_path = second.path().to_path_buf();
+
+        assert_ne!(first_path, second_path);
+        assert!(marker.is_file(), "the first root must remain untouched");
+        assert!(!second.path().join("pre-existing-marker").exists());
+    }
+
+    assert!(
+        !first_path.exists(),
+        "first root should be cleaned up on drop"
+    );
+    assert!(
+        !second_path.exists(),
+        "second root should be cleaned up on drop"
+    );
+}
+
+#[test]
+fn metadata_free_root_skips_preexisting_candidates_and_cleans_created_root() {
+    let base_path;
+    {
+        let base = MetadataFreeRoot::new();
+        base_path = base.path().to_path_buf();
+        let counter = AtomicU64::new(0);
+        let stale = base
+            .path()
+            .join(format!("lgtm-select-path-signals-{}-0", std::process::id()));
+        std::fs::create_dir(&stale).expect("stale candidate should be creatable");
+        let marker = stale.join("pre-existing-marker");
+        std::fs::write(&marker, "stale").expect("stale marker should be writable");
+
+        let created = MetadataFreeRoot::new_in(base.path(), &counter);
+        let created_path = created.path().to_path_buf();
+        assert_ne!(created_path, stale);
+        assert!(marker.is_file(), "stale candidate must remain untouched");
+        drop(created);
+        assert!(
+            !created_path.exists(),
+            "created root should be cleaned up on drop"
+        );
+        assert!(marker.is_file(), "stale marker must survive cleanup");
+    }
+    assert!(
+        !base_path.exists(),
+        "stale-root parent should be cleaned up on drop"
+    );
+}
+
+#[test]
+fn path_signal_context_drives_independent_selection_and_explain_outcomes() {
+    let root = MetadataFreeRoot::new();
+    let registry = load_embedded_registry().expect("embedded registry valid");
+    let mut rule = registry.first().expect("seed rule").clone();
+    rule.id = "root-route-auth-boundary-rule".to_string();
+    rule.applies_to.languages = vec!["python".to_string()];
+    rule.applies_to.domains = vec!["api".to_string()];
+    rule.applies_to.file_patterns = vec!["**/*.py".to_string()];
+    rule.activation.change_types = vec![ChangeType::Modify];
+    rule.activation.signals = vec!["authentication".to_string()];
+
+    #[derive(Clone, Copy)]
+    struct SelectionCase {
+        path: &'static str,
+        expected_domains: &'static [&'static str],
+        expected_risks: &'static [&'static str],
+        expected_selected: bool,
+        expected_reason: &'static str,
+    }
+
+    let cases = [
+        SelectionCase {
+            path: "routes/auth.py",
+            expected_domains: &["api"],
+            expected_risks: &["authentication"],
+            expected_selected: true,
+            expected_reason: "all scope and activation conditions matched",
+        },
+        SelectionCase {
+            path: "auth.py",
+            expected_domains: &[],
+            expected_risks: &["authentication"],
+            expected_selected: false,
+            expected_reason: "domain scope did not match",
+        },
+        SelectionCase {
+            path: "routes/handler.py",
+            expected_domains: &["api"],
+            expected_risks: &[],
+            expected_selected: false,
+            expected_reason: "activation signal did not match",
+        },
+        SelectionCase {
+            path: "routes2/auth.py",
+            expected_domains: &[],
+            expected_risks: &["authentication"],
+            expected_selected: false,
+            expected_reason: "domain scope did not match",
+        },
+        SelectionCase {
+            path: "myroutes/auth.py",
+            expected_domains: &[],
+            expected_risks: &["authentication"],
+            expected_selected: false,
+            expected_reason: "domain scope did not match",
+        },
+        SelectionCase {
+            path: "routes/author.py",
+            expected_domains: &["api"],
+            expected_risks: &[],
+            expected_selected: false,
+            expected_reason: "activation signal did not match",
+        },
+    ];
+
+    for SelectionCase {
+        path,
+        expected_domains,
+        expected_risks,
+        expected_selected,
+        expected_reason,
+    } in cases
+    {
+        let task_context = context::build(root.path(), &[path.to_string()], "");
+        assert_eq!(
+            task_context.languages,
+            ["python"],
+            "unexpected languages for path: {path}"
+        );
+        assert_eq!(
+            task_context.domains,
+            expected_domains
+                .iter()
+                .map(|domain| (*domain).to_string())
+                .collect::<Vec<_>>(),
+            "unexpected domains for path: {path}"
+        );
+        assert_eq!(
+            task_context.risk_signals,
+            expected_risks
+                .iter()
+                .map(|risk| (*risk).to_string())
+                .collect::<Vec<_>>(),
+            "unexpected risks for path: {path}"
+        );
+
+        let rules = [rule.clone()];
+        let selected_ids: Vec<_> = select_rules(&task_context, &rules, ChangeType::Modify)
+            .iter()
+            .map(|selected| selected.id.as_str())
+            .collect();
+        if expected_selected {
+            assert_eq!(
+                selected_ids,
+                ["root-route-auth-boundary-rule"],
+                "unexpected selection for path: {path}"
+            );
+        } else {
+            assert!(
+                selected_ids.is_empty(),
+                "unexpected selection for path: {path}"
+            );
+        }
+
+        let decisions = explain_rules(&task_context, &rules, ChangeType::Modify);
+        assert_eq!(
+            decisions.len(),
+            1,
+            "unexpected decision count for path: {path}"
+        );
+        let decision = &decisions[0];
+        assert_eq!(decision.selected, expected_selected, "path: {path}");
+        assert_eq!(decision.reason, expected_reason, "path: {path}");
+    }
 }
 
 #[test]
