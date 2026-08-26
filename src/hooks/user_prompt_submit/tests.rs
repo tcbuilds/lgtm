@@ -497,3 +497,36 @@ fn malformed_and_oversized_payloads_fail_safe_without_output() {
         assert!(output.is_empty());
     }
 }
+
+#[test]
+fn non_native_route_prompt_emits_all_endpoint_security_guidance() {
+    let root = native_fixture_root();
+    let payload = json!({
+        "cwd": root,
+        "user_prompt": "fix src/routes/api.py using @router.post jwt.decode request.get_json",
+    });
+    let mut output = Vec::new();
+    let code = run_with_adapter(
+        &mut payload.to_string().as_bytes(),
+        &mut output,
+        &CodexAdapter,
+    );
+    remove_intent(&root);
+    let value: serde_json::Value = serde_json::from_slice(&output).expect("valid response JSON");
+    let context = value["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .expect("context string");
+
+    assert_eq!(code, ExitCode::SUCCESS);
+    for instruction in [
+        "For each public or expensive route, document runtime validation, server-side authentication/authorization, rate limiting, secure cookies/CORS/CSRF, and non-debug defaults; report unknown semantics as review.",
+        "For each public or expensive route, prove boundary validation, server-side authorization, rate limiting, secure cookie/CORS/CSRF settings, and non-debug defaults with runtime evidence; static signals never claim semantic proof.",
+        "For public endpoints, require boundary validation, server-side auth/authorization, rate limits for expensive/public routes, secure cookies/CORS/CSRF, and non-debug defaults.",
+    ] {
+        assert!(
+            context.contains(instruction),
+            "missing endpoint guidance: {instruction}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

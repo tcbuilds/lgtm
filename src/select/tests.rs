@@ -211,3 +211,131 @@ fn semgrep_policy_rules_activate_for_representative_python_change() {
         assert!(ids.contains(&expected), "missing selected rule {expected}");
     }
 }
+
+#[test]
+fn endpoint_security_consumers_use_produced_canonical_signals() {
+    let root = fixture_root();
+    let context = context::build(
+        &root,
+        &["src/routes/signals.py".to_string()],
+        "+@router.post(\"/items\")\n+jwt.decode(token)\n+request.get_json()\n",
+    );
+    assert!(context.risk_signals.contains(&"authentication".to_string()));
+    assert!(context.risk_signals.contains(&"public-api".to_string()));
+    assert!(context.risk_signals.contains(&"public-input".to_string()));
+
+    let registry = load_embedded_registry().expect("embedded registry valid");
+    let expected = [
+        (
+            "endpoint-controls-review",
+            vec!["public-api".to_string(), "authentication".to_string()],
+        ),
+        (
+            "auth-input-enforcement",
+            vec![
+                "public-api".to_string(),
+                "authentication".to_string(),
+                "public-input".to_string(),
+            ],
+        ),
+        ("public-endpoint-review", vec!["public-api".to_string()]),
+        (
+            "safe-construction-review",
+            vec![
+                "shell".to_string(),
+                "html".to_string(),
+                "url".to_string(),
+                "json".to_string(),
+                "regex".to_string(),
+                "sql".to_string(),
+                "public-input".to_string(),
+            ],
+        ),
+    ];
+    for (id, signals) in expected {
+        let rule = registry
+            .iter()
+            .find(|rule| rule.id == id)
+            .unwrap_or_else(|| panic!("missing endpoint security rule {id}"));
+        assert_eq!(
+            rule.activation.signals, signals,
+            "unexpected signals for {id}"
+        );
+        for legacy in ["endpoint", "route", "api", "public", "auth", "input"] {
+            assert!(
+                !rule
+                    .activation
+                    .signals
+                    .iter()
+                    .any(|signal| signal == legacy),
+                "legacy signal {legacy} remains in {id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn route_decorator_in_api_context_selects_all_endpoint_security_rules() {
+    let context = context::build(
+        &fixture_root(),
+        &["src/api/handler.py".to_string()],
+        "+@router.post(\"/items\")\n",
+    );
+    assert!(context.domains.contains(&"api".to_string()));
+    assert!(context.risk_signals.contains(&"public-api".to_string()));
+    assert!(!context.risk_signals.contains(&"authentication".to_string()));
+
+    let registry = load_embedded_registry().expect("embedded registry valid");
+    let ids: Vec<_> = select_rules(&context, &registry, ChangeType::Modify)
+        .iter()
+        .map(|rule| rule.id.as_str())
+        .collect();
+    for expected in [
+        "endpoint-controls-review",
+        "auth-input-enforcement",
+        "public-endpoint-review",
+    ] {
+        assert!(ids.contains(&expected), "missing selected rule {expected}");
+    }
+}
+
+#[test]
+fn authentication_and_public_input_remain_meaningful_activation_signals() {
+    let root = fixture_root();
+    let authentication = context::build(
+        &root,
+        &["src/routes/auth_probe.py".to_string()],
+        "+jwt.decode(token)\n",
+    );
+    let public_input = context::build(
+        &root,
+        &["src/routes/input_probe.py".to_string()],
+        "+request.get_json()\n",
+    );
+    let registry = load_embedded_registry().expect("embedded registry valid");
+
+    let authentication_ids: Vec<_> = select_rules(&authentication, &registry, ChangeType::Modify)
+        .iter()
+        .map(|rule| rule.id.as_str())
+        .collect();
+    for expected in ["endpoint-controls-review", "auth-input-enforcement"] {
+        assert!(
+            authentication_ids.contains(&expected),
+            "authentication missed {expected}"
+        );
+    }
+    assert!(!authentication_ids.contains(&"public-endpoint-review"));
+
+    let public_input_ids: Vec<_> = select_rules(&public_input, &registry, ChangeType::Modify)
+        .iter()
+        .map(|rule| rule.id.as_str())
+        .collect();
+    for expected in ["auth-input-enforcement", "safe-construction-review"] {
+        assert!(
+            public_input_ids.contains(&expected),
+            "public-input missed {expected}"
+        );
+    }
+    assert!(!public_input_ids.contains(&"endpoint-controls-review"));
+    assert!(!public_input_ids.contains(&"public-endpoint-review"));
+}
