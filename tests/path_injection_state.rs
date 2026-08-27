@@ -683,6 +683,9 @@ fn ancestor_symlink_cannot_redirect_state_outside_the_repository() {
     assert!(!outside.root.join("evidence").exists());
 }
 
+// Same-process flock contention is Linux-specific; macOS coverage uses
+// the persistent-store integration tests instead.
+#[cfg(target_os = "linux")]
 #[test]
 fn concurrent_store_instances_emit_one_body_for_one_session() {
     let state = TempState::new("concurrent");
