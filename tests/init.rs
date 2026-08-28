@@ -120,6 +120,16 @@ fn fresh_python_repo_creates_all_files() {
             "settings must wire {event}"
         );
     }
+    assert_eq!(
+        settings["enabledPlugins"]["rust-analyzer-lsp@claude-plugins-official"],
+        json!(true)
+    );
+    assert!(
+        settings["permissions"]["deny"]
+            .as_array()
+            .expect("deny permissions")
+            .contains(&json!("Write(**/settings.local.json)"))
+    );
 }
 
 #[cfg(unix)]
@@ -1288,15 +1298,134 @@ fn pi_init_merges_only_compact_guidance_and_is_idempotent() {
 }
 
 #[test]
-fn pi_dry_run_reports_guidance_without_writing_files() {
+fn pi_init_installs_package_and_lsp_configuration_idempotently() {
+    let repo = TempRepo::new();
+
+    let first = run_init_pi(&repo);
+    assert!(first.status.success(), "Pi init must succeed");
+    let settings = repo.read_json(".pi/settings.json");
+    assert_eq!(
+        settings["packages"],
+        json!([
+            "npm:@narumitw/pi-lsp@0.49.4",
+            "npm:@narumitw/pi-worktree@0.51.1",
+            "npm:@the-forge-flow/pi-rules@0.1.0",
+            "npm:pi-ask-user@0.14.0",
+            "npm:pi-mcp-extension@1.5.0",
+            "npm:pi-subagents@0.50.0",
+            "npm:rtfd-pi@0.1.1"
+        ])
+    );
+    let lsp = repo.read_json(".pi/pi-lsp.json");
+    assert_eq!(lsp["timeout"], json!(30000));
+    assert!(lsp["servers"]["rust-analyzer"].is_object());
+    assert!(lsp["servers"]["typescript-language-server"].is_object());
+
+    let settings_bytes = repo.read(".pi/settings.json");
+    let lsp_bytes = repo.read(".pi/pi-lsp.json");
+    let second = run_init_pi(&repo);
+    assert!(second.status.success(), "Pi re-init must succeed");
+    assert_eq!(repo.read(".pi/settings.json"), settings_bytes);
+    assert_eq!(repo.read(".pi/pi-lsp.json"), lsp_bytes);
+}
+
+#[test]
+fn pi_init_merges_existing_package_and_lsp_configuration() {
+    let repo = TempRepo::new();
+    repo.write(
+        ".pi/settings.json",
+        r#"{"theme":"dark","packages":["npm:@narumitw/pi-lsp@0.49.6","custom-package"]}"#,
+    );
+    repo.write(
+        ".pi/pi-lsp.json",
+        r#"{"timeout":12345,"servers":{"custom":{"command":["custom-lsp"],"extensions":[".custom"]},"rust-analyzer":{"command":["rustup","run","stable","rust-analyzer"],"extensions":[".rs"]}}}"#,
+    );
+
+    let output = run_init_pi(&repo);
+    assert!(output.status.success(), "Pi init must succeed");
+    let settings = repo.read_json(".pi/settings.json");
+    assert_eq!(settings["theme"], json!("dark"));
+    assert_eq!(
+        settings["packages"]
+            .as_array()
+            .expect("packages")
+            .iter()
+            .filter(|package| package.to_string().contains("@narumitw/pi-lsp"))
+            .count(),
+        1
+    );
+    let lsp = repo.read_json(".pi/pi-lsp.json");
+    assert_eq!(lsp["timeout"], json!(12345));
+    assert_eq!(lsp["servers"]["custom"]["command"], json!(["custom-lsp"]));
+    assert_eq!(
+        lsp["servers"]["rust-analyzer"]["command"],
+        json!(["rustup", "run", "stable", "rust-analyzer"])
+    );
+    assert!(lsp["servers"]["pyright"].is_object());
+}
+
+#[test]
+fn malformed_pi_settings_abort_before_any_init_write() {
+    let repo = TempRepo::new();
+    let malformed = r#"{"packages":{}}"#;
+    repo.write(".pi/settings.json", malformed);
+
+    let output = run_init_pi(&repo);
+    assert!(!output.status.success(), "malformed Pi settings must fail");
+    assert_eq!(repo.read(".pi/settings.json"), malformed);
+    assert!(!repo.exists(".pi/pi-lsp.json"));
+    assert!(!repo.exists(".pi/extensions/lgtm.ts"));
+    assert!(!repo.exists(".lgtm/config.json"));
+}
+
+#[test]
+fn malformed_pi_lsp_config_aborts_before_any_init_write() {
+    let repo = TempRepo::new();
+    let malformed =
+        r#"{"servers":{"rust-analyzer":{"command":"rust-analyzer","extensions":[".rs"]}}}"#;
+    repo.write(".pi/pi-lsp.json", malformed);
+
+    let output = run_init_pi(&repo);
+    assert!(
+        !output.status.success(),
+        "malformed Pi LSP config must fail"
+    );
+    assert_eq!(repo.read(".pi/pi-lsp.json"), malformed);
+    assert!(!repo.exists(".pi/settings.json"));
+    assert!(!repo.exists(".pi/extensions/lgtm.ts"));
+    assert!(!repo.exists(".lgtm/config.json"));
+}
+
+#[test]
+fn malformed_claude_plugin_settings_abort_before_any_init_write() {
+    let repo = TempRepo::new();
+    let malformed = r#"{"enabledPlugins":[]}"#;
+    repo.write(".claude/settings.json", malformed);
+
+    let output = run_init(&repo);
+    assert!(
+        !output.status.success(),
+        "malformed Claude settings must fail"
+    );
+    assert_eq!(repo.read(".claude/settings.json"), malformed);
+    assert!(!repo.exists(".lgtm/config.json"));
+}
+
+#[test]
+fn pi_dry_run_reports_configuration_without_writing_files() {
     let repo = TempRepo::new();
 
     let output = run_init_pi_dry_run(&repo);
     assert!(output.status.success(), "Pi dry-run must succeed");
-    assert!(String::from_utf8_lossy(&output.stdout).contains("dry-run: no files changed"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("dry-run: no files changed"));
+    assert!(stdout.contains(".pi/settings.json"));
+    assert!(stdout.contains(".pi/pi-lsp.json"));
     assert!(!repo.exists("AGENTS.md"));
     assert!(!repo.exists(".lgtm/config.json"));
     assert!(!repo.exists(".claude/settings.json"));
+    assert!(!repo.exists(".pi/settings.json"));
+    assert!(!repo.exists(".pi/pi-lsp.json"));
 }
 
 #[test]

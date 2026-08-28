@@ -44,7 +44,8 @@ fn merge_settings_preserves_unrelated_settings_and_hooks() {
     let existing = existing.as_object().expect("object").clone();
 
     let merged = merge_settings(&existing);
-    assert_eq!(merged["permissions"], json!({"allow": ["Bash"]}));
+    assert_eq!(merged["permissions"]["allow"], json!(["Bash"]));
+    assert!(merged["permissions"]["deny"].is_array());
 
     let session_start = merged["hooks"]["SessionStart"]
         .as_array()
@@ -66,6 +67,111 @@ fn merge_settings_is_idempotent() {
     let once = merge_settings(&Map::new());
     let twice = merge_settings(&once);
     assert_eq!(once, twice, "second merge must not add duplicate entries");
+}
+
+#[test]
+fn merge_settings_adds_plugins_and_permission_denies() {
+    let merged = merge_settings(&Map::new());
+    let plugins = merged["enabledPlugins"].as_object().expect("plugins");
+    assert_eq!(plugins.len(), 10);
+    assert_eq!(
+        plugins["rust-analyzer-lsp@claude-plugins-official"],
+        json!(true)
+    );
+    let deny = merged["permissions"]["deny"].as_array().expect("deny");
+    assert_eq!(deny.len(), 8);
+    assert!(deny.contains(&json!("Edit(**/*.lock)")));
+    assert!(deny.contains(&json!("Write(**/settings.local.json)")));
+}
+
+#[test]
+fn merge_settings_preserves_explicit_plugin_choices_and_custom_permissions() {
+    let existing = json!({
+        "enabledPlugins": {
+            "custom@example": true,
+            "rust-analyzer-lsp@claude-plugins-official": false
+        },
+        "permissions": {
+            "allow": ["Read"],
+            "deny": ["Bash(rm:*)"]
+        }
+    });
+    let existing = existing.as_object().expect("object").clone();
+    let merged = merge_settings(&existing);
+
+    assert_eq!(merged["enabledPlugins"]["custom@example"], json!(true));
+    assert_eq!(
+        merged["enabledPlugins"]["rust-analyzer-lsp@claude-plugins-official"],
+        json!(false),
+        "an explicit user disablement remains authoritative"
+    );
+    assert_eq!(merged["permissions"]["allow"], json!(["Read"]));
+    assert_eq!(merged["permissions"]["deny"][0], json!("Bash(rm:*)"));
+}
+
+#[test]
+fn pi_settings_merge_preserves_package_identity_and_is_idempotent() {
+    let existing = json!({
+        "theme": "dark",
+        "packages": [
+            {"source": "npm:@narumitw/pi-lsp@0.49.6", "extensions": []},
+            "custom-package"
+        ]
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let rendered = pi_config::render_settings(Some(existing)).expect("settings change");
+    let merged: Value = serde_json::from_slice(&rendered).expect("valid JSON");
+    let packages = merged["packages"].as_array().expect("packages");
+
+    assert_eq!(merged["theme"], json!("dark"));
+    assert_eq!(
+        packages
+            .iter()
+            .filter(|package| package.to_string().contains("@narumitw/pi-lsp"))
+            .count(),
+        1,
+        "a differently pinned package with the same Pi identity must not be duplicated"
+    );
+    assert!(packages.contains(&json!("npm:pi-subagents@0.50.0")));
+    let object = merged.as_object().expect("object").clone();
+    assert!(pi_config::render_settings(Some(object)).is_none());
+}
+
+#[test]
+fn pi_lsp_merge_preserves_custom_routes_and_is_idempotent() {
+    let existing = json!({
+        "timeout": 12345,
+        "servers": {
+            "custom": {
+                "command": ["custom-lsp"],
+                "extensions": [".custom"]
+            },
+            "rust-analyzer": {
+                "command": ["rustup", "run", "stable", "rust-analyzer"],
+                "extensions": [".rs"]
+            }
+        }
+    })
+    .as_object()
+    .expect("object")
+    .clone();
+    let rendered = pi_config::render_lsp(Some(existing)).expect("LSP change");
+    let merged: Value = serde_json::from_slice(&rendered).expect("valid JSON");
+
+    assert_eq!(merged["timeout"], json!(12345));
+    assert_eq!(
+        merged["servers"]["custom"]["command"],
+        json!(["custom-lsp"])
+    );
+    assert_eq!(
+        merged["servers"]["rust-analyzer"]["command"],
+        json!(["rustup", "run", "stable", "rust-analyzer"])
+    );
+    assert!(merged["servers"]["pyright"].is_object());
+    let object = merged.as_object().expect("object").clone();
+    assert!(pi_config::render_lsp(Some(object)).is_none());
 }
 
 #[test]

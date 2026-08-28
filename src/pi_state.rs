@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub const PI_VERSION: &str = "0.84.2";
+pub const PI_VERSION: &str = "0.84.3";
 const MAX_EXTENSION_BYTES: u64 = 1024 * 1024;
 const MAX_ATTESTATION_BYTES: u64 = 64 * 1024;
 const MAX_SESSION_SCAN_BYTES: u64 = 64 * 1024 * 1024;

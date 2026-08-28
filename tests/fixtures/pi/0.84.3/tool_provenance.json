@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "pi_version": "0.84.3",
+  "capture_method": "createAgentSession SDK probe against the installed Pi 0.84.3 package with an in-memory session and isolated resource loader",
+  "captures": [
+    {
+      "fixture_id": "live-sdk-builtins-0.84.3-001",
+      "tools": [
+        {
+          "name": "read",
+          "source_info": {
+            "origin": "top-level",
+            "path": "<builtin:read>",
+            "scope": "temporary",
+            "source": "builtin"
+          },
+          "parameters": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to the file to read (relative or absolute)"
+              },
+              "offset": {
+                "type": "number",
+                "description": "Line number to start reading from (1-indexed)"
+              },
+              "limit": {
+                "type": "number",
+                "description": "Maximum number of lines to read"
+              }
+            }
+          },
+          "enforcement_eligibility": "verified_builtin_provenance_and_schema"
+        },
+        {
+          "name": "bash",
+          "source_info": {
+            "origin": "top-level",
+            "path": "<builtin:bash>",
+            "scope": "temporary",
+            "source": "builtin"
+          },
+          "parameters": {
+            "type": "object",
+            "required": ["command"],
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "Shell command to execute"
+              },
+              "timeout": {
+                "type": "number",
+                "description": "Timeout in seconds (optional, no default timeout)"
+              }
+            }
+          },
+          "enforcement_eligibility": "verified_builtin_provenance_and_schema"
+        },
+        {
+          "name": "edit",
+          "source_info": {
+            "origin": "top-level",
+            "path": "<builtin:edit>",
+            "scope": "temporary",
+            "source": "builtin"
+          },
+          "parameters": {
+            "type": "object",
+            "required": ["path", "edits"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to the file to edit (relative or absolute)"
+              },
+              "edits": {
+                "type": "array",
+                "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
+                "items": {
+                  "type": "object",
+                  "required": ["oldText", "newText"],
+                  "properties": {
+                    "oldText": {
+                      "type": "string",
+                      "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+                    },
+                    "newText": {
+                      "type": "string",
+                      "description": "Replacement text for this targeted edit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "enforcement_eligibility": "verified_builtin_provenance_and_schema"
+        },
+        {
+          "name": "write",
+          "source_info": {
+            "origin": "top-level",
+            "path": "<builtin:write>",
+            "scope": "temporary",
+            "source": "builtin"
+          },
+          "parameters": {
+            "type": "object",
+            "required": ["path", "content"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to the file to write (relative or absolute)"
+              },
+              "content": {
+                "type": "string",
+                "description": "Content to write to the file"
+              }
+            }
+          },
+          "enforcement_eligibility": "verified_builtin_provenance_and_schema"
+        }
+      ]
+    }
+  ]
+}

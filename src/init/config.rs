@@ -9,6 +9,18 @@ pub(super) type ValidatedSettings = Option<Map<String, Value>>;
 /// malformed, not an object, or carries a `hooks` value whose shape would be
 /// discarded by a merge (non-object `hooks`, or a non-array event value).
 pub(super) fn validate_settings(path: &Path) -> Result<ValidatedSettings, InitError> {
+    validate_settings_shape(path, false)
+}
+
+/// Validate Claude settings, including every field LGTM merges into.
+pub(super) fn validate_claude_settings(path: &Path) -> Result<ValidatedSettings, InitError> {
+    validate_settings_shape(path, true)
+}
+
+fn validate_settings_shape(
+    path: &Path,
+    validate_claude_resources: bool,
+) -> Result<ValidatedSettings, InitError> {
     let contents = match read_if_exists(path)? {
         None => return Ok(None),
         Some(contents) if contents.trim().is_empty() => return Ok(None),
@@ -27,6 +39,18 @@ pub(super) fn validate_settings(path: &Path) -> Result<ValidatedSettings, InitEr
         });
     };
 
+    if validate_claude_resources
+        && let Some(enabled_plugins) = object.get("enabledPlugins")
+        && !enabled_plugins
+            .as_object()
+            .is_some_and(|plugins| plugins.values().all(Value::is_boolean))
+    {
+        return Err(InitError::SettingsFieldWrongType {
+            path: path.to_path_buf(),
+            field: "enabledPlugins".to_string(),
+        });
+    }
+
     if let Some(hooks) = object.get("hooks") {
         let Value::Object(hooks) = hooks else {
             return Err(InitError::SettingsHooksNotObject {
@@ -40,6 +64,25 @@ pub(super) fn validate_settings(path: &Path) -> Result<ValidatedSettings, InitEr
                     event: event.clone(),
                 });
             }
+        }
+    }
+
+    if validate_claude_resources && let Some(permissions) = object.get("permissions") {
+        let Some(permissions) = permissions.as_object() else {
+            return Err(InitError::SettingsFieldWrongType {
+                path: path.to_path_buf(),
+                field: "permissions".to_string(),
+            });
+        };
+        if let Some(deny) = permissions.get("deny")
+            && !deny
+                .as_array()
+                .is_some_and(|entries| entries.iter().all(Value::is_string))
+        {
+            return Err(InitError::SettingsFieldWrongType {
+                path: path.to_path_buf(),
+                field: "permissions.deny".to_string(),
+            });
         }
     }
 

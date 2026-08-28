@@ -9,12 +9,15 @@ use super::{InitError, fs::read_if_exists};
 
 const OWNED_START: &str = "// lgtm-pi-extension: v1";
 const OWNED_END: &str = "// lgtm-pi-extension: end";
-// These are the normalized project/global digests of the pre-repair M23
-// template. Only known canonical revisions may cross the ownership boundary.
+// Only known canonical revisions may cross the ownership boundary during an
+// upgrade. The b45c/ed0f entries are the v0.10.1 Pi 0.84.2 project/global
+// templates.
 const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
     "524b3d58c2f839420c14f8ec081855ea3499d4e219d1f5c4c131fe4051d28c2c",
     "a6719ad16be1e48543acb3ae7014afa6b1361d4b85110cd56350807798cb2caa",
+    "b45c8c6756955338325fd4d80386523b846b14cc6066a07dc506ce71219079ca",
     "becaa0ca4bc7006cd2d30c9844d24d063ec76e1a69af32725e5967d854a51793",
+    "ed0ff523f79e64c395184b3b3253a90b3643e088863ef683c60baa45699b1df3",
 ];
 const EXTENSION_TEMPLATE: &str = r#"// lgtm-pi-extension: v1
 // lgtm-pi-scope: __LGTM_SCOPE__
@@ -26,7 +29,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 const LGTM_BINARY = __LGTM_BINARY__;
 const SCOPE = "__LGTM_SCOPE__";
-const PI_VERSION = "0.84.2";
+const PI_VERSION = "0.84.3";
 const TEMPLATE_DIGEST = "__LGTM_TEMPLATE_DIGEST__";
 const PROJECT_TEMPLATE_DIGEST = "__LGTM_PROJECT_TEMPLATE_DIGEST__";
 const BINARY_DIGEST = "__LGTM_BINARY_DIGEST__";
@@ -243,7 +246,10 @@ function primitivePropertyMatches(property, expectedType) {
 
 function propertyMatches(property, expected) {
   if (typeof expected === "string") return primitivePropertyMatches(property, expected);
-  if (!property || !sameKeys(property, ["type", "items"])
+  if (!property || typeof property !== "object" || Array.isArray(property)) return false;
+  const hasDescription = Object.prototype.hasOwnProperty.call(property, "description");
+  if (!sameKeys(property, hasDescription ? ["type", "items", "description"] : ["type", "items"])
+      || (hasDescription && typeof property.description !== "string")
       || property.type !== expected.type || !property.items
       || !sameKeys(property.items, ["type", "required", "properties"])
       || property.items.type !== expected.itemType
@@ -795,4 +801,42 @@ fn digest_binary(path: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CURRENT_ARRAY_CHECK: &str = r#"  if (!property || typeof property !== "object" || Array.isArray(property)) return false;
+  const hasDescription = Object.prototype.hasOwnProperty.call(property, "description");
+  if (!sameKeys(property, hasDescription ? ["type", "items", "description"] : ["type", "items"])
+      || (hasDescription && typeof property.description !== "string")
+      || property.type !== expected.type || !property.items"#;
+    const V0101_ARRAY_CHECK: &str = r#"  if (!property || !sameKeys(property, ["type", "items"])
+      || property.type !== expected.type || !property.items"#;
+
+    #[test]
+    fn v0101_project_and_global_templates_remain_upgradeable() {
+        for (scope, expected_digest) in [
+            (
+                ExtensionScope::Project,
+                "b45c8c6756955338325fd4d80386523b846b14cc6066a07dc506ce71219079ca",
+            ),
+            (
+                ExtensionScope::Global,
+                "ed0ff523f79e64c395184b3b3253a90b3643e088863ef683c60baa45699b1df3",
+            ),
+        ] {
+            let old = EXTENSION_TEMPLATE
+                .replace("__LGTM_SCOPE__", scope.as_str())
+                .replace(
+                    "const PI_VERSION = \"0.84.3\";",
+                    "const PI_VERSION = \"0.84.2\";",
+                )
+                .replace(CURRENT_ARRAY_CHECK, V0101_ARRAY_CHECK);
+            assert_eq!(digest(&normalize_template(&old)), expected_digest);
+            let current = render("/opt/lgtm", scope).expect("current template renders");
+            assert!(owned_template(&old, &current, scope));
+        }
+    }
 }

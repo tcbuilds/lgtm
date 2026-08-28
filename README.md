@@ -35,13 +35,23 @@ lgtm init
 lgtm doctor
 ```
 
-`lgtm init` adds the project configuration and Claude Code hooks without replacing existing settings. `lgtm doctor` shows any optional checking tools you still need to install, including `gitleaks`, `ruff`, and `semgrep`. It also scans the repository's bounded workspace tree and reports advisory, repository-relevant language servers (such as `rust-analyzer`, `gopls`, or `clangd`). These recommendations never run a server or install anything; missing servers do not affect the doctor's successful exit. JVM projects receive a coarse Java/JVM recommendation and may need a separate Kotlin language server.
+`lgtm init` adds the project configuration and Claude Code hooks without replacing existing settings. It also merges the official LSP plugin enablement and protected-file permission entries into `.claude/settings.json`; explicit user plugin disablement and unrelated permission rules remain unchanged. `lgtm doctor` shows any optional checking tools you still need to install, including `gitleaks`, `ruff`, and `semgrep`. It also scans the repository's bounded workspace tree and reports advisory, repository-relevant language servers (such as `rust-analyzer`, `gopls`, or `clangd`). These recommendations never run a server or install anything; missing servers do not affect the doctor's successful exit. JVM projects receive a coarse Java/JVM recommendation and may need a separate Kotlin language server.
 
 It also writes `.lgtm/execpolicy.json`, a list of command prefixes that are refused before they run — `rm -rf`, `git push --force`, `git reset --hard`, `dd`, and similar. Edit it to suit your repository; re-running `lgtm init` never overwrites it. Matching compares whole argv elements from the start of the command, so `git push --force-with-lease` stays allowed while `git push --force` is denied. It is a guardrail against an agent's obvious mistakes, not a sandbox: a prohibited command placed after a positional argument, inside a compound `&&` shell line, or behind `sudo` is not caught.
 
 Commit the generated `.lgtm/config.json`, `.lgtm/execpolicy.json`, `.claude/settings.json`, and `.gitignore` changes. Claude Code will run LGTM automatically during future sessions.
 
-To take the standards as guidance with no hooks and nothing enforced, use `lgtm init --rules-only`. It writes `.claude/rules/` for Claude Code, or `AGENTS.md` with `--agent codex`.
+For Pi, run:
+
+```bash
+lgtm init --agent pi
+```
+
+Pi init writes the LGTM extension under `.pi/extensions/`, merges the pinned Pi package set into `.pi/settings.json`, and merges the configured language-server routes into `.pi/pi-lsp.json`. Existing package versions, package filters, settings, timeouts, and named server routes win over LGTM defaults. After the project is trusted, Pi loads the extension and installs missing configured packages through its normal package flow. Language-server executables are not installed by LGTM or pi-lsp; use `/lsp` and `lgtm doctor` to identify missing commands.
+
+Pi packages and project extensions execute with the user's permissions. Review the generated files before trusting the project. Roll back by removing only LGTM's extension and generated package/server entries; do not delete either JSON file when it also contains user configuration.
+
+To take the standards as guidance with no hooks and nothing enforced, use `lgtm init --rules-only`. It writes `.claude/rules/` for Claude Code, or `AGENTS.md` with `--agent codex` or `--agent pi`.
 
 ## Initialize All Harnesses Globally
 
