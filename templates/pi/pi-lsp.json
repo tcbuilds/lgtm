@@ -1,0 +1,232 @@
+{
+  "servers": {
+    "bash-language-server": {
+      "command": [
+        "bash-language-server",
+        "start"
+      ],
+      "extensions": [
+        ".bash",
+        ".sh"
+      ]
+    },
+    "biome": {
+      "command": [
+        "biome",
+        "lsp-proxy"
+      ],
+      "extensions": [
+        ".cjs",
+        ".cts",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".mts",
+        ".ts",
+        ".tsx"
+      ],
+      "initialization": {
+        "biome": {
+          "inlineConfig": {
+            "assist": {
+              "enabled": false
+            },
+            "formatter": {
+              "enabled": false
+            },
+            "linter": {
+              "enabled": true,
+              "rules": {
+                "complexity": {
+                  "noExcessiveCognitiveComplexity": {
+                    "level": "error",
+                    "options": {
+                      "maxAllowedComplexity": 15
+                    }
+                  }
+                },
+                "recommended": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "clangd": {
+      "command": [
+        "clangd",
+        "--background-index",
+        "--clang-tidy"
+      ],
+      "extensions": [
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cxx",
+        ".h",
+        ".hh",
+        ".hpp"
+      ]
+    },
+    "gopls": {
+      "command": [
+        "gopls"
+      ],
+      "extensions": [
+        ".go"
+      ]
+    },
+    "intelephense": {
+      "command": [
+        "intelephense",
+        "--stdio"
+      ],
+      "extensions": [
+        ".php"
+      ]
+    },
+    "jdtls": {
+      "command": [
+        "jdtls"
+      ],
+      "extensions": [
+        ".java"
+      ]
+    },
+    "kotlin-lsp": {
+      "command": [
+        "kotlin-lsp",
+        "--stdio"
+      ],
+      "extensions": [
+        ".kt",
+        ".kts"
+      ]
+    },
+    "lua-language-server": {
+      "command": [
+        "lua-language-server"
+      ],
+      "extensions": [
+        ".lua"
+      ]
+    },
+    "pyright": {
+      "command": [
+        "pyright-langserver",
+        "--stdio"
+      ],
+      "extensions": [
+        ".py",
+        ".pyi"
+      ]
+    },
+    "ruff": {
+      "command": [
+        "ruff",
+        "server"
+      ],
+      "extensions": [
+        ".py",
+        ".pyi"
+      ],
+      "initialization": {
+        "settings": {
+          "configuration": {
+            "flake8-bugbear": {
+              "extend-immutable-calls": [
+                "fastapi.Body",
+                "fastapi.Cookie",
+                "fastapi.Depends",
+                "fastapi.File",
+                "fastapi.Form",
+                "fastapi.Header",
+                "fastapi.Path",
+                "fastapi.Query",
+                "fastapi.Security",
+                "pydantic.Field"
+              ]
+            },
+            "lint": {
+              "select": [
+                "ASYNC230",
+                "ASYNC240",
+                "B006",
+                "B008",
+                "B023",
+                "B904",
+                "C901",
+                "F811",
+                "F821",
+                "F841",
+                "RUF006",
+                "RUF012",
+                "S110",
+                "S113",
+                "SIM115"
+              ]
+            },
+            "mccabe": {
+              "max-complexity": 15
+            }
+          },
+          "configurationPreference": "editorOnly"
+        }
+      }
+    },
+    "rust-analyzer": {
+      "command": [
+        "rust-analyzer"
+      ],
+      "extensions": [
+        ".rs"
+      ]
+    },
+    "sourcekit-lsp": {
+      "command": [
+        "sourcekit-lsp"
+      ],
+      "extensions": [
+        ".mm",
+        ".swift"
+      ]
+    },
+    "terraform-ls": {
+      "command": [
+        "terraform-ls",
+        "serve"
+      ],
+      "extensions": [
+        ".tf",
+        ".tfvars"
+      ]
+    },
+    "typescript-language-server": {
+      "command": [
+        "typescript-language-server",
+        "--stdio"
+      ],
+      "extensions": [
+        ".cjs",
+        ".cts",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".mts",
+        ".ts",
+        ".tsx"
+      ]
+    },
+    "yaml-language-server": {
+      "command": [
+        "yaml-language-server",
+        "--stdio"
+      ],
+      "extensions": [
+        ".yaml",
+        ".yml"
+      ]
+    }
+  },
+  "timeout": 30000
+}

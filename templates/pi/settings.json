@@ -1,0 +1,11 @@
+{
+  "packages": [
+    "npm:@narumitw/pi-lsp@0.49.4",
+    "npm:@narumitw/pi-worktree@0.51.1",
+    "npm:@the-forge-flow/pi-rules@0.1.0",
+    "npm:pi-ask-user@0.14.0",
+    "npm:pi-mcp-extension@1.5.0",
+    "npm:pi-subagents@0.50.0",
+    "npm:rtfd-pi@0.1.1"
+  ]
+}

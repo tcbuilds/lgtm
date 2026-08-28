@@ -80,7 +80,15 @@ fn doctor_reports_rustup_proxy_as_unverified() {
 
 #[test]
 fn doctor_reports_gitleaks_state_and_guidance() {
-    let (code, stdout, stderr) = run_full(&["doctor"]);
+    let home = TempRepo::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .arg("doctor")
+        .env("HOME", home.path())
+        .output()
+        .expect("doctor executes");
+    let code = output.status.code().expect("doctor exit code");
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
     assert_eq!(code, 0);
     assert!(stderr.is_empty());
     assert!(stdout.contains("pi: not-installed scope=none"));

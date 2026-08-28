@@ -1,5 +1,29 @@
 use super::*;
 
+const CLAUDE_DENIED_PATHS: [&str; 8] = [
+    "Edit(**/*.lock)",
+    "Edit(**/*.tfstate.backup)",
+    "Edit(**/package-lock.json)",
+    "Edit(**/settings.local.json)",
+    "Write(**/*.lock)",
+    "Write(**/*.tfstate.backup)",
+    "Write(**/package-lock.json)",
+    "Write(**/settings.local.json)",
+];
+
+const CLAUDE_ENABLED_PLUGINS: [&str; 10] = [
+    "clangd-lsp@claude-plugins-official",
+    "gopls-lsp@claude-plugins-official",
+    "jdtls-lsp@claude-plugins-official",
+    "kotlin-lsp@claude-plugins-official",
+    "lua-lsp@claude-plugins-official",
+    "php-lsp@claude-plugins-official",
+    "pyright-lsp@claude-plugins-official",
+    "rust-analyzer-lsp@claude-plugins-official",
+    "swift-lsp@claude-plugins-official",
+    "typescript-lsp@claude-plugins-official",
+];
+
 /// Build the repository-local policy document for a detection result.
 pub fn build_config(detection: &Detection) -> Value {
     let mut required = Map::new();
@@ -29,14 +53,14 @@ pub fn build_v2_config(workspaces: &[Workspace]) -> Value {
     .expect("V2 config model serializes")
 }
 
-/// Merge the five lgtm hook entries into an existing settings object.
+/// Merge LGTM's Claude plugins, permission guards, and five hook entries.
 ///
 /// `existing` is the parsed settings object (an empty object for a fresh repo).
-/// Existing hooks and unrelated top-level settings are preserved; lgtm entries
-/// are appended only when a matching entry is not already present for that
-/// event, making repeated merges idempotent. A pre-existing lgtm entry whose
-/// matcher no longer matches the expected wiring is corrected in place rather
-/// than skipped or duplicated. Returns the merged object.
+/// Existing values and unrelated top-level settings are preserved. Missing
+/// generated entries are appended in deterministic order, making repeated
+/// merges idempotent. Explicit plugin disablement remains authoritative. A
+/// pre-existing lgtm hook whose matcher no longer matches the expected wiring
+/// is corrected in place rather than skipped or duplicated.
 ///
 /// Callers must have validated the shape of `existing` (via
 /// [`validate_settings`]) before calling: a non-object `hooks` value or a
@@ -53,19 +77,50 @@ pub(super) fn merge_settings_with_binary(
     binary: &str,
 ) -> Map<String, Value> {
     let mut merged = existing.clone();
+    merge_enabled_plugins(&mut merged);
+    merge_permission_denies(&mut merged);
 
     let hooks_entry = merged
         .entry("hooks")
         .or_insert_with(|| Value::Object(Map::new()));
-    let Value::Object(hooks) = hooks_entry else {
-        let mut replacement = Map::new();
-        insert_hook_events(&mut replacement, binary);
-        merged.insert("hooks".to_string(), Value::Object(replacement));
-        return merged;
-    };
-
-    insert_hook_events(hooks, binary);
+    if let Value::Object(hooks) = hooks_entry {
+        insert_hook_events(hooks, binary);
+    }
     merged
+}
+
+fn merge_enabled_plugins(settings: &mut Map<String, Value>) {
+    let entry = settings
+        .entry("enabledPlugins")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Value::Object(plugins) = entry else {
+        return;
+    };
+    for plugin in CLAUDE_ENABLED_PLUGINS {
+        plugins
+            .entry(plugin.to_string())
+            .or_insert(Value::Bool(true));
+    }
+}
+
+fn merge_permission_denies(settings: &mut Map<String, Value>) {
+    let entry = settings
+        .entry("permissions")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Value::Object(permissions) = entry else {
+        return;
+    };
+    let deny = permissions
+        .entry("deny")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Value::Array(deny) = deny else {
+        return;
+    };
+    for pattern in CLAUDE_DENIED_PATHS {
+        if !deny.iter().any(|entry| entry.as_str() == Some(pattern)) {
+            deny.push(Value::String(pattern.to_string()));
+        }
+    }
 }
 
 /// Add each lgtm hook entry to the hooks map, reconciling any existing lgtm

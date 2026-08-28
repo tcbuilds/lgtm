@@ -1,4 +1,4 @@
-//! Thin protocol mapping for Pi 0.84.2 extension events.
+//! Thin protocol mapping for verified Pi 0.84.2–0.84.3 extension events.
 
 use serde_json::{Value, json};
 

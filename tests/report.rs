@@ -27,6 +27,7 @@ fn report_renders_latest_evidence_without_finding_descriptions() {
     let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["report", "--evidence"])
         .arg(repo.path().join(".lgtm/evidence/evidence.jsonl"))
+        .env("HOME", repo.path())
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -63,6 +64,7 @@ fn report_never_upgrades_recorded_pi_state_after_extension_deletion() {
     let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["report", "--evidence"])
         .arg(repo.path().join(".lgtm/evidence/evidence.jsonl"))
+        .env("HOME", repo.path())
         .output()
         .expect("report runs");
     assert!(output.status.success());

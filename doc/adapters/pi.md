@@ -1,12 +1,14 @@
 # Pi adapter contract evidence
 
-This document records the Pi 0.84.2 facts used by the M23 adapter work. It is a
-capability record, not a claim that Pi enforcement is installed. The checked-in
-matrix is `tests/fixtures/pi/0.84.2/capability_matrix.json`; every claim below is
-tied to a matrix fixture ID and source or live evidence. The capture manifest is
-`tests/fixtures/pi/0.84.2/capture_manifest.json`; source excerpts and their line
-ranges are checked against installed-package captures under
-`tests/fixtures/pi/0.84.2/captures/`.
+This document records the Pi facts used by the M23 adapter work. The lifecycle
+contract remains pinned to the Pi 0.84.2 matrix; built-in tool provenance was
+re-probed against Pi 0.84.3 after its edit schema gained descriptive metadata.
+This is a capability record, not a claim that Pi enforcement is installed. The
+checked-in matrix is `tests/fixtures/pi/0.84.2/capability_matrix.json`; every
+matrix claim below is tied to source or live evidence. The 0.84.2 capture
+manifest and source excerpts remain under `tests/fixtures/pi/0.84.2/`; the
+current built-in tool capture is
+`tests/fixtures/pi/0.84.3/tool_provenance.json`.
 
 ## Verified event contract
 
@@ -47,11 +49,16 @@ permissions; only trusted extension sources may be installed.
 
 ## Tool provenance
 
-The live SDK capture in `tool_provenance.json` records `pi.getAllTools()` output,
-including parameter schemas and `sourceInfo`, for built-in `read`, `bash`, `edit`,
-and `write` (`builtin-read-provenance`, `builtin-bash-provenance`,
-`builtin-edit-provenance`, `builtin-write-provenance`; fixture
-`live-sdk-builtins-001`). A project extension replacing `read` reports non-builtin
+The live SDK captures in the versioned `tool_provenance.json` files record
+`pi.getAllTools()` output, including parameter schemas and `sourceInfo`, for
+built-in `read`, `bash`, `edit`, and `write` (`builtin-read-provenance`,
+`builtin-bash-provenance`, `builtin-edit-provenance`,
+`builtin-write-provenance`; fixtures `live-sdk-builtins-001` and
+`live-sdk-builtins-0.84.3-001`). Pi 0.84.3 added a human-readable `description`
+to the `edit.edits` array without changing its type, required fields, item schema,
+or built-in provenance. LGTM accepts that optional descriptive field while still
+rejecting every other unrecognized structural key. A project extension replacing
+`read` reports non-builtin
 project source metadata (`same-name-read-override`; fixture
 `live-sdk-override-001`). The override is deliberately **unverified** for built-in
 enforcement. Custom, MCP, provider, and schema-mismatched tools remain
@@ -61,14 +68,25 @@ provenance.
 
 ## Installation and rollback
 
-Project setup uses `lgtm init --agent pi` and writes the owned extension to
-`.pi/extensions/lgtm.ts`. Global setup uses the existing `lgtm init -g` command
-and writes the owned extension to `~/.pi/agent/extensions/lgtm.ts` alongside the
-other global harness files. Both generated files embed the absolute executable
-path, are upgraded only when their LGTM ownership markers match, and keep one
+Project setup uses `lgtm init --agent pi`. It writes the owned extension to
+`.pi/extensions/lgtm.ts`, merges the pinned project package set into
+`.pi/settings.json`, and merges the configured language-server routes into
+`.pi/pi-lsp.json`. Package identity is compared without its npm version, so an
+existing pin or package filter remains authoritative instead of being duplicated.
+Existing top-level Pi settings, timeout values, and named LSP server routes are
+also preserved. Pi loads these project resources only after project trust; its
+package manager, not LGTM, installs missing packages. Neither LGTM nor pi-lsp
+installs language-server executables.
+
+Global setup uses the existing `lgtm init -g` command and writes the owned
+extension to `~/.pi/agent/extensions/lgtm.ts` alongside the other global harness
+files. Both generated extension files embed the absolute executable path, are
+upgraded only when their LGTM ownership markers match, and keep one
 collision-safe `.bak` copy before a first upgrade. A user-authored extension at
 either path is preserved. Remove the owned extension and its backup to roll back
-that scope; no repository `.lgtm` configuration is written by global init.
+that scope. For project package or LSP rollback, remove only the generated entries
+and preserve unrelated JSON settings. No repository `.lgtm` configuration is
+written by global init.
 
 A project-root Pi session uses the project extension. When Pi starts in a nested
 cwd, the project extension is not discovered, so the global extension prefers the

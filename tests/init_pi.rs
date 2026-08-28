@@ -45,6 +45,7 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
     assert!(extension.contains("// lgtm-pi-extension: v1"));
     assert!(extension.contains("// lgtm-pi-scope: project"));
     assert!(extension.contains("// lgtm-pi-extension: end"));
+    assert!(extension.contains("const PI_VERSION = \"0.84.3\""));
     assert!(extension.contains(&format!("const LGTM_BINARY = {binary:?}")));
     assert!(!repo.exists(".pi/extension/lgtm.ts"));
     assert!(!repo.exists(".pi/extensions/lgtm.ts.bak"));
@@ -56,7 +57,7 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
     assert!(extension.contains("sourceInfo"));
     assert!(extension.contains("TOOL_CONTRACTS"));
     assert!(
-        extension.contains("!sameKeys(property, [\"type\", \"items\"])")
+        extension.contains("hasDescription ? [\"type\", \"items\", \"description\"]")
             && extension.contains("primitivePropertyMatches(property.items.properties[key], type)")
             && extension.contains("tool_provenance_unverified")
     );
@@ -218,7 +219,7 @@ const pi = {
   getAllTools: () => [
     { name: "read", sourceInfo: { source: "builtin", path: "<builtin:read>" }, parameters: { type: "object", required: ["path"], properties: { path: { type: "string", description: "Path to the file to read (relative or absolute)" }, offset: { type: "number", description: "Line number to start reading from (1-indexed)" }, limit: { type: "number", description: "Maximum number of lines to read" } } } },
     { name: "bash", sourceInfo: { source: "builtin", path: "<builtin:bash>" }, parameters: { type: "object", required: ["command"], properties: { command: { type: "string", description: "Bash command to execute" }, timeout: { type: "number", description: "Timeout in seconds (optional, no default timeout)" } } } },
-    { name: "edit", sourceInfo: { source: "builtin", path: "<builtin:edit>" }, parameters: { type: "object", required: ["path", "edits"], properties: { path: { type: "string", description: "Path to the file to edit (relative or absolute)" }, edits: Object.assign({ type: "array", items: { type: "object", required: ["oldText", "newText"], properties: { oldText: { type: "string", description: "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call." }, newText: { type: "string", description: "Replacement text for this targeted edit." } } } }, drift ? { minItems: 0 } : {}) } } },
+    { name: "edit", sourceInfo: { source: "builtin", path: "<builtin:edit>" }, parameters: { type: "object", required: ["path", "edits"], properties: { path: { type: "string", description: "Path to the file to edit (relative or absolute)" }, edits: Object.assign({ type: "array", description: "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.", items: { type: "object", required: ["oldText", "newText"], properties: { oldText: { type: "string", description: "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call." }, newText: { type: "string", description: "Replacement text for this targeted edit." } } } }, drift ? { minItems: 0 } : {}) } } },
     { name: "write", sourceInfo: { source: "builtin", path: "<builtin:write>" }, parameters: { type: "object", required: ["path", "content"], properties: { path: { type: "string", description: "Path to the file to write (relative or absolute)" }, content: { type: "string", description: "Content to write to the file" } } } },
   ],
 };

@@ -32,12 +32,15 @@ mod fs;
 mod gitignore;
 mod global;
 pub(crate) mod pi;
+mod pi_config;
 mod rules;
 mod runner;
 mod settings;
 mod template_digests;
 
-use config::{ValidatedSettings, render_config, validate_config, validate_settings};
+use config::{
+    ValidatedSettings, render_config, validate_claude_settings, validate_config, validate_settings,
+};
 use fs::{
     commit_write, create_dir_all, create_private_dir_all, preflight_file_targets,
     preflight_targets, read_if_exists, stage_write,
@@ -209,6 +212,24 @@ pub enum InitError {
         path: PathBuf,
         /// The event key whose value is not an array.
         event: String,
+    },
+    /// An existing agent settings field cannot be safely merged.
+    #[error(
+        "existing settings field has the wrong type: path={path} field={field} retryable=false"
+    )]
+    SettingsFieldWrongType {
+        /// The settings file with the malformed field.
+        path: PathBuf,
+        /// The field whose JSON shape is invalid.
+        field: String,
+    },
+    /// An existing Pi config file cannot be safely parsed or merged.
+    #[error("existing Pi config is malformed: path={path} reason={reason} retryable=false")]
+    MalformedPiConfig {
+        /// The malformed Pi config path.
+        path: PathBuf,
+        /// The parse or shape-validation failure.
+        reason: String,
     },
     /// A managed global guidance block has missing or invalid boundary markers.
     #[error("global guidance is malformed: path={path} reason={reason} retryable=false")]

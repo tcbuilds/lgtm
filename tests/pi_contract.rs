@@ -4,6 +4,7 @@ use serde_json::Value;
 
 const MATRIX_PATH: &str = "tests/fixtures/pi/0.84.2/capability_matrix.json";
 const TOOLS_PATH: &str = "tests/fixtures/pi/0.84.2/tool_provenance.json";
+const CURRENT_TOOLS_PATH: &str = "tests/fixtures/pi/0.84.3/tool_provenance.json";
 const DISCOVERY_PATH: &str = "tests/fixtures/pi/0.84.2/discovery.json";
 const TRUST_PATH: &str = "tests/fixtures/pi/0.84.2/trust.json";
 const MALFORMED_PATH: &str = "tests/fixtures/pi/0.84.2/malformed_extension.json";
@@ -244,6 +245,27 @@ fn tool_provenance_fixture_requires_builtin_source_and_schema() {
             "verified_builtin_provenance_and_schema"
         );
     }
+}
+
+#[test]
+fn current_pi_tool_contract_accepts_descriptive_array_metadata_only() {
+    let fixture = read_json(CURRENT_TOOLS_PATH);
+    assert_eq!(fixture["pi_version"], "0.84.3");
+    let tools = fixture["captures"][0]["tools"]
+        .as_array()
+        .expect("current built-in tools");
+    let edit = tools
+        .iter()
+        .find(|tool| tool["name"] == "edit")
+        .expect("edit capture");
+    assert_eq!(edit["source_info"]["source"], "builtin");
+    assert_eq!(edit["source_info"]["path"], "<builtin:edit>");
+    assert!(edit["parameters"]["properties"]["edits"]["description"].is_string());
+    assert_eq!(edit["parameters"]["properties"]["edits"]["type"], "array");
+    assert_eq!(
+        edit["enforcement_eligibility"],
+        "verified_builtin_provenance_and_schema"
+    );
 }
 
 #[test]

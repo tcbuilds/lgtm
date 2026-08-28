@@ -32,7 +32,8 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
     let pi_extension = home.join(".pi/agent/extensions/lgtm.ts");
     let pi_backup = pi_extension.with_file_name("lgtm.ts.bak");
     let binary = codex::hook_binary();
-    let claude_render = render_claude_hooks(config::validate_settings(&claude_settings)?, &binary);
+    let claude_render =
+        render_claude_hooks(config::validate_claude_settings(&claude_settings)?, &binary);
     let codex_render = codex::render_hooks(config::validate_settings(&codex_hooks)?);
     let agents_render = render_agents(&codex_agents)?;
     let (guidance_plan, rules) = rules::plan(home, InitAgent::Claude)?;

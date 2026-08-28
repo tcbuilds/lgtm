@@ -77,9 +77,17 @@ pub fn preview_with_agent(root: &Path, agent: InitAgent) -> Result<InitSummary, 
     let detection = detect(root);
     let workspaces = crate::discovery::discover(root)?;
     let settings_path = hooks_path(root, agent);
+    let pi_settings_path = (agent == InitAgent::Pi).then(|| root.join(".pi/settings.json"));
+    let pi_lsp_path = (agent == InitAgent::Pi).then(|| root.join(".pi/pi-lsp.json"));
     let config_path = root.join(".lgtm").join("config.json");
     if let Some(path) = settings_path.as_deref() {
-        let _ = validate_settings(path)?;
+        let _ = validate_hook_settings(path, agent)?;
+    }
+    if let Some(path) = pi_settings_path.as_deref() {
+        let _ = pi_config::validate_settings(path)?;
+    }
+    if let Some(path) = pi_lsp_path.as_deref() {
+        let _ = pi_config::validate_lsp(path)?;
     }
     let _ = validate_config(&config_path)?;
     let mut notes = vec!["dry-run: no files changed".to_string()];
@@ -135,6 +143,12 @@ pub fn preview_with_agent(root: &Path, agent: InitAgent) -> Result<InitSummary, 
     {
         files_written.push(label.to_string());
     }
+    if agent == InitAgent::Pi {
+        files_written.extend([
+            ".pi/settings.json".to_string(),
+            ".pi/pi-lsp.json".to_string(),
+        ]);
+    }
     Ok(InitSummary {
         detection,
         workspaces,
@@ -183,13 +197,23 @@ pub fn run_with_agent(
 
     let settings_path = hooks_path(root, agent);
     let rules_path = root.join(".codex/rules/lgtm.rules");
+    let pi_settings_path = (agent == InitAgent::Pi).then(|| root.join(".pi/settings.json"));
+    let pi_lsp_path = (agent == InitAgent::Pi).then(|| root.join(".pi/pi-lsp.json"));
     let pi_extension_path = (agent == InitAgent::Pi).then(|| root.join(".pi/extensions/lgtm.ts"));
     let pi_backup_path = pi_extension_path
         .as_ref()
         .map(|path| path.with_file_name("lgtm.ts.bak"));
     let validated_settings = settings_path
         .as_deref()
-        .map(validate_settings)
+        .map(|path| validate_hook_settings(path, agent))
+        .transpose()?;
+    let validated_pi_settings = pi_settings_path
+        .as_deref()
+        .map(pi_config::validate_settings)
+        .transpose()?;
+    let validated_pi_lsp = pi_lsp_path
+        .as_deref()
+        .map(pi_config::validate_lsp)
         .transpose()?;
 
     let config_path = root.join(".lgtm").join("config.json");
@@ -213,6 +237,12 @@ pub fn run_with_agent(
         gitignore_path.as_path(),
     ];
     if let Some(path) = settings_path.as_deref() {
+        targets.push(path);
+    }
+    if let Some(path) = pi_settings_path.as_deref() {
+        targets.push(path);
+    }
+    if let Some(path) = pi_lsp_path.as_deref() {
         targets.push(path);
     }
     let guidance_targets = rules::target_paths(root, agent);
@@ -285,6 +315,8 @@ pub fn run_with_agent(
         InitAgent::Codex => validated_settings.and_then(codex::render_hooks),
         InitAgent::Pi => None,
     };
+    let pi_settings_render = validated_pi_settings.and_then(pi_config::render_settings);
+    let pi_lsp_render = validated_pi_lsp.and_then(pi_config::render_lsp);
     let (rules_render, rules_notes) = match agent {
         InitAgent::Claude => (None, Vec::new()),
         InitAgent::Codex => {
@@ -316,6 +348,12 @@ pub fn run_with_agent(
     ];
     if let (Some(path), Some(label)) = (settings_path.as_deref(), hooks_label(agent)) {
         planned.push((path, label.to_string(), settings_render));
+    }
+    if let Some(path) = pi_settings_path.as_deref() {
+        planned.push((path, ".pi/settings.json".to_string(), pi_settings_render));
+    }
+    if let Some(path) = pi_lsp_path.as_deref() {
+        planned.push((path, ".pi/pi-lsp.json".to_string(), pi_lsp_render));
     }
     planned.push((
         &rules_path,
@@ -355,6 +393,14 @@ pub fn run_with_agent(
     })
 }
 
+fn validate_hook_settings(path: &Path, agent: InitAgent) -> Result<ValidatedSettings, InitError> {
+    match agent {
+        InitAgent::Claude => validate_claude_settings(path),
+        InitAgent::Codex => validate_settings(path),
+        InitAgent::Pi => Ok(None),
+    }
+}
+
 fn hooks_path(root: &Path, agent: InitAgent) -> Option<PathBuf> {
     match agent {
         InitAgent::Claude => Some(root.join(".claude").join("settings.json")),
@@ -386,6 +432,11 @@ fn override_precedence_note(root: &Path, agent: InitAgent) -> Option<String> {
 
 fn track_note(agent: InitAgent) -> String {
     let hook_target = hooks_label(agent).unwrap_or("no hook configuration (guidance only)");
+    if agent == InitAgent::Pi {
+        return format!(
+            "track .lgtm/config.json, .lgtm/execpolicy.json, {hook_target}, .pi/settings.json, and .pi/pi-lsp.json; **/.lgtm/evidence/ is transient"
+        );
+    }
     format!(
         "track .lgtm/config.json, .lgtm/execpolicy.json, and {hook_target}; **/.lgtm/evidence/ is transient"
     )
