@@ -2799,7 +2799,7 @@ mod tests {
         assert!(!paths.iter().any(|path| path == &socket));
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn full_check_omits_non_utf8_supported_paths_without_lossy_digest_entries() {
         use std::ffi::OsString;
