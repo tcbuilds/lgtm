@@ -603,6 +603,46 @@ fn overdepth_scanner_uncertainty_forces_same_session_full_gate_rerun() {
 }
 
 #[cfg(target_os = "linux")]
+#[test]
+fn ordinary_unchanged_file_reuses_generated_same_session_full_gate_evidence() {
+    let repo = oversized_gate_fixture_with_command(
+        "#!/bin/sh\nprintf x >> \"$1\"\nexit 0\n",
+        clean_gitleaks_script(),
+        "{\"state\":\"stable\"}\n",
+    );
+    let first = run_pre_tool_use_command(&repo, "ordinary-reuse", "git commit -m first");
+    assert!(first.status.success(), "first gate: {:?}", first.stderr);
+    assert!(first.stdout.is_empty(), "first full gate should pass");
+    assert_eq!(repo.read("full-gate-runs"), "x");
+
+    let first_record: serde_json::Value = serde_json::from_str(
+        repo.read(".lgtm/evidence/evidence.jsonl")
+            .lines()
+            .next_back()
+            .expect("first evidence record"),
+    )
+    .expect("first evidence is JSON");
+    assert_ne!(
+        first_record["touched_files_digest"],
+        json!("0".repeat(64)),
+        "bounded ordinary content should produce reusable digest evidence"
+    );
+    assert_eq!(
+        first_record["commands"][0]["touched_files_digest"], first_record["touched_files_digest"],
+        "nested command provenance should match the generated top-level digest"
+    );
+
+    let second = run_pre_tool_use_command(&repo, "ordinary-reuse", "git commit -m retry");
+    assert!(second.status.success(), "retry gate: {:?}", second.stderr);
+    assert!(second.stdout.is_empty(), "second full gate should pass");
+    assert_eq!(
+        repo.read("full-gate-runs"),
+        "x",
+        "unchanged certain evidence should reuse the generated full-gate record"
+    );
+}
+
+#[cfg(target_os = "linux")]
 fn unresolved_ledger_gate_fixture() -> TempRepo {
     let repo = TempRepo::new();
     let command = repo.path().join("bin/unresolved-check");
