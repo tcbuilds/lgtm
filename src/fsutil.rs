@@ -435,6 +435,7 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&root).expect("boundary fixture");
+        let root = std::fs::canonicalize(root).expect("canonical boundary fixture");
         let path = root.join("source.rs");
         let exact = "x".repeat(MAX as usize);
         std::fs::write(&path, exact.as_bytes()).expect("exact-size source");
