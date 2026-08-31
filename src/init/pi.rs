@@ -18,6 +18,8 @@ const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
     "b45c8c6756955338325fd4d80386523b846b14cc6066a07dc506ce71219079ca",
     "becaa0ca4bc7006cd2d30c9844d24d063ec76e1a69af32725e5967d854a51793",
     "ed0ff523f79e64c395184b3b3253a90b3643e088863ef683c60baa45699b1df3",
+    "9214f126c80ebe905f7c9b3441c36c4cd5dbeed8a4cf2d64359f002dff44826c",
+    "fe98f5b39be7610f8b2ba9286d9637cb45a25205de018b915ccfbcc1ac284a71",
 ];
 const EXTENSION_TEMPLATE: &str = r#"// lgtm-pi-extension: v1
 // lgtm-pi-scope: __LGTM_SCOPE__
@@ -298,7 +300,10 @@ function runtimeAttestation(pi, ctx) {
       scope: SCOPE,
       sessionId: currentSessionId,
     });
-    const sessionEntryId = ctx.sessionManager?.getLeafId?.();
+    const sessionEntryId = ctx.sessionManager?.getEntries?.()
+      .find((entry) => entry?.type === "custom"
+        && entry.customType === "lgtm-runtime"
+        && entry.data?.nonce === nonce)?.id;
     if (!sessionEntryId) throw new Error("session evidence unavailable");
     return {
       trusted,
@@ -589,14 +594,14 @@ async function handle(pi, eventType, event, ctx) {
       return undefined;
     }
     if (policyEvent) {
-      if (!verifiedToolContract(pi, event)) {
-        appendFailure(pi, ctx, eventType, "tool_provenance_unverified");
-        return undefined;
-      }
       const supported = eventType === "tool_call"
         ? ["bash", "edit", "write"].includes(event.toolName)
         : ["read", "edit", "write"].includes(event.toolName);
       if (!supported) return undefined;
+      if (!verifiedToolContract(pi, event)) {
+        appendFailure(pi, ctx, eventType, "tool_provenance_unverified");
+        return undefined;
+      }
       if (eventType === "tool_result" && !validToolResultEvent(event)) {
         appendFailure(pi, ctx, eventType, "tool_result_unverified");
         return undefined;
@@ -814,6 +819,28 @@ mod tests {
       || property.type !== expected.type || !property.items"#;
     const V0101_ARRAY_CHECK: &str = r#"  if (!property || !sameKeys(property, ["type", "items"])
       || property.type !== expected.type || !property.items"#;
+    const CURRENT_MARKER_LOOKUP: &str = r#"    const sessionEntryId = ctx.sessionManager?.getEntries?.()
+      .find((entry) => entry?.type === "custom"
+        && entry.customType === "lgtm-runtime"
+        && entry.data?.nonce === nonce)?.id;"#;
+    const V0110_MARKER_LOOKUP: &str =
+        r#"    const sessionEntryId = ctx.sessionManager?.getLeafId?.();"#;
+    const CURRENT_POLICY_ORDER: &str = r#"      const supported = eventType === "tool_call"
+        ? ["bash", "edit", "write"].includes(event.toolName)
+        : ["read", "edit", "write"].includes(event.toolName);
+      if (!supported) return undefined;
+      if (!verifiedToolContract(pi, event)) {
+        appendFailure(pi, ctx, eventType, "tool_provenance_unverified");
+        return undefined;
+      }"#;
+    const V0110_POLICY_ORDER: &str = r#"      if (!verifiedToolContract(pi, event)) {
+        appendFailure(pi, ctx, eventType, "tool_provenance_unverified");
+        return undefined;
+      }
+      const supported = eventType === "tool_call"
+        ? ["bash", "edit", "write"].includes(event.toolName)
+        : ["read", "edit", "write"].includes(event.toolName);
+      if (!supported) return undefined;"#;
 
     #[test]
     fn v0101_project_and_global_templates_remain_upgradeable() {
@@ -833,7 +860,9 @@ mod tests {
                     "const PI_VERSION = \"0.84.3\";",
                     "const PI_VERSION = \"0.84.2\";",
                 )
-                .replace(CURRENT_ARRAY_CHECK, V0101_ARRAY_CHECK);
+                .replace(CURRENT_ARRAY_CHECK, V0101_ARRAY_CHECK)
+                .replace(CURRENT_MARKER_LOOKUP, V0110_MARKER_LOOKUP)
+                .replace(CURRENT_POLICY_ORDER, V0110_POLICY_ORDER);
             assert_eq!(digest(&normalize_template(&old)), expected_digest);
             let current = render("/opt/lgtm", scope).expect("current template renders");
             assert!(owned_template(&old, &current, scope));

@@ -57,6 +57,17 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
     assert!(extension.contains("sourceInfo"));
     assert!(extension.contains("TOOL_CONTRACTS"));
     assert!(
+        extension.contains("entry.data?.nonce === nonce")
+            && !extension.contains("const sessionEntryId = ctx.sessionManager?.getLeafId?.()")
+    );
+    let supported_tool_check = extension
+        .find("if (!supported) return undefined;")
+        .expect("unsupported tools are ignored");
+    let provenance_check = extension
+        .find("if (!verifiedToolContract(pi, event))")
+        .expect("supported tools require provenance");
+    assert!(supported_tool_check < provenance_check);
+    assert!(
         extension.contains("hasDescription ? [\"type\", \"items\", \"description\"]")
             && extension.contains("primitivePropertyMatches(property.items.properties[key], type)")
             && extension.contains("tool_provenance_unverified")
@@ -205,6 +216,7 @@ const drift = process.argv[4] === "drift";
 const digest = source.match(/const TEMPLATE_DIGEST = "([^"]+)"/)[1];
 const session = process.argv[3];
 const handlers = {};
+const entries = [];
 const extension = source
   .replace('import { dirname, join, resolve } from "node:path";', 'const { dirname, join, resolve } = require("node:path");')
   .replace('import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";', 'const { existsSync, lstatSync, readFileSync, statSync } = require("node:fs");')
@@ -215,7 +227,11 @@ const extension = source
 const lgtm = (() => { const module = { exports: {} }; eval(extension); return module.exports; })();
 const pi = {
   on: (event, handler) => { handlers[event] = handler; },
-  appendEntry: (_type, data) => fs.appendFileSync(session, JSON.stringify({ id: "leaf", customType: "lgtm-runtime", data }) + "\n"),
+  appendEntry: (customType, data) => {
+    const entry = { type: "custom", id: "leaf", customType, data };
+    entries.push(entry);
+    fs.appendFileSync(session, JSON.stringify(entry) + "\n");
+  },
   getAllTools: () => [
     { name: "read", sourceInfo: { source: "builtin", path: "<builtin:read>" }, parameters: { type: "object", required: ["path"], properties: { path: { type: "string", description: "Path to the file to read (relative or absolute)" }, offset: { type: "number", description: "Line number to start reading from (1-indexed)" }, limit: { type: "number", description: "Maximum number of lines to read" } } } },
     { name: "bash", sourceInfo: { source: "builtin", path: "<builtin:bash>" }, parameters: { type: "object", required: ["command"], properties: { command: { type: "string", description: "Bash command to execute" }, timeout: { type: "number", description: "Timeout in seconds (optional, no default timeout)" } } } },
@@ -227,7 +243,7 @@ lgtm(pi);
 handlers.session_start({}, {
   cwd: process.cwd(),
   isProjectTrusted: () => true,
-  sessionManager: { getSessionId: () => "session", getSessionFile: () => session, getLeafId: () => "leaf" },
+  sessionManager: { getSessionId: () => "session", getSessionFile: () => session, getEntries: () => entries },
 }).then(() => process.exit(0));
 "#,
     )
