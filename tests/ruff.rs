@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 use common::TempRepo;
 use serde_json::json;
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production Ruff containment is Linux-only"
+)]
 #[test]
 fn fake_ruff_blocks_python_edit_and_persists_both_rules() {
     let repo = TempRepo::new();
