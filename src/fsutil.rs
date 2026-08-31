@@ -367,6 +367,27 @@ pub fn ensure_directory(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Return whether any bounded filesystem component is a symlink or cannot be
+/// inspected. The check walks each prefix with `symlink_metadata`, so it does
+/// not follow the component it is checking. An unavailable prefix is treated
+/// as uncertain so callers fail closed rather than canonicalizing an unchecked
+/// path.
+pub(crate) fn path_contains_symlink(path: &Path) -> bool {
+    let mut current = PathBuf::new();
+    for (index, component) in path.components().enumerate() {
+        if index >= MAX_DIRECTORY_COMPONENTS {
+            return true;
+        }
+        current.push(component.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            Err(_) => return true,
+        }
+    }
+    false
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -405,6 +426,144 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn required_bounded_reader_accepts_exact_limit_and_rejects_one_byte_over() {
+        const MAX: u64 = 256 * 1024;
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-fsutil-required-boundary-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("boundary fixture");
+        let root = std::fs::canonicalize(root).expect("canonical boundary fixture");
+        let path = root.join("source.rs");
+        let exact = "x".repeat(MAX as usize);
+        std::fs::write(&path, exact.as_bytes()).expect("exact-size source");
+        assert_eq!(
+            read_required_bounded(&path, MAX).as_deref(),
+            Some(exact.as_str()),
+            "an exact-size valid UTF-8 file is accepted"
+        );
+
+        let mut oversized = exact.into_bytes();
+        oversized.push(b'x');
+        std::fs::write(&path, oversized).expect("oversized source");
+        assert!(
+            read_required_bounded(&path, MAX).is_none(),
+            "one byte over the limit is uncertain"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn path_component_limit_accepts_exact_depth_and_rejects_one_over() {
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-fsutil-component-boundary-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("component-boundary fixture");
+        let root = std::fs::canonicalize(root).expect("canonical component-boundary fixture");
+        let root_components = root.components().count();
+        let exact_directory_count = MAX_DIRECTORY_COMPONENTS
+            .checked_sub(root_components + 1)
+            .expect("temporary root leaves room for an exact-depth file");
+        let mut exact_directory = root.clone();
+        for index in 0..exact_directory_count {
+            exact_directory.push(format!("d{index}"));
+        }
+        std::fs::create_dir_all(&exact_directory).expect("exact-depth directories");
+        let exact_file = exact_directory.join("source.rs");
+        std::fs::write(&exact_file, "fn exact() {}\n").expect("exact-depth source");
+        assert!(
+            !path_contains_symlink(&exact_file),
+            "a regular path at the component limit is inspected successfully"
+        );
+
+        let over_directory = exact_directory.join("over");
+        std::fs::create_dir(&over_directory).expect("one-over directory");
+        let over_file = over_directory.join("source.rs");
+        std::fs::write(&over_file, "fn over() {}\n").expect("one-over source");
+        assert!(
+            path_contains_symlink(&over_file),
+            "a path one component over the limit is uncertain"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn required_bounded_reader_rejects_final_component_symlink() {
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-fsutil-required-symlink-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("symlink fixture");
+        let root = std::fs::canonicalize(root).expect("canonical symlink fixture");
+        let target = root.join("target.rs");
+        let link = root.join("source.rs");
+        std::fs::write(&target, "fn target() {}\n").expect("symlink target source");
+        std::os::unix::fs::symlink(&target, &link).expect("final-component symlink fixture");
+        assert!(
+            read_required_bounded(&link, 256 * 1024).is_none(),
+            "a final-component symlink is uncertain"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn required_bounded_reader_rejects_symlinked_ancestor() {
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-fsutil-required-ancestor-symlink-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("real")).expect("ancestor fixture");
+        let root = std::fs::canonicalize(root).expect("canonical ancestor fixture");
+        let target = root.join("real/source.rs");
+        let link = root.join("alias");
+        let descendant = link.join("source.rs");
+        std::fs::write(&target, "fn target() {}\n").expect("regular supported descendant");
+        std::os::unix::fs::symlink("real", &link).expect("symlinked ancestor directory");
+        assert!(
+            std::fs::symlink_metadata(&target)
+                .expect("descendant metadata")
+                .is_file(),
+            "the descendant target is a regular file"
+        );
+        assert!(
+            read_required_bounded(&descendant, 256 * 1024).is_none(),
+            "a symlinked ancestor is uncertain"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn required_bounded_reader_rejects_read_error_from_regular_proc_path() {
+        let path = Path::new("/proc/self/mem");
+        let metadata = std::fs::symlink_metadata(path).expect("proc memory metadata");
+        assert!(
+            metadata.file_type().is_file(),
+            "/proc/self/mem must remain a regular proc path for this fixture"
+        );
+        let file = open_regular_file(path)
+            .expect("opening proc memory should report the descriptor")
+            .expect("proc memory should open as a regular file");
+        let opened_metadata = file.metadata().expect("opened proc memory metadata");
+        assert!(
+            opened_metadata.file_type().is_file(),
+            "open_regular_file must verify the opened descriptor is regular"
+        );
+        let mut contents = Vec::new();
+        assert!(
+            file.take(256 * 1024 + 1)
+                .read_to_end(&mut contents)
+                .is_err(),
+            "a bounded read on the opened proc descriptor must fail"
+        );
+        assert!(
+            read_required_bounded(path, 256 * 1024).is_none(),
+            "a read error from a regular proc path is uncertain"
+        );
+    }
 }
 
 /// Read a file to a string, bounding the read at `max` bytes and treating any
@@ -431,4 +590,29 @@ pub fn read_optional_bounded(path: &Path, max: u64) -> String {
         return String::new();
     }
     contents
+}
+
+/// Read a regular UTF-8 file completely when it fits within `max` bytes.
+///
+/// Unlike [`read_optional_bounded`], this helper preserves the distinction
+/// between a successfully read file and an unavailable or incomplete one.
+/// Callers that use the bytes as authorization material can therefore reject
+/// absence, non-regular paths, invalid UTF-8, read failures, and oversized
+/// files instead of treating them as an empty file. A bounded component walk
+/// rejects a path containing a symlink before opening it; the final open still
+/// enforces no-follow and regular-file checks. The `max + 1` read window keeps
+/// both the read and its allocation bounded while detecting an exact one-byte
+/// overflow.
+pub(crate) fn read_required_bounded(path: &Path, max: u64) -> Option<String> {
+    if path_contains_symlink(path) {
+        return None;
+    }
+    let file = match open_regular_file(path) {
+        Ok(Some(file)) => file,
+        Ok(None) | Err(_) => return None,
+    };
+    let limit = max.checked_add(1)?;
+    let mut contents = String::new();
+    file.take(limit).read_to_string(&mut contents).ok()?;
+    (contents.len() as u64 <= max).then_some(contents)
 }
