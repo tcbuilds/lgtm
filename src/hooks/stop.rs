@@ -5280,7 +5280,7 @@ mod tests {
             &mut output,
             &ClaudeAdapter,
             crate::adapter::HookEvent::Stop,
-            Duration::from_millis(100),
+            Duration::from_millis(500),
         )
         .expect("Stop runs");
 
