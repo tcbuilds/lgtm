@@ -20,6 +20,8 @@ pub use runner::{
 #[doc(hidden)]
 pub use supervisor::run_from_environment as run_command_supervisor;
 pub use supervisor::{CONTAINMENT_VERSION, platform_id, request_is_transportable};
+#[cfg(all(target_os = "linux", not(test)))]
+pub(crate) use supervisor::{bounded_environment_snapshot, run_command_with_deadline};
 
 #[cfg(test)]
 mod tests;
