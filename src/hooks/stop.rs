@@ -2742,7 +2742,7 @@ mod tests {
 
         let fixture = TestTempDir::new("check-path-unix-socket-uncertain");
         let source = fixture.path.join("src/ordinary.rs");
-        let socket = fixture.path.join("src/generated.rs");
+        let socket = fixture.path.join("a.rs");
         std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
         std::fs::write(&source, "fn value() -> u8 { 1 }\n").expect("ordinary source");
         let _listener = UnixListener::bind(&socket).expect("supported-extension socket");
