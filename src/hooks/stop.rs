@@ -2753,6 +2753,58 @@ mod tests {
     }
 
     #[test]
+    fn full_check_marks_overdepth_descendant_uncertain_without_scanning_it() {
+        let boundary_fixture = TestTempDir::new("check-path-depth-boundary");
+        let mut boundary_directory = boundary_fixture.path.clone();
+        for index in 0..8 {
+            boundary_directory.push(format!("depth-{index}"));
+        }
+        std::fs::create_dir_all(&boundary_directory).expect("depth-boundary directories");
+        let boundary_source = boundary_directory.join("boundary.rs");
+        std::fs::write(&boundary_source, "fn boundary() -> u8 { 1 }\n")
+            .expect("depth-boundary source");
+        let (boundary_paths, boundary_incomplete, boundary_uncertain) =
+            check_paths_with_deadline(&boundary_fixture.path, None).expect("boundary check paths");
+        let boundary_source = boundary_source.to_string_lossy().into_owned();
+        assert!(
+            !boundary_incomplete,
+            "a supported file at the depth boundary remains fully scannable"
+        );
+        assert!(
+            !boundary_uncertain,
+            "a supported file at the depth boundary does not make reuse uncertain"
+        );
+        assert!(
+            boundary_paths.iter().any(|path| path == &boundary_source),
+            "the supported depth-boundary file is scanned"
+        );
+
+        let over_fixture = TestTempDir::new("check-path-overdepth");
+        let mut over_directory = over_fixture.path.clone();
+        for index in 0..9 {
+            over_directory.push(format!("depth-{index}"));
+        }
+        std::fs::create_dir_all(&over_directory).expect("over-depth directories");
+        let over_source = over_directory.join("over.rs");
+        std::fs::write(&over_source, "fn over() -> u8 { 1 }\n").expect("over-depth source");
+        let (over_paths, over_incomplete, over_uncertain) =
+            check_paths_with_deadline(&over_fixture.path, None).expect("over-depth check paths");
+        let over_source = over_source.to_string_lossy().into_owned();
+        assert!(
+            over_incomplete,
+            "a descendant beyond the scanner depth makes the scan incomplete"
+        );
+        assert!(
+            over_uncertain,
+            "a descendant beyond the scanner depth disables evidence reuse"
+        );
+        assert!(
+            !over_paths.iter().any(|path| path == &over_source),
+            "a supported descendant beyond the depth boundary is not scanned"
+        );
+    }
+
+    #[test]
     fn full_check_marks_supported_non_regular_uncertain_without_scanning_it() {
         let fixture = TestTempDir::new("check-path-non-regular-uncertain");
         let source = fixture.path.join("src/ordinary.rs");
@@ -4379,6 +4431,55 @@ mod tests {
         assert_ne!(
             path_changed, expected,
             "touched path must affect the digest"
+        );
+    }
+
+    #[test]
+    fn digest_preserves_legacy_framing_for_multiple_ordered_paths() {
+        use sha2::{Digest, Sha256};
+
+        let fixture = TestTempDir::new("digest-multiple-framing");
+        let first_path = fixture.path.join("src/first.rs");
+        let second_path = fixture.path.join("src/second.rs");
+        std::fs::create_dir_all(first_path.parent().expect("source parent"))
+            .expect("source directory");
+        let first_content = "fn first() -> u8 { 1 }\n";
+        let second_content = "fn second() -> u8 { 2 }\n";
+        std::fs::write(&first_path, first_content).expect("first source");
+        std::fs::write(&second_path, second_content).expect("second source");
+        let first = first_path.to_string_lossy().into_owned();
+        let second = second_path.to_string_lossy().into_owned();
+        let paths = vec![first.clone(), second.clone()];
+
+        let mut expected_hasher = Sha256::new();
+        expected_hasher.update(first.as_bytes());
+        expected_hasher.update(b"\0");
+        expected_hasher.update(first_content.as_bytes());
+        expected_hasher.update(b"\0");
+        expected_hasher.update(second.as_bytes());
+        expected_hasher.update(b"\0");
+        expected_hasher.update(second_content.as_bytes());
+        expected_hasher.update(b"\0");
+        let expected = format!("{:x}", expected_hasher.finalize());
+        assert_eq!(
+            digest_paths_until(&paths, None),
+            Some(expected.clone()),
+            "two paths retain the legacy path-NUL-content-NUL framing"
+        );
+
+        std::fs::write(&second_path, "fn second() -> u8 { 3 }\n").expect("changed second source");
+        let second_changed = digest_paths_until(&paths, None).expect("changed digest");
+        assert_ne!(
+            second_changed, expected,
+            "changing the second path's content changes the aggregate digest"
+        );
+
+        std::fs::write(&second_path, second_content).expect("restore second source");
+        let reversed = vec![second, first];
+        let reversed_digest = digest_paths_until(&reversed, None).expect("reversed digest");
+        assert_ne!(
+            reversed_digest, expected,
+            "reordering the same paths changes the aggregate digest"
         );
     }
 

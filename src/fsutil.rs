@@ -456,12 +456,48 @@ mod tests {
     }
 
     #[test]
+    fn path_component_limit_accepts_exact_depth_and_rejects_one_over() {
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-fsutil-component-boundary-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("component-boundary fixture");
+        let root = std::fs::canonicalize(root).expect("canonical component-boundary fixture");
+        let root_components = root.components().count();
+        let exact_directory_count = MAX_DIRECTORY_COMPONENTS
+            .checked_sub(root_components + 1)
+            .expect("temporary root leaves room for an exact-depth file");
+        let mut exact_directory = root.clone();
+        for index in 0..exact_directory_count {
+            exact_directory.push(format!("d{index}"));
+        }
+        std::fs::create_dir_all(&exact_directory).expect("exact-depth directories");
+        let exact_file = exact_directory.join("source.rs");
+        std::fs::write(&exact_file, "fn exact() {}\n").expect("exact-depth source");
+        assert!(
+            !path_contains_symlink(&exact_file),
+            "a regular path at the component limit is inspected successfully"
+        );
+
+        let over_directory = exact_directory.join("over");
+        std::fs::create_dir(&over_directory).expect("one-over directory");
+        let over_file = over_directory.join("source.rs");
+        std::fs::write(&over_file, "fn over() {}\n").expect("one-over source");
+        assert!(
+            path_contains_symlink(&over_file),
+            "a path one component over the limit is uncertain"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn required_bounded_reader_rejects_final_component_symlink() {
         let root = std::env::temp_dir().join(format!(
             "lgtm-fsutil-required-symlink-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&root).expect("symlink fixture");
+        let root = std::fs::canonicalize(root).expect("canonical symlink fixture");
         let target = root.join("target.rs");
         let link = root.join("source.rs");
         std::fs::write(&target, "fn target() {}\n").expect("symlink target source");
