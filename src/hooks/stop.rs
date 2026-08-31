@@ -849,7 +849,7 @@ fn workspace_touched(root: &Path, workspace_root: &Path, touched_paths: &[String
         return true;
     };
     let configured_workspace = root.join(workspace_root);
-    if path_contains_symlink(&configured_workspace) {
+    if crate::fsutil::path_contains_symlink(&configured_workspace) {
         return true;
     }
     // Re-open the pathname and compare both identity and opened path. This
@@ -876,19 +876,6 @@ fn workspace_touched(root: &Path, workspace_root: &Path, touched_paths: &[String
     touched_paths
         .iter()
         .any(|path| Path::new(path).starts_with(&workspace))
-}
-
-fn path_contains_symlink(path: &Path) -> bool {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        if std::fs::symlink_metadata(&current)
-            .is_ok_and(|metadata| metadata.file_type().is_symlink())
-        {
-            return true;
-        }
-    }
-    false
 }
 
 fn bind_command_provenance(
@@ -1757,12 +1744,16 @@ fn collect_check_paths(
         let path = entry.path();
         let metadata = std::fs::symlink_metadata(&path)
             .map_err(|error| format!("inspect check path ({error})"))?;
-        let supported = path.strip_prefix(root).is_ok() && is_supported_check_path(&path);
-        if supported && (metadata.file_type().is_symlink() || !metadata.file_type().is_file()) {
-            *reuse_uncertain = true;
-        }
         if metadata.file_type().is_symlink() {
+            // A symlink can hide a supported file behind an extensionless
+            // directory entry, so every encountered symlink makes the
+            // candidate set non-reusable even though it is never scanned.
+            *reuse_uncertain = true;
             continue;
+        }
+        let supported = path.strip_prefix(root).is_ok() && is_supported_check_path(&path);
+        if supported && !metadata.file_type().is_file() {
+            *reuse_uncertain = true;
         }
         if metadata.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -1795,7 +1786,13 @@ fn collect_check_paths(
                 )?;
             }
         } else if metadata.is_file() && supported {
-            paths.push(path.to_string_lossy().into_owned());
+            let Some(path) = path.to_str() else {
+                // A lossy spelling could collide with another repository path
+                // and would not identify the file the scanner should read.
+                *reuse_uncertain = true;
+                continue;
+            };
+            paths.push(path.to_owned());
             if paths.len() >= MAX_CHECK_PATHS {
                 *incomplete = true;
                 *reuse_uncertain = true;
@@ -1816,15 +1813,23 @@ fn canonical_contained_file(root: &Path, file: &str) -> Option<String> {
     } else {
         root.join(path)
     };
+    // Reject symlinked ancestors as well as a symlink final component before
+    // canonicalization can follow any of them into a different filesystem
+    // object. A path that cannot be represented losslessly is not a reusable
+    // string candidate either.
+    if crate::fsutil::path_contains_symlink(&candidate) {
+        return None;
+    }
     let metadata = std::fs::symlink_metadata(&candidate).ok()?;
     if !metadata.is_file() {
         return None;
     }
     let canonical_root = std::fs::canonicalize(root).ok()?;
     let canonical = std::fs::canonicalize(candidate).ok()?;
-    canonical
-        .starts_with(canonical_root)
-        .then(|| canonical.to_string_lossy().into_owned())
+    if !canonical.starts_with(&canonical_root) {
+        return None;
+    }
+    canonical.to_str().map(str::to_owned)
 }
 
 fn rerun_checks(paths: &[String], deadline: Option<Instant>) -> Vec<EnforcementResult> {
@@ -2713,6 +2718,40 @@ mod tests {
         assert!(!paths.iter().any(|path| path == &target));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn full_check_marks_extensionless_directory_symlink_uncertain_without_traversing_it() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = TestTempDir::new("check-path-directory-symlink-uncertain");
+        let source = fixture.path.join("src/ordinary.rs");
+        let hidden = fixture.path.join("src/hidden");
+        let descendant = fixture.path.join("vendor/hidden/descendant.rs");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        std::fs::create_dir_all(descendant.parent().expect("hidden target parent"))
+            .expect("hidden target directory");
+        std::fs::write(&source, "fn value() -> u8 { 1 }\n").expect("ordinary source");
+        std::fs::write(&descendant, "fn hidden() -> u8 { 1 }\n").expect("hidden source");
+        symlink("../vendor/hidden", &hidden).expect("extensionless directory symlink");
+
+        let (paths, path_scan_incomplete, reuse_uncertain) =
+            check_paths_with_deadline(&fixture.path, None).expect("check paths");
+        let source = source.to_string_lossy().into_owned();
+        let hidden = hidden.to_string_lossy().into_owned();
+        let descendant = descendant.to_string_lossy().into_owned();
+        assert!(!path_scan_incomplete, "the bounded scan completed");
+        assert!(
+            reuse_uncertain,
+            "an extensionless directory symlink makes reuse uncertain"
+        );
+        assert!(paths.iter().any(|path| path == &source));
+        assert!(!paths.iter().any(|path| path == &hidden));
+        assert!(
+            !paths.iter().any(|path| path == &descendant),
+            "a supported descendant hidden behind the symlink must not be scanned"
+        );
+    }
+
     #[test]
     fn full_check_marks_supported_non_regular_uncertain_without_scanning_it() {
         let fixture = TestTempDir::new("check-path-non-regular-uncertain");
@@ -2758,6 +2797,44 @@ mod tests {
         );
         assert!(paths.iter().any(|path| path == &source));
         assert!(!paths.iter().any(|path| path == &socket));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_check_omits_non_utf8_supported_paths_without_lossy_digest_entries() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let fixture = TestTempDir::new("check-path-non-utf8");
+        let source = fixture.path.join("src/ordinary.rs");
+        let source_directory = source.parent().expect("source parent");
+        std::fs::create_dir_all(source_directory).expect("source directory");
+        std::fs::write(&source, "fn value() -> u8 { 1 }\n").expect("ordinary source");
+
+        let first = source_directory.join(OsString::from_vec(b"collision-\xff.rs".to_vec()));
+        let second = source_directory.join(OsString::from_vec(b"collision-\xfe.rs".to_vec()));
+        std::fs::write(&first, "fn first() -> u8 { 1 }\n").expect("first non-UTF-8 source");
+        std::fs::write(&second, "fn second() -> u8 { 1 }\n").expect("second non-UTF-8 source");
+        let first_lossy = first.to_string_lossy().into_owned();
+        let second_lossy = second.to_string_lossy().into_owned();
+        assert_eq!(
+            first_lossy, second_lossy,
+            "the fixture must exercise a lossy path collision"
+        );
+
+        let (paths, path_scan_incomplete, reuse_uncertain) =
+            check_paths_with_deadline(&fixture.path, None).expect("check paths");
+        let source = source.to_string_lossy().into_owned();
+        assert!(!path_scan_incomplete, "the bounded scan completed");
+        assert!(
+            reuse_uncertain,
+            "non-UTF-8 supported paths make reuse uncertain"
+        );
+        assert!(paths.iter().any(|path| path == &source));
+        assert!(
+            !paths.iter().any(|path| path == &first_lossy),
+            "a lossy non-UTF-8 path must stay out of scanner and digest paths"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -3185,6 +3262,35 @@ mod tests {
             .expect("evidence directory");
         std::os::unix::fs::symlink(&target, &ledger).expect("ledger symlink");
         assert_stop_reports_unverified(&fixture.path, "symlink-session");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_task_ledger_candidate_through_symlinked_ancestor_is_uncertain() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = TestTempDir::new("ledger-symlink-ancestor");
+        let target = fixture.path.join("real/target.py");
+        let alias = fixture.path.join("alias");
+        std::fs::create_dir_all(target.parent().expect("target parent")).expect("target directory");
+        std::fs::write(&target, "value = 1\n").expect("target source");
+        symlink("real", &alias).expect("symlinked ancestor");
+        write_ledger(
+            &fixture.path,
+            valid_ledger_line("symlink-ancestor-session", "alias/target.py", "passed").as_bytes(),
+        );
+
+        let touched =
+            touched_paths(&fixture.path, Some("symlink-ancestor-session")).expect("ledger parses");
+        assert!(touched.had_edits);
+        assert!(
+            touched.reuse_uncertain,
+            "a ledger candidate through a symlinked ancestor is not reusable"
+        );
+        assert!(
+            touched.files.is_empty(),
+            "symlinked ledger candidates must stay out of scanner paths"
+        );
     }
 
     #[cfg(unix)]

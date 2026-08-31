@@ -367,6 +367,27 @@ pub fn ensure_directory(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Return whether any bounded filesystem component is a symlink or cannot be
+/// inspected. The check walks each prefix with `symlink_metadata`, so it does
+/// not follow the component it is checking. An unavailable prefix is treated
+/// as uncertain so callers fail closed rather than canonicalizing an unchecked
+/// path.
+pub(crate) fn path_contains_symlink(path: &Path) -> bool {
+    let mut current = PathBuf::new();
+    for (index, component) in path.components().enumerate() {
+        if index >= MAX_DIRECTORY_COMPONENTS {
+            return true;
+        }
+        current.push(component.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            Err(_) => return true,
+        }
+    }
+    false
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -451,6 +472,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn required_bounded_reader_rejects_symlinked_ancestor() {
+        let root = std::env::temp_dir().join(format!(
+            "lgtm-fsutil-required-ancestor-symlink-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("real")).expect("ancestor fixture");
+        let root = std::fs::canonicalize(root).expect("canonical ancestor fixture");
+        let target = root.join("real/source.rs");
+        let link = root.join("alias");
+        let descendant = link.join("source.rs");
+        std::fs::write(&target, "fn target() {}\n").expect("regular supported descendant");
+        std::os::unix::fs::symlink("real", &link).expect("symlinked ancestor directory");
+        assert!(
+            std::fs::symlink_metadata(&target)
+                .expect("descendant metadata")
+                .is_file(),
+            "the descendant target is a regular file"
+        );
+        assert!(
+            read_required_bounded(&descendant, 256 * 1024).is_none(),
+            "a symlinked ancestor is uncertain"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn required_bounded_reader_rejects_read_error_from_regular_proc_path() {
@@ -514,10 +561,15 @@ pub fn read_optional_bounded(path: &Path, max: u64) -> String {
 /// between a successfully read file and an unavailable or incomplete one.
 /// Callers that use the bytes as authorization material can therefore reject
 /// absence, non-regular paths, invalid UTF-8, read failures, and oversized
-/// files instead of treating them as an empty file. The `max + 1` read window
-/// keeps both the read and its allocation bounded while detecting an exact
-/// one-byte overflow.
+/// files instead of treating them as an empty file. A bounded component walk
+/// rejects a path containing a symlink before opening it; the final open still
+/// enforces no-follow and regular-file checks. The `max + 1` read window keeps
+/// both the read and its allocation bounded while detecting an exact one-byte
+/// overflow.
 pub(crate) fn read_required_bounded(path: &Path, max: u64) -> Option<String> {
+    if path_contains_symlink(path) {
+        return None;
+    }
     let file = match open_regular_file(path) {
         Ok(Some(file)) => file,
         Ok(None) | Err(_) => return None,
