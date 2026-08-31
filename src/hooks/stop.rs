@@ -2740,7 +2740,7 @@ mod tests {
     fn full_check_marks_supported_unix_socket_uncertain_without_scanning_it() {
         use std::os::unix::net::UnixListener;
 
-        let fixture = TestTempDir::new("check-path-unix-socket-uncertain");
+        let fixture = TestTempDir::new("sock");
         let source = fixture.path.join("src/ordinary.rs");
         let socket = fixture.path.join("a.rs");
         std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
