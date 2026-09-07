@@ -19,7 +19,6 @@ const MAX_SESSION_LINE_BYTES: u64 = 256 * 1024;
 #[cfg(test)]
 const MAX_SESSION_TAIL_BYTES: u64 = 256 * 1024;
 const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
-const FRESHNESS_WINDOW_MS: u128 = 10 * 60 * 1000;
 const ATTESTATION_FILE: &str = ".lgtm/evidence/pi-attestation.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,13 +156,11 @@ pub fn assess_at_for_session(
             "runtime versions, extension bytes, or executable bytes changed",
         );
     }
-    if attestation.recorded_at_ms > now
-        || now.saturating_sub(attestation.recorded_at_ms) > FRESHNESS_WINDOW_MS
-    {
+    if attestation.recorded_at_ms > now {
         return report(
             PiEnforcementState::StaleUnverified,
             Some(scope),
-            "runtime attestation is stale",
+            "runtime attestation timestamp is in the future",
         );
     }
     if let Err(reason) = validate_policy_files(&root) {
@@ -207,7 +204,7 @@ pub fn assess_at_for_session(
     report(
         PiEnforcementState::Active,
         Some(scope),
-        "fresh trusted Pi runtime attestation is current",
+        "trusted Pi runtime attestation is current",
     )
 }
 
