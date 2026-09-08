@@ -1,5 +1,8 @@
 //! Binary-free rules mode.
 //!
+//! The embedded template table keeps this module above the usual file-size target;
+//! retain the explicit catalog beside its installation logic for auditability.
+//!
 //! Writes the standards templates into `.claude/rules/` without registering any
 //! hooks. Everything lands under that directory so an existing `CLAUDE.md` is
 //! never touched; the entry document carries no `paths:` frontmatter, which
@@ -118,6 +121,18 @@ const TEMPLATES: &[(&str, &str)] = &[
     (
         "typescript.md",
         include_str!("../../templates/claude-rules/rules/typescript.md"),
+    ),
+    (
+        "mobile-ui.md",
+        include_str!("../../templates/claude-rules/rules/mobile-ui.md"),
+    ),
+    (
+        "ios-ui.md",
+        include_str!("../../templates/claude-rules/rules/ios-ui.md"),
+    ),
+    (
+        "android-ui.md",
+        include_str!("../../templates/claude-rules/rules/android-ui.md"),
     ),
     (
         "web-ui.md",

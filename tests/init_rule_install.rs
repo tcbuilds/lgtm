@@ -125,7 +125,7 @@ fn plain_init_dry_run_classifies_existing_rule_files() {
     let fresh = run_init(&repo, &["init", "--dry-run"]);
     let fresh_text = String::from_utf8_lossy(&fresh.stdout);
     assert!(fresh.status.success(), "fresh dry-run must succeed");
-    assert!(fresh_text.contains("rule files: planned 30"));
+    assert!(fresh_text.contains("rule files: planned 33"));
 
     let installed = run_init(&repo, &["init", "--accept-guesses"]);
     assert!(installed.status.success(), "initial init must succeed");
@@ -134,7 +134,7 @@ fn plain_init_dry_run_classifies_existing_rule_files() {
     let unchanged_text = String::from_utf8_lossy(&unchanged.stdout);
     assert!(unchanged.status.success(), "unchanged dry-run must succeed");
     assert!(unchanged_text.contains("rule files: planned 0"));
-    assert!(unchanged_text.contains("rule files unchanged: 30"));
+    assert!(unchanged_text.contains("rule files unchanged: 33"));
     assert!(!unchanged_text.contains("rule kept (locally edited):"));
 
     repo.write(".claude/rules/patterns/core.md", "locally edited\n");
@@ -142,7 +142,7 @@ fn plain_init_dry_run_classifies_existing_rule_files() {
     let edited_text = String::from_utf8_lossy(&edited.stdout);
     assert!(edited.status.success(), "edited dry-run must succeed");
     assert!(edited_text.contains("rule files: planned 0"));
-    assert!(edited_text.contains("rule files unchanged: 29"));
+    assert!(edited_text.contains("rule files unchanged: 32"));
     assert!(edited_text.contains("rule kept (locally edited): .claude/rules/patterns/core.md"));
 }
 

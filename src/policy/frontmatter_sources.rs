@@ -119,6 +119,18 @@ pub const RULE_DOCUMENT_SOURCES: &[(&str, &str)] = &[
         include_str!("../../templates/claude-rules/rules/typescript.md"),
     ),
     (
+        "templates/claude-rules/rules/mobile-ui.md",
+        include_str!("../../templates/claude-rules/rules/mobile-ui.md"),
+    ),
+    (
+        "templates/claude-rules/rules/ios-ui.md",
+        include_str!("../../templates/claude-rules/rules/ios-ui.md"),
+    ),
+    (
+        "templates/claude-rules/rules/android-ui.md",
+        include_str!("../../templates/claude-rules/rules/android-ui.md"),
+    ),
+    (
         "templates/claude-rules/rules/web-ui.md",
         include_str!("../../templates/claude-rules/rules/web-ui.md"),
     ),
