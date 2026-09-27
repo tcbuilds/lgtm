@@ -13,6 +13,7 @@ const CONFIG_FILE: &str = ".gitleaks.toml";
 const IGNORE_FILE: &str = ".gitleaksignore";
 const POLICY_CONFIG_FILE: &str = ".lgtm/config.json";
 const WAIVERS_FILE: &str = ".lgtm/waivers.json";
+const EXECUTION_POLICY_FILE: &str = ".lgtm/execpolicy.json";
 const GENERIC_RULE_ID: &str = "generic-api-key";
 const MAX_FINDINGS: usize = 1_024;
 const COMMIT_SCANNER_MODE: &str = "gitleaks protect --staged";
@@ -57,6 +58,10 @@ fn assess_commit_inner(
     let policy_config =
         read_bound_file(&canonical_root.join(POLICY_CONFIG_FILE), POLICY_CONFIG_FILE)?;
     let waivers = read_bound_file(&canonical_root.join(WAIVERS_FILE), WAIVERS_FILE)?;
+    let execution_policy = read_bound_file(
+        &canonical_root.join(EXECUTION_POLICY_FILE),
+        EXECUTION_POLICY_FILE,
+    )?;
     let git_binary = resolve_binary("git")?;
     let git_binary_identity = binary_identity(&git_binary)?;
     let scanner_binary = resolve_binary(GITLEAKS_BIN)?;
@@ -72,6 +77,10 @@ fn assess_commit_inner(
     let final_policy_config =
         read_bound_file(&canonical_root.join(POLICY_CONFIG_FILE), POLICY_CONFIG_FILE)?;
     let final_waivers = read_bound_file(&canonical_root.join(WAIVERS_FILE), WAIVERS_FILE)?;
+    let final_execution_policy = read_bound_file(
+        &canonical_root.join(EXECUTION_POLICY_FILE),
+        EXECUTION_POLICY_FILE,
+    )?;
     let final_git_binary = resolve_binary("git")?;
     let final_git_binary_identity = binary_identity(&final_git_binary)?;
     let final_scanner_binary = resolve_binary(GITLEAKS_BIN)?;
@@ -87,6 +96,7 @@ fn assess_commit_inner(
         || ignore != final_ignore
         || policy_config != final_policy_config
         || waivers != final_waivers
+        || execution_policy != final_execution_policy
         || scanner_binary_identity != final_scanner_binary_identity
     {
         return Err(
@@ -114,6 +124,7 @@ fn assess_commit_inner(
             ignore: &ignore,
             policy_config: &policy_config,
             waivers: &waivers,
+            execution_policy: &execution_policy,
             scanner_version: &version,
             scanner_binary_identity: &scanner_binary_identity,
             commit_argv,
@@ -474,7 +485,7 @@ fn metadata_identity(metadata: &Metadata) -> String {
     }
 }
 
-fn resolve_binary(name: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_binary(name: &str) -> Result<PathBuf, String> {
     let path = std::env::var_os("PATH").ok_or_else(|| "PATH is unavailable".to_string())?;
     for directory in std::env::split_paths(&path) {
         let directory = if directory.as_os_str().is_empty() {

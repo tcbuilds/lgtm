@@ -23,6 +23,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Revalidate an exact Claude confirmation request before executing Git.
+    GuardedCommit {
+        #[arg(long)]
+        request: String,
+    },
     /// Register hooks and scaffold config in the current repository.
     Init {
         /// Preview detected workspaces and planned files without writing.
@@ -291,6 +296,7 @@ fn run(command: Command) -> ExitCode {
             }
         }
         Command::Hook { event, adapter } => run_hook(event, adapter),
+        Command::GuardedCommit { request } => lgtm::guarded_commit::run(&request),
         Command::Doctor => run_doctor(),
         Command::Compile { validate } => run_compile(validate),
         Command::Report { evidence, task } => run_report(evidence, task),

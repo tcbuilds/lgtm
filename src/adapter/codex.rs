@@ -105,6 +105,7 @@ impl HookAdapter for CodexAdapter {
                 })),
                 _ => Err(invalid_combination(event, "Deny")),
             },
+            HookResponse::Ask { .. } => Err(invalid_combination(event, "Ask")),
             HookResponse::BlockStop { reason } => match event {
                 HookEvent::PostToolUse | HookEvent::Stop | HookEvent::SubagentStop => {
                     stdout_json(json!({ "decision": "block", "reason": reason }))

@@ -229,6 +229,10 @@ pub(crate) enum PreCommitGateDecision {
     Allow,
     Deny(String),
     FindingApprovalRequired(PiApprovalChallenge),
+    ClaudeApprovalRequired {
+        identity: String,
+        findings: Vec<gitleaks::commit::CommitFinding>,
+    },
 }
 
 pub(crate) fn run_pre_commit_gate_for_adapter(
@@ -270,13 +274,21 @@ pub(crate) fn run_pre_commit_gate_for_adapter(
                 Err(reason) => Ok(PreCommitGateDecision::Deny(reason)),
             }
         }
+        gitleaks::CommitAssessment::PendingHeuristicApproval { identity, findings }
+            if harness == "claude-code" =>
+        {
+            Ok(PreCommitGateDecision::ClaudeApprovalRequired {
+                identity: identity.digest,
+                findings,
+            })
+        }
         assessment @ gitleaks::CommitAssessment::PendingHeuristicApproval { .. } => {
             Ok(PreCommitGateDecision::Deny(assessment.blocking_reason()))
         }
     }
 }
 
-fn build_pi_approval_challenge(
+pub(crate) fn build_pi_approval_challenge(
     identity: &str,
     findings: &[gitleaks::commit::CommitFinding],
 ) -> Result<PiApprovalChallenge, String> {

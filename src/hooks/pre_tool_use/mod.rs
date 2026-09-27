@@ -1,7 +1,7 @@
 //! PreToolUse guard for Bash, Edit, and Write operations.
 
 mod baseline;
-mod command;
+pub(crate) mod command;
 mod config;
 mod input;
 mod target;
@@ -96,6 +96,21 @@ fn run_for_event(
                 );
             }
         }
+        match crate::guarded_commit::parse_invocation(command) {
+            Ok(Some(request)) => {
+                let decision = require_claude_confirmation(&parsed, adapter)
+                    .and_then(|()| request.verify_context(&root, parsed.session_id.as_deref()))
+                    .and_then(|()| request.revalidate());
+                return match decision {
+                    Ok(challenge) => {
+                        ask_claude(output, adapter, event, &parsed, request, challenge)
+                    }
+                    Err(reason) => deny(output, adapter, event, &reason),
+                };
+            }
+            Ok(None) => {}
+            Err(reason) => return deny(output, adapter, event, &reason),
+        }
         match command::parse_commit_invocation(command) {
             Ok(Some(invocation)) => {
                 let approval_capability = input::approval_capability(&parsed);
@@ -129,6 +144,33 @@ fn run_for_event(
                         challenge,
                     )) => {
                         return finding_approval_required(output, adapter, event, challenge);
+                    }
+                    Ok(crate::hooks::stop::PreCommitGateDecision::ClaudeApprovalRequired {
+                        identity,
+                        findings,
+                    }) => {
+                        let decision =
+                            require_claude_confirmation(&parsed, adapter).and_then(|()| {
+                                let request = crate::guarded_commit::Request::new(
+                                    &root,
+                                    parsed
+                                        .session_id
+                                        .as_deref()
+                                        .ok_or("missing Claude session")?,
+                                    invocation.argv(),
+                                    &identity,
+                                )?;
+                                let challenge = crate::hooks::stop::build_pi_approval_challenge(
+                                    &identity, &findings,
+                                )?;
+                                Ok((request, challenge))
+                            });
+                        return match decision {
+                            Ok((request, challenge)) => {
+                                ask_claude(output, adapter, event, &parsed, request, challenge)
+                            }
+                            Err(reason) => deny(output, adapter, event, &reason),
+                        };
                     }
                     Err(reason) => {
                         let message = format!(
@@ -190,6 +232,74 @@ fn fail_open(adapter: &dyn HookAdapter) -> ExitCode {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+pub(crate) fn validate_commit_policy(root: &Path, argv: &[String]) -> Result<(), String> {
+    let command =
+        shlex::try_join(argv.iter().map(String::as_str)).map_err(|error| error.to_string())?;
+    match config::match_prohibited_command(root, &command)? {
+        Some(matched) => Err(matched.reason()),
+        None => Ok(()),
+    }
+}
+
+fn require_claude_confirmation(
+    parsed: &input::HookInput,
+    adapter: &dyn HookAdapter,
+) -> Result<(), String> {
+    if adapter.harness_name() != "claude-code"
+        || !matches!(
+            parsed.permission_mode.as_deref(),
+            Some("default" | "acceptEdits")
+        )
+    {
+        return Err(
+            "heuristic approval requires Claude native confirmation in default or acceptEdits mode"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn ask_claude(
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    event: HookEvent,
+    parsed: &input::HookInput,
+    request: crate::guarded_commit::Request,
+    challenge: crate::adapter::PiApprovalChallenge,
+) -> ExitCode {
+    let command = match request.command() {
+        Ok(command) => command,
+        Err(reason) => return deny(output, adapter, event, &reason),
+    };
+    let locations = challenge
+        .findings
+        .iter()
+        .map(|finding| {
+            format!(
+                "{} at {}:{} (candidate {})",
+                finding.rule_id,
+                finding.path,
+                finding.start_line,
+                &finding.candidate_id[..16],
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let response = HookResponse::Ask {
+        reason: format!(
+            "Approve only these exact staged heuristic findings?\n{locations}\nLGTM will revalidate before executing Git."
+        ),
+        updated_input: parsed.tool_input.replace_command("command", command),
+    };
+    match adapter.encode_response(event, response) {
+        Ok(encoded) => match adapter::emit(output, &mut std::io::stderr(), &encoded) {
+            Ok(()) => ExitCode::from(encoded.exit_code),
+            Err(_) => ExitCode::from(2),
+        },
+        Err(reason) => deny(output, adapter, event, &reason),
     }
 }
 
@@ -359,6 +469,7 @@ mod tests {
                 cwd: None,
                 session_id: None,
                 tool_name: None,
+                permission_mode: None,
                 approval_capability: Some(value),
                 tool_input: input::ToolInput::default(),
             };

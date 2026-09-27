@@ -152,6 +152,15 @@ pub enum HookResponse {
         /// Why the tool call was denied.
         reason: String,
     },
+    /// Ask Claude's native permission UI to approve a complete replacement
+    /// tool-input object. Other adapters reject this response instead of
+    /// approximating an interactive prompt.
+    Ask {
+        /// Why native approval is required.
+        reason: String,
+        /// The complete replacement input Claude must show and execute.
+        updated_input: Value,
+    },
     /// Block session/stop completion until a MUST violation is resolved.
     BlockStop {
         /// The unresolved violations that block completion.

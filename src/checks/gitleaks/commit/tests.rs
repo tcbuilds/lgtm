@@ -55,6 +55,7 @@ fn identity_is_full_sha256_not_a_truncated_hash() {
             ignore: &file,
             policy_config: &file,
             waivers: &file,
+            execution_policy: &file,
             scanner_version: "gitleaks 8.30.1",
             scanner_binary_identity: "gitleaks-binary",
             commit_argv: &commit_argv,

@@ -13,6 +13,7 @@ pub mod detect;
 pub mod discovery;
 pub mod doctor;
 pub mod fsutil;
+pub mod guarded_commit;
 pub mod hooks;
 pub mod init;
 pub mod path_injection;

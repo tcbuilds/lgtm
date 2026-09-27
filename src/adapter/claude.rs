@@ -68,6 +68,13 @@ impl HookAdapter for ClaudeAdapter {
                 HookEvent::PreToolUse => Ok(stdout_line(deny_envelope(&reason))),
                 _ => Err(invalid_combination(event, "Deny")),
             },
+            HookResponse::Ask {
+                reason,
+                updated_input,
+            } => match event {
+                HookEvent::PreToolUse => Ok(stdout_line(ask_envelope(&reason, updated_input))),
+                _ => Err(invalid_combination(event, "Ask")),
+            },
             HookResponse::BlockStop { reason } => block(event, &reason),
             HookResponse::PostToolFeedback { reason } => match event {
                 HookEvent::PostToolUse => block(event, &reason),
@@ -123,6 +130,19 @@ fn deny_envelope(reason: &str) -> Value {
             "permissionDecisionReason": reason,
         },
         "systemMessage": reason
+    })
+}
+
+/// The native Claude approval envelope. `updatedInput` replaces the complete
+/// tool input object; callers must provide every field the tool still needs.
+fn ask_envelope(reason: &str, updated_input: Value) -> Value {
+    json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+            "permissionDecisionReason": reason,
+            "updatedInput": updated_input,
+        }
     })
 }
 

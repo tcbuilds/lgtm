@@ -78,6 +78,7 @@ pub(super) struct IdentityContext<'a> {
     pub(super) ignore: &'a BoundFile,
     pub(super) policy_config: &'a BoundFile,
     pub(super) waivers: &'a BoundFile,
+    pub(super) execution_policy: &'a BoundFile,
     pub(super) scanner_version: &'a str,
     pub(super) scanner_binary_identity: &'a str,
     pub(super) commit_argv: &'a [String],
@@ -112,6 +113,8 @@ pub(super) fn build_identity(
     hash_field(&mut hasher, &context.policy_config.metadata_identity);
     hash_field(&mut hasher, &context.waivers.digest);
     hash_field(&mut hasher, &context.waivers.metadata_identity);
+    hash_field(&mut hasher, &context.execution_policy.digest);
+    hash_field(&mut hasher, &context.execution_policy.metadata_identity);
     hash_field(&mut hasher, crate::policy::POLICY_BUNDLE_VERSION);
     hash_field(&mut hasher, &crate::policy::bundle_digest());
     for argument in context.commit_argv {

@@ -116,12 +116,21 @@ The challenge binds the canonical repository and Git state, session and adapter,
 normalized commit argv, scanner/config/ignore/waiver and policy identities, scanner
 and Git executable identities, and the complete finding set. The extension may ask
 for native confirmation only in Pi `tui` mode with verified current runtime
-attestation and UI availability. It retains the affirmative decision only in the
-live handler closure, performs one bounded fresh reassessment, and allows only an
-identical pending assessment or a clean pass. Cancellation, timeout, UI absence,
-changed findings/configuration, stale attestation, malformed responses, and failed
+attestation and UI availability. Approval authority is local to one invocation,
+never persisted, and invalidated by session generations and shutdown. Before a new
+direct commit attempt, the live extension revalidates its executable, template,
+project trust, and all built-in tool contracts, then records fresh runtime evidence.
+This lets a repaired hook failure recover in the same session without deleting
+failure history or restoring an earlier approval. Failed re-attestation denies.
+The extension rechecks the canonical template and trusted executable after confirmation, performs
+one bounded fresh reassessment, and allows only an identical pending assessment or
+a clean pass. Cancellation, timeout, UI absence, changed findings/configuration,
+stale attestation, executable/template mutation, malformed responses, and failed
 reassessment deny. Finding display is redacted to rule, path/location, and a
 non-secret candidate identifier; no secret value or scanner description is shown.
+These checks narrow, but cannot eliminate, same-user TOCTOU mutation between
+revalidation and child execution; Pi extensions are not an operating-system
+security boundary.
 
 The bounded full-repository source scan preserves `.pi/extensions/`,
 `.pi/settings.json`, and `.pi/pi-lsp.json`. It excludes only the known runtime

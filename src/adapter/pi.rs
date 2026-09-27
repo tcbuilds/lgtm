@@ -108,6 +108,7 @@ impl HookAdapter for PiAdapter {
                 }
                 stdout_json(json!({"block": true, "reason": reason}))
             }
+            HookResponse::Ask { .. } => Err(invalid_combination(event, "Ask")),
             HookResponse::FindingApprovalRequired(challenge) => {
                 if event != HookEvent::PreToolUse {
                     return Err(invalid_combination(event, "FindingApprovalRequired"));

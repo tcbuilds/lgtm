@@ -652,7 +652,7 @@ fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
             record["platform"],
             format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
         );
-        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v3");
+        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v4");
         assert!(record["results"].as_array().is_some_and(|results| {
             results.iter().any(|result| {
                 result["status"] == "failed"
@@ -725,7 +725,7 @@ fn adopted_zombie_before_first_proc_scan_denies_and_is_not_reused() {
 
         let record = latest_evidence(&repo);
         assert_eq!(record["commands"][0]["exit_code"], Value::Null);
-        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v3");
+        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v4");
         assert!(record["results"].as_array().is_some_and(|results| {
             results.iter().any(|result| {
                 result["status"] == "failed"
@@ -739,12 +739,82 @@ fn adopted_zombie_before_first_proc_scan_denies_and_is_not_reused() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn supervisor_reaps_gate_and_detached_descendants_when_caller_exits() {
+    use std::time::{Duration, Instant};
+
+    let repo = TempRepo::new();
+    let request = json!({
+        "parent_pid": 0,
+        "argv": ["python3", "-c", "import os, subprocess\nchild = subprocess.Popen(['/bin/sleep', '30'], start_new_session=True)\nwith open('gate.pids', 'w') as output: output.write(f'{os.getpid()} {child.pid}')\nchild.wait()"],
+        "repository_root": encode_supervisor_bytes(repo.path().as_os_str().as_bytes()),
+        "workspace_root": encode_supervisor_bytes(b"."),
+        "cwd": encode_supervisor_bytes(b"."),
+        "timeout_ms": "00000000000000005000",
+        "path": std::env::var_os("PATH")
+            .map(|value| encode_supervisor_bytes(value.as_os_str().as_bytes())),
+        "home": null,
+        "ci": null
+    });
+    let caller = Command::new("python3")
+        .args([
+            "-c",
+            r#"
+import json, os, pathlib, subprocess, sys, time
+request = json.loads(sys.argv[2])
+request['parent_pid'] = os.getpid()
+environment = dict(os.environ, LGTM_INTERNAL_COMMAND_SUPERVISOR_REQUEST=json.dumps(request))
+supervisor = subprocess.Popen([sys.argv[1], '__command-supervisor'], env=environment,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+deadline = time.monotonic() + 2
+while time.monotonic() < deadline:
+    marker = pathlib.Path('gate.pids')
+    if marker.exists() and len(marker.read_text().split()) == 2:
+        os._exit(0)
+    time.sleep(0.01)
+supervisor.wait(timeout=6)
+sys.exit(1)
+"#,
+        ])
+        .arg(env!("CARGO_BIN_EXE_lgtm"))
+        .arg(request.to_string())
+        .current_dir(repo.path())
+        .output()
+        .expect("temporary gate caller starts");
+    assert!(caller.status.success(), "caller failed: {caller:?}");
+    let pids: Vec<u32> = repo
+        .read("gate.pids")
+        .split_whitespace()
+        .map(|pid| pid.parse().expect("fixture child PID"))
+        .collect();
+    assert_eq!(pids.len(), 2);
+    let started = Instant::now();
+    let children_remain = || {
+        pids.iter()
+            .any(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists())
+    };
+    // Allow the ordinary deadline to clean up even if this regression fails.
+    while children_remain() && started.elapsed() < Duration::from_secs(6) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !children_remain(),
+        "supervisor left gate descendants behind"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "cleanup waited for the command deadline rather than caller cancellation"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn isolated_supervisor_preserves_unrelated_child_waitability() {
     let mut unrelated = Command::new("/bin/sh")
         .args(["-c", "sleep 0.2; exit 23"])
         .spawn()
         .expect("unrelated child starts");
     let request = json!({
+        "parent_pid": std::process::id(),
         "argv": ["/bin/true"],
         "repository_root": encode_supervisor_bytes(
             std::env::current_dir()
