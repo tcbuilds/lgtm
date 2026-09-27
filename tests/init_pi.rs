@@ -51,7 +51,7 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
     assert!(!repo.exists(".pi/extensions/lgtm.ts.bak"));
     assert!(extension.contains("shell: false"));
     assert!(extension.contains("NORMAL_TIMEOUT_MS = 10_000"));
-    assert!(extension.contains("PRE_TOOL_TIMEOUT_MS = 40_000"));
+    assert!(extension.contains("PRE_TOOL_TIMEOUT_MS = 310_000"));
     assert!(!extension.contains("event.input ="));
     assert!(extension.contains("getAllTools"));
     assert!(extension.contains("sourceInfo"));
@@ -79,6 +79,13 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
     assert!(!extension.contains("isError: event.isError"));
     assert!(!extension.contains("usage: cloneJson(event.usage)"));
     assert!(extension.contains("BINARY_DIGEST"));
+    assert!(extension.contains("MAX_BINARY_BYTES = 128 * 1024 * 1024"));
+    assert!(extension.contains("function trustedRuntimeVersion()"));
+    assert!(extension.contains("function approvalContextIsCurrent"));
+    assert!(extension.contains("approvalState.generation += 1"));
+    assert!(extension.contains("pi.on(\"session_shutdown\""));
+    assert!(extension.contains("return await confirmAndRevalidateApproval"));
+    assert!(extension.contains("Pi approval revalidation failed; staged commit denied"));
     assert!(extension.contains("child.unref()"));
     assert!(!extension.contains("console.log"));
 
@@ -459,12 +466,12 @@ Promise.resolve(handlers.tool_call(toolCall, ctx))
 
 #[cfg(unix)]
 #[test]
-fn generated_bash_timeout_kills_child_and_records_unverified_failure() {
+fn generated_bash_timeout_and_cancellation_kill_child_and_deny_cancelled_tools() {
     use std::os::unix::fs::PermissionsExt;
 
     let repo = TempRepo::new();
     let fake = repo.path().join("slow-lgtm.cjs");
-    fs::write(&fake, "#!/usr/bin/env node\nsetTimeout(() => {}, 1000);\n")
+    fs::write(&fake, "#!/usr/bin/env node\nrequire('node:fs').writeFileSync('hook.pid', String(process.pid));\nsetTimeout(() => {}, 60_000);\n")
         .expect("slow binary writes");
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("slow binary mode");
     assert!(
@@ -476,13 +483,17 @@ fn generated_bash_timeout_kills_child_and_records_unverified_failure() {
     fs::write(
         &harness,
         r#"const fs = require("node:fs");
+const assert = require("node:assert/strict");
+const mode = process.env.CANCEL_CASE;
+const deadline = setTimeout(() => process.exit(20), 5_000);
+fs.rmSync("hook.pid", { force: true });
 const source = fs.readFileSync(process.argv[2], "utf8")
   .replace('import { dirname, join, resolve } from "node:path";', 'const { dirname, join, resolve } = require("node:path");')
   .replace('import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";', 'const { existsSync, lstatSync, readFileSync, statSync } = require("node:fs");')
   .replace('import { spawn } from "node:child_process";', 'const { spawn } = require("node:child_process");')
   .replace('import { createHash, randomUUID } from "node:crypto";', 'const { createHash, randomUUID } = require("node:crypto");')
   .replace('new URL(import.meta.url)', 'process.argv[2]')
-  .replace('const PRE_TOOL_TIMEOUT_MS = 40_000;', 'const PRE_TOOL_TIMEOUT_MS = 25;')
+  .replace('const PRE_TOOL_TIMEOUT_MS = 310_000;', `const PRE_TOOL_TIMEOUT_MS = ${mode === "timeout" ? 25 : 4_000};`)
   .replace('export default function lgtm', 'function lgtm') + "\nglobalThis.__lgtm = lgtm;";
 eval(source);
 const handlers = {};
@@ -492,24 +503,47 @@ const pi = {
   appendEntry: (type, data) => failures.push({ type, data }),
   getAllTools: () => [{ name: "bash", sourceInfo: { source: "builtin", path: "<builtin:bash>" }, parameters: { type: "object", required: ["command"], properties: { command: { type: "string" }, timeout: { type: "number" } } } }],
 };
-const ctx = { cwd: process.cwd(), isProjectTrusted: () => true, sessionManager: { getSessionId: () => "timeout-session" }, ui: { notify: () => {} } };
+const controller = new AbortController();
+const ctx = { signal: controller.signal, cwd: process.cwd(), isProjectTrusted: () => true, sessionManager: { getSessionId: () => "timeout-session" }, ui: { notify: () => {} } };
 globalThis.__lgtm(pi);
-Promise.resolve(handlers.tool_call({ toolName: "bash", input: { command: "echo safe" } }, ctx)).then((result) => {
-  if (result !== undefined || failures.length !== 1 || failures[0].data.reason !== "timeout") process.exit(2);
-}).catch(() => process.exit(3));
+(async () => {
+  const originalExitListeners = process.listenerCount("exit");
+  if (mode === "pre-aborted") controller.abort();
+  const pending = handlers.tool_call({ toolName: "bash", input: { command: "echo safe" } }, ctx);
+  if (mode === "abort" || mode === "shutdown") {
+    while (!fs.existsSync("hook.pid")) await new Promise(resolve => setTimeout(resolve, 10));
+    if (mode === "abort") controller.abort();
+    else handlers.session_shutdown();
+  }
+  const result = await pending;
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].data.reason, mode === "timeout" ? "timeout" : "aborted");
+  if (mode === "timeout") assert.equal(result, undefined);
+  else assert.equal(result.block, true);
+  assert.equal(process.listenerCount("exit"), originalExitListeners);
+  if (mode === "pre-aborted") assert.equal(fs.existsSync("hook.pid"), false);
+  if (fs.existsSync("hook.pid")) {
+    const pid = Number(fs.readFileSync("hook.pid", "utf8"));
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  }
+  clearTimeout(deadline);
+})().catch(error => { console.error(error); process.exit(3); });
 "#,
     )
     .expect("timeout harness writes");
-    let output = Command::new("node")
-        .arg(&harness)
-        .arg(repo.path().join(".pi/extensions/lgtm.ts"))
-        .current_dir(repo.path())
-        .output()
-        .expect("timeout harness executes");
-    assert!(
-        output.status.success(),
-        "timeout behavior failed: {output:?}"
-    );
+    for mode in ["timeout", "abort", "pre-aborted", "shutdown"] {
+        let output = Command::new("node")
+            .arg(&harness)
+            .arg(repo.path().join(".pi/extensions/lgtm.ts"))
+            .env("CANCEL_CASE", mode)
+            .current_dir(repo.path())
+            .output()
+            .expect("cancellation harness executes");
+        assert!(
+            output.status.success(),
+            "{mode} behavior failed: {output:?}"
+        );
+    }
 }
 
 #[test]
@@ -574,4 +608,217 @@ fn generated_scope_guard_covers_root_nested_and_unrelated_projects() {
     }
     assert!(!extension.contains("shell: true"));
     assert!(!extension.contains("console.log"));
+}
+
+#[cfg(unix)]
+#[test]
+fn generated_approval_lifecycle_requires_one_live_revalidation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for case in [
+        "yes",
+        "clean",
+        "no",
+        "cancel",
+        "timeout",
+        "throw",
+        "malformed",
+        "error",
+        "changed",
+        "late-session",
+        "mutate-template",
+        "mutate-binary",
+        "rpc",
+        "no-ui",
+        "no-signal",
+        "replay",
+        "recover",
+        "refresh-failed",
+        "same-session-start",
+        "shutdown",
+    ] {
+        let repo = TempRepo::new();
+        let fake = repo.path().join("approval-lgtm.cjs");
+        fs::write(
+            &fake,
+            r##"#!/usr/bin/env node
+const fs = require("node:fs");
+const caseName = process.env.APPROVAL_CASE;
+const argumentsList = process.argv.slice(2);
+if (argumentsList.includes("session-start")) process.exit(caseName === "refresh-failed" ? 7 : 0);
+let input = "";
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const countPath = ".approval-count";
+  const count = Number(fs.existsSync(countPath) ? fs.readFileSync(countPath, "utf8") : "0") + 1;
+  fs.writeFileSync(countPath, String(count));
+  if (caseName === "error" && count === 2) process.exit(7);
+  const identity = caseName === "changed" && count === 2 ? "c".repeat(64) : "a".repeat(64);
+  const response = {
+    block: true,
+    reason: "staged commit contains redacted heuristic findings requiring confirmation",
+    approval: {
+      findings: [{
+        candidateId: "b".repeat(64),
+        endColumn: 9,
+        endLine: 4,
+        path: "src/app.rs",
+        ruleId: "generic-api-key",
+        startColumn: 2,
+        startLine: 4,
+      }],
+      identity,
+      protocol: "lgtm-pi-finding-approval",
+      version: 1,
+    },
+  };
+  if (caseName === "malformed" && count === 1) {
+    process.stdout.write(JSON.stringify({ block: true, reason: "malformed", approval: {} }));
+  } else if (caseName === "clean" && count === 2) {
+    process.stdout.write("");
+  } else {
+    process.stdout.write(JSON.stringify(response));
+  }
+});
+"##,
+        )
+        .expect("approval binary writes");
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755))
+            .expect("approval binary mode");
+        assert!(
+            run_init(
+                &repo,
+                Some(fake.to_str().expect("approval binary path")),
+                false
+            )
+            .status
+            .success(),
+            "Pi init failed for {case}"
+        );
+
+        let harness = repo.path().join("approval-extension.cjs");
+        fs::write(
+            &harness,
+            r##"const fs = require("node:fs");
+const sourcePath = process.argv[2];
+const binaryPath = process.argv[3];
+const caseName = process.env.APPROVAL_CASE;
+const source = fs.readFileSync(sourcePath, "utf8");
+const handlers = {};
+const entries = [];
+const sessionFile = process.cwd() + "/pi-session.jsonl";
+fs.writeFileSync(sessionFile, "");
+let currentSessionId = "tool-session";
+let confirmationCalls = 0;
+let promptMessage = "";
+const extension = source
+  .replace('import { dirname, join, resolve } from "node:path";', 'const { dirname, join, resolve } = require("node:path");')
+  .replace('import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";', 'const { existsSync, lstatSync, readFileSync, statSync } = require("node:fs");')
+  .replace('new URL(import.meta.url)', 'process.argv[2]')
+  .replace('import { spawn } from "node:child_process";', 'const { spawn } = require("node:child_process");')
+  .replace('import { createHash, randomUUID } from "node:crypto";', 'const { createHash, randomUUID } = require("node:crypto");')
+  .replace('export default function lgtm', 'function lgtm') + "\nmodule.exports = lgtm;";
+const lgtm = (() => { const module = { exports: {} }; eval(extension); return module.exports; })();
+const pi = {
+  on: (event, handler) => { handlers[event] = handler; },
+  appendEntry: (customType, data) => {
+    const entry = { type: "custom", id: "entry-" + entries.length, customType, data };
+    entries.push(entry);
+    fs.appendFileSync(sessionFile, JSON.stringify(entry) + "\n");
+  },
+  getAllTools: () => [{
+    name: "bash",
+    sourceInfo: { source: "builtin", path: "<builtin:bash>" },
+    parameters: {
+      type: "object",
+      required: ["command"],
+      properties: {
+        command: { type: "string", description: "Bash command" },
+        timeout: { type: "number", description: "Timeout" },
+      },
+    },
+  },
+  { name: "read", sourceInfo: { source: "builtin", path: "<builtin:read>" }, parameters: { type: "object", required: ["path"], properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } } } },
+  { name: "write", sourceInfo: { source: "builtin", path: "<builtin:write>" }, parameters: { type: "object", required: ["path", "content"], properties: { path: { type: "string" }, content: { type: "string" } } } },
+  { name: "edit", sourceInfo: { source: "builtin", path: "<builtin:edit>" }, parameters: { type: "object", required: ["path", "edits"], properties: { path: { type: "string" }, edits: { type: "array", items: { type: "object", required: ["oldText", "newText"], properties: { oldText: { type: "string" }, newText: { type: "string" } } } } } } },
+  ],
+};
+const context = {
+  cwd: process.cwd(),
+  mode: caseName === "rpc" ? "rpc" : "tui",
+  hasUI: caseName !== "no-ui",
+  signal: caseName === "no-signal" ? undefined : new AbortController().signal,
+  isProjectTrusted: () => true,
+  sessionManager: {
+    getSessionId: () => currentSessionId,
+    getSessionFile: () => sessionFile,
+    getEntries: () => entries,
+  },
+  ui: {
+    confirm: async (_title, message) => {
+      confirmationCalls += 1;
+      promptMessage = message;
+      if (caseName === "no" || caseName === "cancel") return false;
+      if (caseName === "timeout") return undefined;
+      if (caseName === "throw") throw new Error("confirmation failed");
+      if (caseName === "late-session") {
+        currentSessionId = "new-session";
+        Promise.resolve(handlers.session_start({}, context)).catch(() => {});
+      }
+      if (caseName === "same-session-start") await handlers.session_start({}, context);
+      if (caseName === "shutdown") handlers.session_shutdown();
+      if (caseName === "mutate-template") {
+        fs.writeFileSync(sourcePath, fs.readFileSync(sourcePath, "utf8").replace(
+          "const MAX_INPUT_BYTES = 1024 * 1024;",
+          "const MAX_INPUT_BYTES = 1024 * 1024; // mutated",
+        ));
+      }
+      if (caseName === "mutate-binary") fs.appendFileSync(binaryPath, "\\n// mutated\\n");
+      if (caseName === "replay" && confirmationCalls === 2) return false;
+      return true;
+    },
+  },
+};
+lgtm(pi);
+const toolCall = { toolName: "bash", input: { command: "git commit -m test" } };
+const expectBlocked = (result) => result && result.block === true;
+(async () => {
+  if (caseName === "recover") pi.appendEntry("lgtm", { reason: "previous hook failure" });
+  const first = await handlers.tool_call(toolCall, context);
+  if (caseName === "recover" && entries.at(-1)?.customType !== "lgtm-runtime") process.exit(9);
+  if (confirmationCalls > 0
+      && (!promptMessage.includes("generic-api-key")
+        || !promptMessage.includes("src/app.rs:4:2")
+        || promptMessage.includes("super-secret"))) process.exit(2);
+  if (caseName === "yes" || caseName === "clean" || caseName === "recover") {
+    if (first !== undefined || confirmationCalls !== 1) process.exit(3);
+  } else if (caseName === "replay") {
+    if (first !== undefined) process.exit(4);
+    const replay = await handlers.tool_call(toolCall, context);
+    if (!expectBlocked(replay) || confirmationCalls !== 2) process.exit(5);
+  } else if (!expectBlocked(first)) {
+    process.exit(6);
+  }
+  if (["rpc", "no-ui", "no-signal", "malformed"].includes(caseName) && confirmationCalls !== 0) {
+    process.exit(7);
+  }
+})().catch(() => process.exit(8));
+"##,
+        )
+        .expect("approval harness writes");
+        let output = Command::new("node")
+            .arg(&harness)
+            .arg(repo.path().join(".pi/extensions/lgtm.ts"))
+            .arg(&fake)
+            .env("APPROVAL_CASE", case)
+            .current_dir(repo.path())
+            .output()
+            .expect("approval harness executes");
+        assert!(
+            output.status.success(),
+            "approval case {case} failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

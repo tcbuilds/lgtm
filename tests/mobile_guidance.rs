@@ -4,6 +4,7 @@ use common::TempRepo;
 use lgtm::init::install_rules;
 use lgtm::path_injection::{PathInjectionRequest, select_rule_bodies};
 use lgtm::policy::frontmatter::{RULE_DOCUMENT_SOURCES, body, load_rule_files};
+use sha2::{Digest, Sha256};
 
 const MOBILE_DOCUMENTS: [&str; 3] = ["mobile-ui.md", "ios-ui.md", "android-ui.md"];
 
@@ -61,7 +62,7 @@ fn mobile_guidance_is_injected_only_for_mobile_paths_and_the_matching_platform()
 }
 
 #[test]
-fn installed_mobile_guidance_matches_embedded_bodies_and_preserves_local_edits() {
+fn installed_mobile_guidance_matches_embedded_bodies_and_refreshes_local_edits() {
     let repo = TempRepo::new();
     let first = install_rules(repo.path()).expect("fresh install");
     for name in MOBILE_DOCUMENTS {
@@ -89,11 +90,20 @@ fn installed_mobile_guidance_matches_embedded_bodies_and_preserves_local_edits()
             "# Local mobile guidance\n",
         );
     }
-    let third = install_rules(repo.path()).expect("preserve edits");
+    let third = install_rules(repo.path()).expect("refresh edits");
     for name in MOBILE_DOCUMENTS {
-        assert!(third.kept.iter().any(|path| path == name));
+        assert!(third.updated.iter().any(|path| path == name));
+        let source_path = format!("templates/claude-rules/rules/{name}");
+        let (_, embedded) = RULE_DOCUMENT_SOURCES
+            .iter()
+            .find(|(path, _)| *path == source_path)
+            .expect("embedded mobile document");
+        assert_eq!(repo.read(&format!(".claude/rules/{name}")), *embedded);
         assert_eq!(
-            repo.read(&format!(".claude/rules/{name}")),
+            repo.read(&format!(
+                ".claude/rules/{name}.{:x}.bak",
+                Sha256::digest(b"# Local mobile guidance\n")
+            )),
             "# Local mobile guidance\n"
         );
     }

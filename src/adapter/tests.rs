@@ -76,6 +76,55 @@ fn deny_encodes_the_pre_tool_use_permission_envelope() {
 }
 
 #[test]
+fn ask_replaces_the_complete_claude_tool_input_without_extra_fields() {
+    let updated_input = json!({
+        "command": "git commit --staged",
+        "description": "commit staged changes",
+        "timeout": 30,
+    });
+    let encoded = ClaudeAdapter
+        .encode_response(
+            HookEvent::PreToolUse,
+            HookResponse::Ask {
+                reason: "approve the guarded staged commit".to_string(),
+                updated_input: updated_input.clone(),
+            },
+        )
+        .expect("ask is valid for PreToolUse");
+    assert_eq!(encoded.stream, OutputStream::Stdout);
+    assert_eq!(encoded.exit_code, 0);
+    assert_eq!(
+        body_json(&encoded),
+        json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "ask",
+                "permissionDecisionReason": "approve the guarded staged commit",
+                "updatedInput": updated_input,
+            }
+        })
+    );
+}
+
+#[test]
+fn ask_is_not_encoded_for_other_adapters() {
+    let response = HookResponse::Ask {
+        reason: "approve".to_string(),
+        updated_input: json!({"command": "git commit --staged"}),
+    };
+    assert!(
+        PiAdapter
+            .encode_response(HookEvent::PreToolUse, response.clone())
+            .is_err()
+    );
+    assert!(
+        super::CodexAdapter
+            .encode_response(HookEvent::PreToolUse, response)
+            .is_err()
+    );
+}
+
+#[test]
 fn post_tool_use_block_writes_decision_to_stdout_exit_zero() {
     let encoded = ClaudeAdapter
         .encode_response(
@@ -138,6 +187,13 @@ fn every_decision_body_satisfies_the_adapter_schema() {
         ClaudeAdapter.encode_response(
             HookEvent::UserPromptSubmit,
             HookResponse::InjectContext("packet".to_string()),
+        ),
+        ClaudeAdapter.encode_response(
+            HookEvent::PreToolUse,
+            HookResponse::Ask {
+                reason: "approve".to_string(),
+                updated_input: json!({"command": "git commit --staged"}),
+            },
         ),
     ];
     for encoded in bodies {

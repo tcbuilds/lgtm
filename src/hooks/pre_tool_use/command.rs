@@ -202,14 +202,287 @@ pub(super) fn find_match(argv: &[String], rules: &[Vec<String>]) -> Option<Prohi
 /// stays one shlex token, so prose such as `echo "git commit"` is not treated as
 /// a commit. Nested shell programs (`sh -c ...`) are intentionally not guessed.
 pub(super) fn invokes_git_commit(command: &str) -> bool {
+    if shlex::split(command).is_none() {
+        return false;
+    }
+    shell_segments(command)
+        .into_iter()
+        .filter_map(shlex::split)
+        .any(|segment| segment_invokes_git_commit(&segment))
+}
+
+/// The only commit form for which the index assessor can bind its evidence is
+/// one direct `git commit` invocation with no pathspec or content-selection
+/// flag. Everything else must be retried after staging separately instead of
+/// being guessed at from shell text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommitInvocation {
+    argv: Vec<String>,
+}
+
+impl CommitInvocation {
+    pub(crate) fn argv(&self) -> &[String] {
+        &self.argv
+    }
+}
+
+const COMMIT_RETRY_MESSAGE: &str = "unsupported git commit form; stage the intended files separately, then retry a direct `git commit` without pathspecs or content-selection flags";
+
+/// Parse a direct, index-bound commit request without executing shell text.
+///
+/// A malformed shell command is not treated as a commit. Once an actual
+/// `git commit` segment is present, however, wrappers, operators, selectors,
+/// pathspecs, and content-changing flags are rejected with a retryable error.
+pub(crate) fn parse_commit_invocation(command: &str) -> Result<Option<CommitInvocation>, String> {
     let Some(argv) = shlex::split(command) else {
+        return Ok(None);
+    };
+    if !invokes_git_commit(command) {
+        if nested_shell_invokes_git_commit(&argv) {
+            return Err(COMMIT_RETRY_MESSAGE.to_string());
+        }
+        return Ok(None);
+    }
+    if contains_active_shell_syntax(command) {
+        return Err(COMMIT_RETRY_MESSAGE.to_string());
+    }
+    parse_direct_commit(&argv).map(Some)
+}
+
+fn nested_shell_invokes_git_commit(argv: &[String]) -> bool {
+    let (_, argv) = split_wrappers(argv);
+    let Some(executable) = argv.first() else {
         return false;
     };
-    argv.split(|token| matches!(token.as_str(), "&&" | "||" | ";"))
-        .any(segment_invokes_git_commit)
+    if !matches!(
+        executable.rsplit('/').next(),
+        Some("sh" | "bash" | "dash" | "zsh" | "fish")
+    ) {
+        return false;
+    }
+    argv.windows(2)
+        .any(|tokens| is_shell_command_option(&tokens[0]) && invokes_git_commit(&tokens[1]))
+}
+
+fn is_shell_command_option(argument: &str) -> bool {
+    argument == "--command"
+        || (argument.starts_with('-') && !argument.starts_with("--") && argument[1..].contains('c'))
+}
+
+fn shell_segments(command: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut segment_start = 0;
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (index, character) in command.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        match quote {
+            Some('\'') if character == '\'' => quote = None,
+            Some('"') if character == '"' => quote = None,
+            Some(_) => {}
+            None if character == '\'' || character == '"' => quote = Some(character),
+            None if is_shell_operator(character) => {
+                segments.push(&command[segment_start..index]);
+                segment_start = index + character.len_utf8();
+            }
+            None => {}
+        }
+    }
+    segments.push(&command[segment_start..]);
+    segments
+}
+
+fn contains_active_shell_syntax(command: &str) -> bool {
+    let mut characters = command.chars().peekable();
+    let mut quote = None;
+    while let Some(character) = characters.next() {
+        match quote {
+            Some('\'') => {
+                if character == '\'' {
+                    quote = None;
+                }
+            }
+            Some('"') => match character {
+                '\\' if matches!(characters.peek(), Some('$' | '`' | '"' | '\\' | '\n')) => {
+                    characters.next();
+                }
+                '"' => quote = None,
+                '`' => return true,
+                '$' if dollar_starts_expansion(characters.peek().copied()) => return true,
+                _ => {}
+            },
+            None => match character {
+                '\\' => {
+                    characters.next();
+                }
+                '\'' | '"' => quote = Some(character),
+                '`' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '*' | '?' | '[' | '\n' => {
+                    return true;
+                }
+                '$' if dollar_starts_expansion(characters.peek().copied()) => return true,
+                _ => {}
+            },
+            Some(_) => unreachable!("shell quote state only contains shell quote characters"),
+        }
+    }
+    false
+}
+
+fn dollar_starts_expansion(next: Option<char>) -> bool {
+    next.is_some_and(|character| {
+        character.is_ascii_alphanumeric()
+            || matches!(
+                character,
+                '_' | '?' | '*' | '@' | '#' | '$' | '!' | '-' | '(' | '{' | '\'' | '"'
+            )
+    })
+}
+
+fn is_shell_operator(character: char) -> bool {
+    matches!(character, ';' | '&' | '|' | '<' | '>' | '\n')
+}
+
+fn parse_direct_commit(argv: &[String]) -> Result<CommitInvocation, String> {
+    if argv.iter().any(|token| is_assignment(token)) {
+        let first = argv.first().map(String::as_str).unwrap_or_default();
+        if first != "git" && !first.ends_with("/git") {
+            return Err(COMMIT_RETRY_MESSAGE.to_string());
+        }
+    }
+    let (wrapper, wrapped) = split_wrappers(argv);
+    if !wrapper.is_empty() {
+        return Err(COMMIT_RETRY_MESSAGE.to_string());
+    }
+    let Some((executable, arguments)) = wrapped.split_first() else {
+        return Err(COMMIT_RETRY_MESSAGE.to_string());
+    };
+    if executable != "git" {
+        return Err(COMMIT_RETRY_MESSAGE.to_string());
+    }
+    let commit_index =
+        git_subcommand_index(arguments).ok_or_else(|| COMMIT_RETRY_MESSAGE.to_string())?;
+    reject_repository_selectors(&arguments[..commit_index])?;
+    validate_commit_arguments(&arguments[commit_index + 1..])?;
+
+    let mut normalized = Vec::with_capacity(wrapped.len());
+    normalized.push("git".to_string());
+    normalized.extend(wrapped[1..].iter().cloned());
+    Ok(CommitInvocation { argv: normalized })
+}
+
+fn reject_repository_selectors(arguments: &[String]) -> Result<(), String> {
+    for argument in arguments {
+        if matches!(
+            argument.as_str(),
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
+        ) || argument.starts_with("--git-dir=")
+            || argument.starts_with("--work-tree=")
+            || argument.starts_with("--namespace=")
+            || (argument.starts_with("-C") && argument.len() > 2)
+            || (argument.starts_with("-c") && argument.len() > 2)
+        {
+            return Err(COMMIT_RETRY_MESSAGE.to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_commit_arguments(arguments: &[String]) -> Result<(), String> {
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--" {
+            return Err(COMMIT_RETRY_MESSAGE.to_string());
+        }
+        if let Some(name) = argument.strip_prefix("--") {
+            let (name, inline_value) = name
+                .split_once('=')
+                .map_or((name, None), |(name, value)| (name, Some(value)));
+            if commit_long_value_option(name) {
+                if inline_value.is_none() {
+                    index += 1;
+                    if arguments.get(index).is_none() {
+                        return Err(COMMIT_RETRY_MESSAGE.to_string());
+                    }
+                }
+                index += 1;
+                continue;
+            }
+            if commit_long_flag(name) {
+                index += 1;
+                continue;
+            }
+            return Err(COMMIT_RETRY_MESSAGE.to_string());
+        }
+        if argument.starts_with('-') && argument.len() > 1 {
+            if commit_short_value_option(argument) {
+                if matches!(argument.as_str(), "-m" | "-F") {
+                    if arguments.get(index + 1).is_none() {
+                        return Err(COMMIT_RETRY_MESSAGE.to_string());
+                    }
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            if commit_short_flag(argument) {
+                index += 1;
+                continue;
+            }
+            return Err(COMMIT_RETRY_MESSAGE.to_string());
+        }
+        return Err(COMMIT_RETRY_MESSAGE.to_string());
+    }
+    Ok(())
+}
+
+fn commit_long_value_option(name: &str) -> bool {
+    matches!(
+        name,
+        "author" | "date" | "cleanup" | "file" | "message" | "gpg-sign" | "template" | "trailer"
+    )
+}
+
+fn commit_long_flag(name: &str) -> bool {
+    matches!(
+        name,
+        "allow-empty"
+            | "allow-empty-message"
+            | "edit"
+            | "no-edit"
+            | "no-verify"
+            | "verify"
+            | "quiet"
+            | "status"
+            | "no-status"
+            | "signoff"
+            | "reset-author"
+            | "verbose"
+            | "dry-run"
+    )
+}
+
+fn commit_short_value_option(argument: &str) -> bool {
+    matches!(argument, "-m" | "-F" | "-S")
+        || argument.starts_with("-m")
+        || argument.starts_with("-F")
+        || argument.starts_with("-S")
+}
+
+fn commit_short_flag(argument: &str) -> bool {
+    matches!(argument, "-e" | "-q" | "-s" | "-v")
 }
 
 fn segment_invokes_git_commit(argv: &[String]) -> bool {
+    let argv = strip_leading_assignments(argv);
     let (_, argv) = split_wrappers(argv);
     let Some((executable, arguments)) = argv.split_first() else {
         return false;
@@ -218,6 +491,22 @@ fn segment_invokes_git_commit(argv: &[String]) -> bool {
         return false;
     }
     git_subcommand(arguments) == Some("commit")
+}
+
+fn strip_leading_assignments(argv: &[String]) -> &[String] {
+    let mut index = 0;
+    while argv.get(index).is_some_and(|token| is_assignment(token)) {
+        index += 1;
+    }
+    &argv[index..]
+}
+
+fn git_subcommand_index(arguments: &[String]) -> Option<usize> {
+    let first = arguments.first()?;
+    if first == "--" || first.starts_with('-') {
+        return None;
+    }
+    Some(0)
 }
 
 fn git_subcommand(arguments: &[String]) -> Option<&str> {

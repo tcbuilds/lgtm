@@ -12,8 +12,16 @@ pub(super) struct Finding {
     pub(super) description: String,
     #[serde(rename = "File")]
     pub(super) file: String,
-    #[serde(rename = "StartLine")]
+    #[serde(rename = "StartLine", default)]
     pub(super) start_line: u64,
+    #[serde(rename = "StartColumn", default)]
+    pub(super) start_column: u64,
+    #[serde(rename = "EndLine", default)]
+    pub(super) end_line: u64,
+    #[serde(rename = "EndColumn", default)]
+    pub(super) end_column: u64,
+    #[serde(rename = "Fingerprint", default)]
+    pub(super) fingerprint: String,
 }
 
 pub(super) enum ScanOutcome {

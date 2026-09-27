@@ -10,9 +10,10 @@
 //!
 //! Codex has no path-scoped rule mechanism and does not read `.claude/rules/`,
 //! so it gets [`install_agents_md`] instead: every template concatenated into a
-//! single `AGENTS.md`. Pi gets only the compact entry document in a managed
-//! block; enforcement is added by a later Pi extension slice. These choices
-//! trade away or preserve lazy loading explicitly rather than hiding it.
+//! single `AGENTS.md`. Pi gets the same refreshed `.claude/rules/` files plus a
+//! compact entry document in a managed `AGENTS.md` block; enforcement is added
+//! by the Pi extension. These choices trade away or preserve lazy loading
+//! explicitly rather than hiding it.
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 use super::fs::{
     commit_write, create_dir_all, preflight_file_targets, preflight_targets, read_if_exists,
-    stage_write,
+    stage_private_write, stage_write,
 };
 use super::template_digests::LEGACY_TEMPLATE_DIGESTS;
 use super::{InitAgent, InitError};
@@ -191,16 +192,32 @@ pub(super) struct PlannedRuleWrite {
     pub(super) path: PathBuf,
     pub(super) label: String,
     pub(super) contents: Vec<u8>,
+    pub(super) backup: Option<PlannedRuleBackup>,
+}
+
+pub(super) struct PlannedRuleBackup {
+    pub(super) path: PathBuf,
+    pub(super) label: String,
+    pub(super) contents: Vec<u8>,
 }
 
 /// Return every guidance destination for an agent, including locally edited files.
 pub(super) fn target_paths(root: &Path, agent: InitAgent) -> Vec<PathBuf> {
     match agent {
-        InitAgent::Claude => TEMPLATES
-            .iter()
-            .map(|(relative, _)| root.join(PREFIX).join(relative))
-            .collect(),
-        InitAgent::Codex | InitAgent::Pi => vec![root.join(AGENTS_FILE)],
+        InitAgent::Claude | InitAgent::Pi => {
+            let mut paths =
+                Vec::with_capacity(TEMPLATES.len() + usize::from(agent == InitAgent::Pi));
+            paths.extend(
+                TEMPLATES
+                    .iter()
+                    .map(|(relative, _)| root.join(PREFIX).join(relative)),
+            );
+            if agent == InitAgent::Pi {
+                paths.push(root.join(AGENTS_FILE));
+            }
+            paths
+        }
+        InitAgent::Codex => vec![root.join(AGENTS_FILE)],
     }
 }
 
@@ -211,29 +228,24 @@ pub(super) fn plan(
 ) -> Result<(Vec<PlannedRuleWrite>, Installed), InitError> {
     let mut planned = Vec::new();
     let mut outcome = Installed::default();
-    match agent {
-        InitAgent::Claude => {
-            for (relative, contents) in TEMPLATES {
-                let target = root.join(PREFIX).join(relative);
-                plan_one(
-                    &target,
-                    (*relative).to_string(),
-                    contents.as_bytes(),
-                    &mut planned,
-                    &mut outcome,
-                )?;
-            }
-        }
-        InitAgent::Codex => {
-            let document = agents_document();
-            let target = root.join(AGENTS_FILE);
+    if matches!(agent, InitAgent::Claude | InitAgent::Pi) {
+        for (relative, contents) in TEMPLATES {
+            let target = root.join(PREFIX).join(relative);
             plan_one(
                 &target,
-                AGENTS_FILE.to_string(),
-                document.as_bytes(),
+                (*relative).to_string(),
+                contents.as_bytes(),
                 &mut planned,
                 &mut outcome,
             )?;
+        }
+    }
+    match agent {
+        InitAgent::Claude => {}
+        InitAgent::Codex => {
+            let document = agents_document();
+            let target = root.join(AGENTS_FILE);
+            plan_codex_document(&target, document.as_bytes(), &mut planned, &mut outcome)?;
         }
         InitAgent::Pi => {
             let target = root.join(AGENTS_FILE);
@@ -260,6 +272,7 @@ fn plan_pi_guidance(
                     path: target.to_path_buf(),
                     label: AGENTS_FILE.to_string(),
                     contents: merged.into_bytes(),
+                    backup: None,
                 });
                 outcome.updated.push(AGENTS_FILE.to_string());
             }
@@ -269,6 +282,44 @@ fn plan_pi_guidance(
                 path: target.to_path_buf(),
                 label: AGENTS_FILE.to_string(),
                 contents: managed.into_bytes(),
+                backup: None,
+            });
+            outcome.written.push(AGENTS_FILE.to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Preserve Codex's existing AGENTS.md behavior while supporting known legacy upgrades.
+fn plan_codex_document(
+    target: &Path,
+    contents: &[u8],
+    planned: &mut Vec<PlannedRuleWrite>,
+    outcome: &mut Installed,
+) -> Result<(), InitError> {
+    match read_if_exists(target)? {
+        Some(existing) if existing.as_bytes() == contents => {
+            outcome.unchanged.push(AGENTS_FILE.to_string())
+        }
+        Some(existing) if same_template_line_endings(existing.as_bytes(), contents) => {
+            outcome.unchanged.push(AGENTS_FILE.to_string())
+        }
+        Some(existing) if matches_legacy_template(AGENTS_FILE, existing.as_bytes()) => {
+            planned.push(PlannedRuleWrite {
+                path: target.to_path_buf(),
+                label: AGENTS_FILE.to_string(),
+                contents: contents.to_vec(),
+                backup: None,
+            });
+            outcome.updated.push(AGENTS_FILE.to_string());
+        }
+        Some(_) => outcome.kept.push(AGENTS_FILE.to_string()),
+        None => {
+            planned.push(PlannedRuleWrite {
+                path: target.to_path_buf(),
+                label: AGENTS_FILE.to_string(),
+                contents: contents.to_vec(),
+                backup: None,
             });
             outcome.written.push(AGENTS_FILE.to_string());
         }
@@ -337,20 +388,22 @@ fn plan_one(
         Some(existing) if same_template_line_endings(existing.as_bytes(), contents) => {
             outcome.unchanged.push(label);
         }
-        Some(existing) if matches_legacy_template(&label, existing.as_bytes()) => {
+        Some(existing) => {
+            let backup = plan_rule_backup(target, &label, existing.as_bytes())?;
             planned.push(PlannedRuleWrite {
                 path: target.to_path_buf(),
                 label: label.clone(),
                 contents: contents.to_vec(),
+                backup,
             });
             outcome.updated.push(label);
         }
-        Some(_) => outcome.kept.push(label),
         None => {
             planned.push(PlannedRuleWrite {
                 path: target.to_path_buf(),
                 label: label.clone(),
                 contents: contents.to_vec(),
+                backup: None,
             });
             outcome.written.push(label);
         }
@@ -360,18 +413,6 @@ fn plan_one(
 
 fn same_template_line_endings(left: &[u8], right: &[u8]) -> bool {
     normalized_template_digest(left) == normalized_template_digest(right)
-}
-
-/// Recognize only bytes previously emitted for this exact generated path.
-fn matches_legacy_template(path: &str, contents: &[u8]) -> bool {
-    let mut candidates = LEGACY_TEMPLATE_DIGESTS
-        .iter()
-        .filter(|record| record.path == path);
-    if candidates.clone().next().is_none() {
-        return false;
-    }
-    let digest = normalized_template_digest(contents);
-    candidates.any(|record| record.sha256 == format!("{digest:x}"))
 }
 
 fn normalized_template_digest(contents: &[u8]) -> Sha256Digest {
@@ -388,6 +429,40 @@ fn normalized_template_digest(contents: &[u8]) -> Sha256Digest {
 }
 
 type Sha256Digest = sha2::digest::Output<Sha256>;
+
+/// Recognize only bytes previously emitted for this exact generated path.
+fn matches_legacy_template(path: &str, contents: &[u8]) -> bool {
+    let mut candidates = LEGACY_TEMPLATE_DIGESTS
+        .iter()
+        .filter(|record| record.path == path);
+    let digest = format!("{:x}", normalized_template_digest(contents));
+    candidates.any(|record| record.sha256 == digest)
+}
+
+fn plan_rule_backup(
+    target: &Path,
+    label: &str,
+    existing: &[u8],
+) -> Result<Option<PlannedRuleBackup>, InitError> {
+    let digest = format!("{:x}", Sha256::digest(existing));
+    let backup = target.with_file_name(format!(
+        "{}.{digest}.bak",
+        target.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    match read_if_exists(&backup)? {
+        None => Ok(Some(PlannedRuleBackup {
+            path: backup,
+            label: format!("{label}.{digest}.bak"),
+            contents: existing.to_vec(),
+        })),
+        Some(previous) if previous.as_bytes() == existing => Ok(None),
+        Some(_) => Err(InitError::UnwritableTarget {
+            path: backup,
+            reason: "existing rule backup differs; resolve it before replacing the rule"
+                .to_string(),
+        }),
+    }
+}
 
 /// Describe the files a fresh Claude rules installation would write.
 pub fn planned() -> Installed {
@@ -412,11 +487,11 @@ pub fn planned_agents_md() -> Installed {
     }
 }
 
-/// Write the templates under `.claude/rules`, preserving edited files.
+/// Write the shipped templates under `.claude/rules`.
 ///
 /// A file whose contents already match the template is reported as unchanged. A
-/// file that differs is left alone and reported as kept, so local edits survive
-/// re-running the command.
+/// file that differs is backed up once beside the rule and replaced with the
+/// current shipped template.
 pub fn install(root: &Path) -> Result<Installed, String> {
     install_transaction(root, InitAgent::Claude).map_err(|error| error.to_string())
 }
@@ -430,8 +505,8 @@ pub fn install(root: &Path) -> Result<Installed, String> {
 /// is Claude-specific metadata that would both render as stray YAML and imply a
 /// lazy-loading behavior this file does not have.
 ///
-/// An existing `AGENTS.md` is never overwritten: it is reported as kept, exactly
-/// as [`install`] treats an edited rules file.
+/// An existing `AGENTS.md` is never overwritten: it is reported as kept so
+/// repository-authored guidance remains intact.
 pub fn install_agents_md(root: &Path) -> Result<Installed, String> {
     install_transaction(root, InitAgent::Codex).map_err(|error| error.to_string())
 }
@@ -448,15 +523,32 @@ fn install_transaction(root: &Path, agent: InitAgent) -> Result<Installed, InitE
     preflight_targets(root, &target_refs)?;
     preflight_file_targets(&target_refs)?;
     let (planned, outcome) = plan(root, agent)?;
+    let backup_refs: Vec<&Path> = planned
+        .iter()
+        .filter_map(|write| write.backup.as_ref().map(|backup| backup.path.as_path()))
+        .collect();
+    preflight_targets(root, &backup_refs)?;
+    preflight_file_targets(&backup_refs)?;
 
     for write in &planned {
         if let Some(parent) = write.path.parent() {
+            create_dir_all(parent)?;
+        }
+        if let Some(backup) = write.backup.as_ref()
+            && let Some(parent) = backup.path.parent()
+        {
             create_dir_all(parent)?;
         }
     }
 
     let mut staged = Vec::new();
     for write in &planned {
+        if let Some(backup) = write.backup.as_ref() {
+            staged.push((
+                stage_private_write(&backup.path, &backup.contents)?,
+                "backup",
+            ));
+        }
         staged.push((
             stage_write(&write.path, &write.contents)?,
             write.label.as_str(),

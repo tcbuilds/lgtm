@@ -36,7 +36,7 @@ pub fn platform_id() -> String {
 }
 
 #[cfg(target_os = "linux")]
-pub const CONTAINMENT_VERSION: &str = "linux-isolated-subreaper-v3";
+pub const CONTAINMENT_VERSION: &str = "linux-isolated-subreaper-v4";
 #[cfg(not(target_os = "linux"))]
 pub const CONTAINMENT_VERSION: &str = "unavailable-v1";
 
@@ -58,6 +58,7 @@ pub(crate) struct Captured {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct SupervisorRequest {
+    parent_pid: u32,
     argv: Vec<String>,
     repository_root: String,
     workspace_root: String,
@@ -227,7 +228,11 @@ fn run_supervisor(request: SupervisorRequest) -> SupervisorResponse {
     let Some(timeout_ms) = request.timeout_ms.parse::<u64>().ok() else {
         return unproven_response();
     };
-    if request.argv.is_empty() || timeout_ms == 0 || direct_children().is_err() {
+    if request.argv.is_empty()
+        || timeout_ms == 0
+        || !parent_is_current(request.parent_pid)
+        || direct_children().is_err()
+    {
         return unproven_response();
     }
     let mut original_subreaper = 0;
@@ -280,7 +285,7 @@ fn run_supervisor(request: SupervisorRequest) -> SupervisorResponse {
     let pid = child.id();
     let stdout = drain_bounded(child.stdout.take());
     let stderr = drain_bounded(child.stderr.take());
-    let status = wait_bounded(&mut child, execution_deadline);
+    let status = wait_bounded(&mut child, execution_deadline, request.parent_pid);
     if status.is_none() {
         kill_process_group(pid);
         let _ = child.kill();
@@ -408,11 +413,31 @@ fn prepare_command(command: &mut Command, cwd_fd: std::os::fd::RawFd) {
     set_current_directory(command, cwd_fd);
 }
 
+// Compare the kernel's current parent with the caller recorded before spawn.
+// A cancelled caller must not leave this isolated supervisor running its gate.
+fn parent_is_current(expected_pid: u32) -> bool {
+    let Ok(file) = std::fs::File::open("/proc/self/stat") else {
+        return false;
+    };
+    let mut stat = String::new();
+    if file.take(4096).read_to_string(&mut stat).is_err() {
+        return false;
+    }
+    stat.rsplit_once(") ")
+        .and_then(|(_, fields)| fields.split_whitespace().nth(1))
+        .and_then(|parent| parent.parse::<u32>().ok())
+        .is_some_and(|parent| parent == expected_pid)
+}
+
 fn wait_bounded(
     child: &mut std::process::Child,
     deadline: Instant,
+    parent_pid: u32,
 ) -> Option<std::process::ExitStatus> {
     loop {
+        if !parent_is_current(parent_pid) {
+            return None;
+        }
         match child.try_wait() {
             Ok(Some(status)) => return Some(status),
             Err(_) => return None,
@@ -577,6 +602,7 @@ fn build_request(
         return Err(());
     }
     Ok(SupervisorRequest {
+        parent_pid: std::process::id(),
         argv: argv.to_vec(),
         repository_root: encode_path(repository_root).ok_or(())?,
         workspace_root: encode_path(workspace_root).ok_or(())?,

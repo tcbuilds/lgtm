@@ -96,10 +96,47 @@ no marker exists and skips a root-start session when the current cwd contains th
 owned project extension.
 
 Pi lifecycle hooks use a 10-second transport deadline. Bash pre-tool calls use a
-40-second transport deadline because they may run the Pi-specific pre-commit gate;
-that gate has a 30-second total budget, including bounded checks and evidence
+310-second transport deadline because they may run the Pi-specific pre-commit gate;
+that gate has a fixed 300-second total budget, including bounded checks and evidence
 persistence, and denies on aggregate exhaustion. Claude and Codex keep their
 existing full-gate budget.
+
+## Finding approval capability
+
+The canonical extension advertises the strictly versioned
+`lgtm-pi-finding-approval` capability on Bash tool calls. Rust preserves that
+capability only when its exact `{name, version: 1}` object is present; missing,
+malformed, unknown, or old callers receive the ordinary `{block, reason}` denial.
+Only a direct staged `git commit` whose complete fresh gitleaks assessment contains
+eligible built-in `generic-api-key` findings can produce the redacted approval
+challenge. Provider credentials, private keys, custom rules, mixed findings, and
+scanner or repository errors remain hard denials.
+
+The challenge binds the canonical repository and Git state, session and adapter,
+normalized commit argv, scanner/config/ignore/waiver and policy identities, scanner
+and Git executable identities, and the complete finding set. The extension may ask
+for native confirmation only in Pi `tui` mode with verified current runtime
+attestation and UI availability. Approval authority is local to one invocation,
+never persisted, and invalidated by session generations and shutdown. Before a new
+direct commit attempt, the live extension revalidates its executable, template,
+project trust, and all built-in tool contracts, then records fresh runtime evidence.
+This lets a repaired hook failure recover in the same session without deleting
+failure history or restoring an earlier approval. Failed re-attestation denies.
+The extension rechecks the canonical template and trusted executable after confirmation, performs
+one bounded fresh reassessment, and allows only an identical pending assessment or
+a clean pass. Cancellation, timeout, UI absence, changed findings/configuration,
+stale attestation, executable/template mutation, malformed responses, and failed
+reassessment deny. Finding display is redacted to rule, path/location, and a
+non-secret candidate identifier; no secret value or scanner description is shown.
+These checks narrow, but cannot eliminate, same-user TOCTOU mutation between
+revalidation and child execution; Pi extensions are not an operating-system
+security boundary.
+
+The bounded full-repository source scan preserves `.pi/extensions/`,
+`.pi/settings.json`, and `.pi/pi-lsp.json`. It excludes only the known runtime
+subtrees `.pi/orca-recovery/`, `.pi/subagents/`, `.pi/subagent-output/`,
+`.pi/npm/`, and the root `.killer-whale/`. A real source-path limit remains a
+source-scan failure; it is not reported as aggregate-budget expiry.
 
 ## Path-scoped guidance
 

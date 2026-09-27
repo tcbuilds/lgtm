@@ -41,6 +41,8 @@ It also writes `.lgtm/execpolicy.json`, a list of command prefixes that are refu
 
 Commit the generated `.lgtm/config.json`, `.lgtm/execpolicy.json`, `.claude/settings.json`, and `.gitignore` changes. Claude Code will run LGTM automatically during future sessions.
 
+Direct commits scan staged content. Eligible heuristic findings can request exact-candidate confirmation; known credentials remain blocked. See [Claude's guarded commit flow](doc/adapters/claude.md) and [Pi's approval contract](doc/adapters/pi.md) for supported modes, trust limits, and manual rollout checks. Verify the native confirmation UI before relying on interactive approval.
+
 For Pi, run:
 
 ```bash
@@ -51,7 +53,7 @@ Pi init writes the LGTM extension under `.pi/extensions/`, merges the pinned Pi 
 
 Pi packages and project extensions execute with the user's permissions. Review the generated files before trusting the project. Roll back by removing only LGTM's extension and generated package/server entries; do not delete either JSON file when it also contains user configuration.
 
-To take the standards as guidance with no hooks and nothing enforced, use `lgtm init --rules-only`. It writes `.claude/rules/` for Claude Code, or `AGENTS.md` with `--agent codex` or `--agent pi`.
+To take the standards as guidance with no hooks and nothing enforced, use `lgtm init --rules-only`. It writes `.claude/rules/` for Claude Code and Pi, or the concatenated `AGENTS.md` document with `--agent codex`. Shipped rule files are refreshed on init; changed files are saved once beside the rule as `<rule>.<sha256>.bak`, while custom filenames and Codex `AGENTS.md` content are preserved.
 
 ## Initialize All Harnesses Globally
 

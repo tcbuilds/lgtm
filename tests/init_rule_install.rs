@@ -141,9 +141,13 @@ fn plain_init_dry_run_classifies_existing_rule_files() {
     let edited = run_init(&repo, &["init", "--dry-run"]);
     let edited_text = String::from_utf8_lossy(&edited.stdout);
     assert!(edited.status.success(), "edited dry-run must succeed");
-    assert!(edited_text.contains("rule files: planned 0"));
+    assert!(edited_text.contains("rule files: planned 1"));
     assert!(edited_text.contains("rule files unchanged: 32"));
-    assert!(edited_text.contains("rule kept (locally edited): .claude/rules/patterns/core.md"));
+    assert!(!edited_text.contains("rule kept (locally edited):"));
+    assert_eq!(
+        repo.read(".claude/rules/patterns/core.md"),
+        "locally edited\n"
+    );
 }
 
 /// A symlinked rules directory must be rejected before init creates any file.
