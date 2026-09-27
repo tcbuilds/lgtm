@@ -96,36 +96,54 @@ fn run_for_event(
                 );
             }
         }
-        if command::invokes_git_commit(command) {
-            match crate::hooks::stop::run_pre_commit_gate_for_adapter(
-                &root,
-                parsed.session_id.as_deref(),
-                adapter.harness_name(),
-            ) {
-                Ok(None) => {}
-                Ok(Some(reason)) => {
-                    return deny(
-                        output,
-                        adapter,
-                        event,
-                        &format!(
-                            "pre-commit full gate failed; fix the failures before committing: {}",
-                            bounded_reason(&reason)
-                        ),
-                    );
+        match command::parse_commit_invocation(command) {
+            Ok(Some(invocation)) => {
+                let approval_capability = input::approval_capability(&parsed);
+                if adapter.harness_name() == "pi"
+                    && approval_capability.is_some()
+                    && let Err(reason) =
+                        require_pi_approval_attestation(&root, parsed.session_id.as_deref())
+                {
+                    return deny(output, adapter, event, &reason);
                 }
-                Err(reason) => {
-                    return policy_failure(
-                        output,
-                        adapter,
-                        event,
-                        &format!(
+                match crate::hooks::stop::run_pre_commit_gate_for_adapter(
+                    &root,
+                    parsed.session_id.as_deref(),
+                    adapter.harness_name(),
+                    invocation.argv(),
+                    approval_capability,
+                ) {
+                    Ok(crate::hooks::stop::PreCommitGateDecision::Allow) => {}
+                    Ok(crate::hooks::stop::PreCommitGateDecision::Deny(reason)) => {
+                        return deny(
+                            output,
+                            adapter,
+                            event,
+                            &format!(
+                                "pre-commit full gate failed; fix the failures before committing: {}",
+                                bounded_reason(&reason)
+                            ),
+                        );
+                    }
+                    Ok(crate::hooks::stop::PreCommitGateDecision::FindingApprovalRequired(
+                        challenge,
+                    )) => {
+                        return finding_approval_required(output, adapter, event, challenge);
+                    }
+                    Err(reason) => {
+                        let message = format!(
                             "pre-commit full gate could not run: {}",
                             bounded_reason(&reason)
-                        ),
-                    );
+                        );
+                        if adapter.harness_name() == "pi" && approval_capability.is_some() {
+                            return deny(output, adapter, event, &message);
+                        }
+                        return policy_failure(output, adapter, event, &message);
+                    }
                 }
             }
+            Ok(None) => {}
+            Err(reason) => return deny(output, adapter, event, &reason),
         }
         return ExitCode::SUCCESS;
     }
@@ -219,6 +237,51 @@ fn capture(root: &Path, target: &Path, session: Option<&str>) -> Result<(), Stri
     baseline::capture(root, target, session, &compiled)
 }
 
+fn require_pi_approval_attestation(root: &Path, session_id: Option<&str>) -> Result<(), String> {
+    let Some(session_id) = session_id else {
+        return Err("Pi finding approval requires a verified session attestation".to_string());
+    };
+    let state = crate::pi_state::assess_for_session(root, session_id);
+    if state.state == crate::pi_state::PiEnforcementState::Active {
+        return Ok(());
+    }
+    Err(format!(
+        "Pi finding approval is unavailable: {}",
+        bounded_reason(&state.reason)
+    ))
+}
+
+fn finding_approval_required(
+    output: &mut impl Write,
+    adapter: &dyn HookAdapter,
+    event: HookEvent,
+    challenge: crate::adapter::PiApprovalChallenge,
+) -> ExitCode {
+    if adapter.harness_name() != "pi" {
+        return deny(
+            output,
+            adapter,
+            event,
+            "staged commit heuristic assessment requires approval, but this adapter has no approval path",
+        );
+    }
+    let encoded = match adapter
+        .encode_response(event, HookResponse::FindingApprovalRequired(challenge))
+    {
+        Ok(encoded) => encoded,
+        Err(_) => {
+            return deny(
+                output,
+                adapter,
+                event,
+                "staged commit heuristic assessment requires approval, but the Pi approval response is unsupported",
+            );
+        }
+    };
+    let _ = adapter::emit(output, &mut std::io::stderr(), &encoded);
+    ExitCode::from(encoded.exit_code)
+}
+
 fn policy_failure(
     output: &mut impl Write,
     adapter: &dyn HookAdapter,
@@ -273,6 +336,34 @@ mod tests {
         assert!(read_input(&mut "not json".as_bytes()).is_none());
         let mut oversized = vec![b'a'; (input::MAX_PAYLOAD_BYTES + 1) as usize];
         assert!(read_input(&mut std::io::Cursor::new(&mut oversized)).is_none());
+    }
+
+    #[test]
+    fn approval_requires_a_current_pi_attestation() {
+        let root =
+            std::env::temp_dir().join(format!("lgtm-pi-approval-state-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temporary root creates");
+        let result = require_pi_approval_attestation(&root, Some("session"));
+        std::fs::remove_dir_all(&root).ok();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn malformed_approval_capabilities_are_ignored() {
+        for value in [
+            serde_json::json!({"name": "lgtm-pi-finding-approval", "version": 2}),
+            serde_json::json!({"name": "unknown", "version": 1}),
+            serde_json::json!({"name": "lgtm-pi-finding-approval", "version": 1, "extra": true}),
+        ] {
+            let input = input::HookInput {
+                cwd: None,
+                session_id: None,
+                tool_name: None,
+                approval_capability: Some(value),
+                tool_input: input::ToolInput::default(),
+            };
+            assert_eq!(input::approval_capability(&input), None);
+        }
     }
 
     #[test]

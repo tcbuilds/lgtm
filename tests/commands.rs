@@ -49,13 +49,73 @@ fn run_post_tool_use(repo: &TempRepo, session_id: &str, file: &str) -> std::proc
     child.wait_with_output().expect("PostToolUse hook exits")
 }
 
+fn run_git_fixture(repo: &TempRepo, arguments: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(arguments)
+        .output()
+        .expect("git fixture command starts");
+    assert!(
+        output.status.success(),
+        "git {arguments:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn install_fake_gitleaks(repo: &TempRepo) {
+    repo.write(
+        "bin/gitleaks",
+        "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then echo test-1.0; exit 0; fi\nreport=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --report-path) report=\"$2\"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\n[ -z \"$report\" ] || printf '[]' > \"$report\"\nexit 0\n",
+    );
+    let executable = repo.path().join("bin/gitleaks");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("fake gitleaks executable");
+}
+
+fn install_pending_fake_gitleaks(repo: &TempRepo) {
+    repo.write(
+        "bin/gitleaks",
+        "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then echo test-1.0; exit 0; fi\nreport=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --report-path) report=\"$2\"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\nprintf '%s' '[{\"RuleID\":\"generic-api-key\",\"Description\":\"fixture\",\"File\":\"src/app.rs\",\"StartLine\":1,\"StartColumn\":1,\"EndLine\":1,\"EndColumn\":2,\"Fingerprint\":\"fixture\"}]' > \"$report\"\nexit 2\n",
+    );
+    let executable = repo.path().join("bin/gitleaks");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("pending fake gitleaks executable");
+}
+
+fn ensure_commit_fixture(repo: &TempRepo) {
+    if !repo.path().join(".git").exists() {
+        run_git_fixture(repo, &["init", "-q"]);
+        run_git_fixture(
+            repo,
+            &[
+                "config",
+                "user.email",
+                "254259785+tcbuilds@users.noreply.github.com",
+            ],
+        );
+        run_git_fixture(repo, &["config", "user.name", "LGTM tests"]);
+        run_git_fixture(repo, &["add", "-A"]);
+        run_git_fixture(repo, &["commit", "-qm", "fixture"]);
+    }
+    if !repo.path().join("bin/gitleaks").exists() {
+        install_fake_gitleaks(repo);
+    }
+}
+
 fn run_pre_tool_use_command(
     repo: &TempRepo,
     session_id: &str,
     command: &str,
 ) -> std::process::Output {
+    ensure_commit_fixture(repo);
+    let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut search_path = vec![repo.path().join("bin")];
+    search_path.extend(std::env::split_paths(&inherited_path));
+    let path = std::env::join_paths(search_path).expect("fixture PATH");
     let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["hook", "pre-tool-use"])
+        .env("PATH", path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -574,8 +634,7 @@ fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
     );
 
     for expected_runs in ["x", "xx"] {
-        let authorization =
-            run_pre_tool_use_command(&repo, "session-escape", "sleep 2 && git commit -m test");
+        let authorization = run_pre_tool_use_command(&repo, "session-escape", "git commit -m test");
         assert!(authorization.status.success());
         let decision: Value =
             serde_json::from_slice(&authorization.stdout).expect("containment deny decision");
@@ -726,7 +785,62 @@ fn isolated_supervisor_preserves_unrelated_child_waitability() {
     ignore = "production command containment is Linux-only"
 )]
 #[test]
-fn precommit_reuses_full_evidence_with_only_warning_severity_failures() {
+fn pending_commit_assessment_runs_after_required_command_gate() {
+    let repo = TempRepo::new();
+    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
+    let marker = repo.path().join("pending-gate-runs");
+    repo.write(
+        "bin/required-check",
+        "#!/bin/sh\nprintf x >> \"$1\"\nexit 0\n",
+    );
+    let executable = repo.path().join("bin/required-check");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("fixture executable");
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "tests",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": [executable.to_string_lossy(), marker.to_string_lossy()],
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "test",
+                    "source": "fixture",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+    install_pending_fake_gitleaks(&repo);
+
+    let output = run_pre_tool_use_command(&repo, "pending-gate", "git commit -m test");
+    assert!(output.status.success());
+    let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision");
+    assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(
+        decision["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("heuristic approval"))
+    );
+    assert_eq!(repo.read("pending-gate-runs"), "x");
+}
+
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "production command containment is Linux-only"
+)]
+#[test]
+fn precommit_reruns_full_gate_for_each_commit_scope() {
     let repo = TempRepo::new();
     let oversized = format!(
         "pub fn oversized() {{\n{} }}\n",
@@ -793,8 +907,8 @@ fn precommit_reuses_full_evidence_with_only_warning_severity_failures() {
     );
     assert_eq!(
         repo.read("warning-gate-runs"),
-        "x",
-        "reusable warning-only evidence must avoid rerunning the full gate"
+        "xx",
+        "commit-scoped evidence must rerun the full gate"
     );
 }
 
@@ -2083,7 +2197,7 @@ fn non_utf8_ci_survives_doctor_and_supervisor_execution() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn sibling_workspace_root_selection_reuses_only_touched_workspace_evidence() {
+fn sibling_workspace_root_selection_reruns_only_touched_workspace_evidence() {
     let repo = TempRepo::new();
     repo.write("workspace/app2/src/app.rs", "pub fn value() -> u8 { 1 }\n");
 
@@ -2209,8 +2323,8 @@ fn sibling_workspace_root_selection_reuses_only_touched_workspace_evidence() {
     assert!(second.stdout.is_empty());
     assert!(!repo.exists("selected-command-runs"));
     assert!(!repo.exists("selected-coverage-runs"));
-    assert_eq!(repo.read("other-command-runs"), "x");
-    assert_eq!(repo.read("other-coverage-runs"), "x");
+    assert_eq!(repo.read("other-command-runs"), "xx");
+    assert_eq!(repo.read("other-coverage-runs"), "xx");
 }
 
 #[test]

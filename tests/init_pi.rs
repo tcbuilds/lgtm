@@ -51,7 +51,7 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
     assert!(!repo.exists(".pi/extensions/lgtm.ts.bak"));
     assert!(extension.contains("shell: false"));
     assert!(extension.contains("NORMAL_TIMEOUT_MS = 10_000"));
-    assert!(extension.contains("PRE_TOOL_TIMEOUT_MS = 40_000"));
+    assert!(extension.contains("PRE_TOOL_TIMEOUT_MS = 310_000"));
     assert!(!extension.contains("event.input ="));
     assert!(extension.contains("getAllTools"));
     assert!(extension.contains("sourceInfo"));
@@ -482,7 +482,7 @@ const source = fs.readFileSync(process.argv[2], "utf8")
   .replace('import { spawn } from "node:child_process";', 'const { spawn } = require("node:child_process");')
   .replace('import { createHash, randomUUID } from "node:crypto";', 'const { createHash, randomUUID } = require("node:crypto");')
   .replace('new URL(import.meta.url)', 'process.argv[2]')
-  .replace('const PRE_TOOL_TIMEOUT_MS = 40_000;', 'const PRE_TOOL_TIMEOUT_MS = 25;')
+  .replace('const PRE_TOOL_TIMEOUT_MS = 310_000;', 'const PRE_TOOL_TIMEOUT_MS = 25;')
   .replace('export default function lgtm', 'function lgtm') + "\nglobalThis.__lgtm = lgtm;";
 eval(source);
 const handlers = {};

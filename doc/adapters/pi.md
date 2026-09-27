@@ -96,10 +96,38 @@ no marker exists and skips a root-start session when the current cwd contains th
 owned project extension.
 
 Pi lifecycle hooks use a 10-second transport deadline. Bash pre-tool calls use a
-40-second transport deadline because they may run the Pi-specific pre-commit gate;
-that gate has a 30-second total budget, including bounded checks and evidence
+310-second transport deadline because they may run the Pi-specific pre-commit gate;
+that gate has a fixed 300-second total budget, including bounded checks and evidence
 persistence, and denies on aggregate exhaustion. Claude and Codex keep their
 existing full-gate budget.
+
+## Finding approval capability
+
+The canonical extension advertises the strictly versioned
+`lgtm-pi-finding-approval` capability on Bash tool calls. Rust preserves that
+capability only when its exact `{name, version: 1}` object is present; missing,
+malformed, unknown, or old callers receive the ordinary `{block, reason}` denial.
+Only a direct staged `git commit` whose complete fresh gitleaks assessment contains
+eligible built-in `generic-api-key` findings can produce the redacted approval
+challenge. Provider credentials, private keys, custom rules, mixed findings, and
+scanner or repository errors remain hard denials.
+
+The challenge binds the canonical repository and Git state, session and adapter,
+normalized commit argv, scanner/config/ignore/waiver and policy identities, scanner
+and Git executable identities, and the complete finding set. The extension may ask
+for native confirmation only in Pi `tui` mode with verified current runtime
+attestation and UI availability. It retains the affirmative decision only in the
+live handler closure, performs one bounded fresh reassessment, and allows only an
+identical pending assessment or a clean pass. Cancellation, timeout, UI absence,
+changed findings/configuration, stale attestation, malformed responses, and failed
+reassessment deny. Finding display is redacted to rule, path/location, and a
+non-secret candidate identifier; no secret value or scanner description is shown.
+
+The bounded full-repository source scan preserves `.pi/extensions/`,
+`.pi/settings.json`, and `.pi/pi-lsp.json`. It excludes only the known runtime
+subtrees `.pi/orca-recovery/`, `.pi/subagents/`, `.pi/subagent-output/`,
+`.pi/npm/`, and the root `.killer-whale/`. A real source-path limit remains a
+source-scan failure; it is not reported as aggregate-budget expiry.
 
 ## Path-scoped guidance
 

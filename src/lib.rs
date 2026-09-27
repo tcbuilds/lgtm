@@ -23,4 +23,6 @@ pub mod report;
 pub mod select;
 pub mod stats;
 pub mod structure;
+#[cfg(test)]
+mod test_support;
 pub mod update;

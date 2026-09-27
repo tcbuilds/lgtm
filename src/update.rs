@@ -795,116 +795,128 @@ mod tests {
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn bounded_command_cleans_descendant_retaining_stdout() {
-        const FIXTURE_ENV: &str = "LGTM_RETAINED_PIPE_FIXTURE";
-        const FIXTURE_ROLE: &str = "retained-pipe";
-        if fixture_is_active(FIXTURE_ROLE, FIXTURE_ENV) {
-            run_retained_pipe_fixture();
-            return;
-        }
+        crate::test_support::run_in_isolated_process(
+            "update::tests::bounded_command_cleans_descendant_retaining_stdout",
+            || {
+                const FIXTURE_ENV: &str = "LGTM_RETAINED_PIPE_FIXTURE";
+                const FIXTURE_ROLE: &str = "retained-pipe";
+                if fixture_is_active(FIXTURE_ROLE, FIXTURE_ENV) {
+                    run_retained_pipe_fixture();
+                    return;
+                }
 
-        let directory = TemporaryDirectory::create().unwrap();
-        let started = Instant::now();
-        let completed = run_isolated_fixture(
-            "bounded_command_cleans_descendant_retaining_stdout",
-            FIXTURE_ENV,
-            FIXTURE_ROLE,
-            &directory.path,
-            &directory.path.join("command.pid"),
-            Duration::from_secs(1),
-        );
-        assert!(
-            completed,
-            "retained-pipe fixture did not finish within its watchdog"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "retained-pipe fixture exceeded its watchdog"
-        );
+                let directory = TemporaryDirectory::create().unwrap();
+                let started = Instant::now();
+                let completed = run_isolated_fixture(
+                    "bounded_command_cleans_descendant_retaining_stdout",
+                    FIXTURE_ENV,
+                    FIXTURE_ROLE,
+                    &directory.path,
+                    &directory.path.join("command.pid"),
+                    Duration::from_secs(1),
+                );
+                assert!(
+                    completed,
+                    "retained-pipe fixture did not finish within its watchdog"
+                );
+                assert!(
+                    started.elapsed() < Duration::from_secs(1),
+                    "retained-pipe fixture exceeded its watchdog"
+                );
 
-        let result = fs::read_to_string(directory.path.join("result"))
-            .expect("retained-pipe fixture did not publish a result");
-        let mut fields = result.split(':');
-        assert_eq!(fields.next(), Some("failure"));
-        let elapsed_ms: u64 = fields
-            .next()
-            .expect("retained-pipe fixture omitted elapsed time")
-            .parse()
-            .expect("retained-pipe fixture elapsed time was not numeric");
-        assert!(
-            elapsed_ms < (RETAINED_PIPE_TIMEOUT + FIXTURE_SCHEDULER_MARGIN).as_millis() as u64,
-            "bounded command exceeded its retained-pipe deadline tolerance"
-        );
+                let result = fs::read_to_string(directory.path.join("result"))
+                    .expect("retained-pipe fixture did not publish a result");
+                let mut fields = result.split(':');
+                assert_eq!(fields.next(), Some("failure"));
+                let elapsed_ms: u64 = fields
+                    .next()
+                    .expect("retained-pipe fixture omitted elapsed time")
+                    .parse()
+                    .expect("retained-pipe fixture elapsed time was not numeric");
+                assert!(
+                    elapsed_ms
+                        < (RETAINED_PIPE_TIMEOUT + FIXTURE_SCHEDULER_MARGIN).as_millis() as u64,
+                    "bounded command exceeded its retained-pipe deadline tolerance"
+                );
 
-        let pid = wait_for_pid_file(
-            &directory.path.join("descendant.pid"),
-            Duration::from_secs(1),
-        )
-        .expect("descendant did not publish its pid");
-        let cleaned = wait_for_pid_exit(pid, Duration::from_secs(1));
-        if !cleaned {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
-        }
-        assert!(cleaned, "descendant process survived bounded cleanup");
+                let pid = wait_for_pid_file(
+                    &directory.path.join("descendant.pid"),
+                    Duration::from_secs(1),
+                )
+                .expect("descendant did not publish its pid");
+                let cleaned = wait_for_pid_exit(pid, Duration::from_secs(1));
+                if !cleaned {
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                    }
+                }
+                assert!(cleaned, "descendant process survived bounded cleanup");
+            },
+        );
     }
 
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn bounded_command_cleans_descendant_after_successful_pipe_closure() {
-        const FIXTURE_ENV: &str = "LGTM_CLOSING_PIPE_FIXTURE";
-        const FIXTURE_ROLE: &str = "closing-pipe";
-        if fixture_is_active(FIXTURE_ROLE, FIXTURE_ENV) {
-            run_closing_pipe_fixture();
-            return;
-        }
+        crate::test_support::run_in_isolated_process(
+            "update::tests::bounded_command_cleans_descendant_after_successful_pipe_closure",
+            || {
+                const FIXTURE_ENV: &str = "LGTM_CLOSING_PIPE_FIXTURE";
+                const FIXTURE_ROLE: &str = "closing-pipe";
+                if fixture_is_active(FIXTURE_ROLE, FIXTURE_ENV) {
+                    run_closing_pipe_fixture();
+                    return;
+                }
 
-        let directory = TemporaryDirectory::create().unwrap();
-        let started = Instant::now();
-        let completed = run_isolated_fixture(
-            "bounded_command_cleans_descendant_after_successful_pipe_closure",
-            FIXTURE_ENV,
-            FIXTURE_ROLE,
-            &directory.path,
-            &directory.path.join("command.pid"),
-            Duration::from_secs(1),
-        );
-        assert!(
-            completed,
-            "closing-pipe fixture did not finish within its watchdog"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "closing-pipe fixture exceeded its watchdog"
-        );
+                let directory = TemporaryDirectory::create().unwrap();
+                let started = Instant::now();
+                let completed = run_isolated_fixture(
+                    "bounded_command_cleans_descendant_after_successful_pipe_closure",
+                    FIXTURE_ENV,
+                    FIXTURE_ROLE,
+                    &directory.path,
+                    &directory.path.join("command.pid"),
+                    Duration::from_secs(1),
+                );
+                assert!(
+                    completed,
+                    "closing-pipe fixture did not finish within its watchdog"
+                );
+                assert!(
+                    started.elapsed() < Duration::from_secs(1),
+                    "closing-pipe fixture exceeded its watchdog"
+                );
 
-        let result = fs::read_to_string(directory.path.join("result"))
-            .expect("closing-pipe fixture did not publish a result");
-        let mut fields = result.split(':');
-        assert_eq!(fields.next(), Some("success"));
-        assert_eq!(fields.next(), Some("0"));
-        let elapsed_ms: u64 = fields
-            .next()
-            .expect("closing-pipe fixture omitted elapsed time")
-            .parse()
-            .expect("closing-pipe fixture elapsed time was not numeric");
-        assert!(
-            elapsed_ms < (CLOSING_PIPE_TIMEOUT + FIXTURE_SCHEDULER_MARGIN).as_millis() as u64,
-            "bounded command exceeded its closing-pipe deadline tolerance"
-        );
+                let result = fs::read_to_string(directory.path.join("result"))
+                    .expect("closing-pipe fixture did not publish a result");
+                let mut fields = result.split(':');
+                assert_eq!(fields.next(), Some("success"));
+                assert_eq!(fields.next(), Some("0"));
+                let elapsed_ms: u64 = fields
+                    .next()
+                    .expect("closing-pipe fixture omitted elapsed time")
+                    .parse()
+                    .expect("closing-pipe fixture elapsed time was not numeric");
+                assert!(
+                    elapsed_ms
+                        < (CLOSING_PIPE_TIMEOUT + FIXTURE_SCHEDULER_MARGIN).as_millis() as u64,
+                    "bounded command exceeded its closing-pipe deadline tolerance"
+                );
 
-        let pid = wait_for_pid_file(
-            &directory.path.join("descendant.pid"),
-            Duration::from_secs(1),
-        )
-        .expect("descendant did not publish its pid");
-        let cleaned = wait_for_pid_exit(pid, Duration::from_secs(1));
-        if !cleaned {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
-        }
-        assert!(cleaned, "descendant process survived successful cleanup");
+                let pid = wait_for_pid_file(
+                    &directory.path.join("descendant.pid"),
+                    Duration::from_secs(1),
+                )
+                .expect("descendant did not publish its pid");
+                let cleaned = wait_for_pid_exit(pid, Duration::from_secs(1));
+                if !cleaned {
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                    }
+                }
+                assert!(cleaned, "descendant process survived successful cleanup");
+            },
+        );
     }
 
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
@@ -945,16 +957,21 @@ mod tests {
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn bounded_command_rejects_output_over_max_command_output_bytes() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "dd if=/dev/zero bs=1024 count=65 2>/dev/null"]);
+        crate::test_support::run_in_isolated_process(
+            "update::tests::bounded_command_rejects_output_over_max_command_output_bytes",
+            || {
+                let mut command = Command::new("sh");
+                command.args(["-c", "dd if=/dev/zero bs=1024 count=65 2>/dev/null"]);
 
-        let error = match run_bounded(&mut command, Duration::from_secs(1)) {
-            Ok(_) => panic!("oversized command output unexpectedly succeeded"),
-            Err(error) => error,
-        };
-        assert!(
-            error.contains("external command output exceeded 65536 bytes"),
-            "unexpected output-limit error: {error}"
+                let error = match run_bounded(&mut command, Duration::from_secs(1)) {
+                    Ok(_) => panic!("oversized command output unexpectedly succeeded"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error.contains("external command output exceeded 65536 bytes"),
+                    "unexpected output-limit error: {error}"
+                );
+            },
         );
     }
 
@@ -1034,37 +1051,43 @@ mod tests {
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn over_limit_download_stops_at_cap_and_preserves_existing_destination() {
-        use std::os::unix::fs::PermissionsExt;
+        crate::test_support::run_in_isolated_process(
+            "update::tests::over_limit_download_stops_at_cap_and_preserves_existing_destination",
+            || {
+                use std::os::unix::fs::PermissionsExt;
 
-        let directory = TemporaryDirectory::create().unwrap();
-        let destination = directory.path.join("existing-executable");
-        let marker = directory.path.join("completed");
-        fs::write(&destination, b"existing executable").unwrap();
-        fs::set_permissions(&destination, fs::Permissions::from_mode(0o755)).unwrap();
-        let original_mode = fs::metadata(&destination).unwrap().permissions().mode() & 0o777;
+                let directory = TemporaryDirectory::create().unwrap();
+                let destination = directory.path.join("existing-executable");
+                let marker = directory.path.join("completed");
+                fs::write(&destination, b"existing executable").unwrap();
+                fs::set_permissions(&destination, fs::Permissions::from_mode(0o755)).unwrap();
+                let original_mode =
+                    fs::metadata(&destination).unwrap().permissions().mode() & 0o777;
 
-        let mut command = Command::new("sh");
-        command.env("LGTM_DOWNLOAD_MARKER", &marker).args([
-            "-c",
-            "set -e; dd if=/dev/zero bs=1024 count=1024; printf done > \"$LGTM_DOWNLOAD_MARKER\"",
-        ]);
-        let result = download_with_command(&mut command, &destination, 4 * 1024);
+                let mut command = Command::new("sh");
+                command.env("LGTM_DOWNLOAD_MARKER", &marker).args([
+                    "-c",
+                    "set -e; dd if=/dev/zero bs=1024 count=1024; printf done > \"$LGTM_DOWNLOAD_MARKER\"",
+                ]);
+                let result = download_with_command(&mut command, &destination, 4 * 1024);
 
-        let error = result.expect_err("over-limit transfer unexpectedly succeeded");
-        assert!(
-            error.contains("after writing 4096 bytes"),
-            "transfer was not stopped at the cap: {error}"
+                let error = result.expect_err("over-limit transfer unexpectedly succeeded");
+                assert!(
+                    error.contains("after writing 4096 bytes"),
+                    "transfer was not stopped at the cap: {error}"
+                );
+                assert_eq!(fs::read(&destination).unwrap(), b"existing executable");
+                assert_eq!(
+                    fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+                    original_mode
+                );
+                assert!(
+                    !marker.exists(),
+                    "producer completed after the transfer cap instead of being stopped"
+                );
+                assert!(!download_staging_path(&destination).exists());
+            },
         );
-        assert_eq!(fs::read(&destination).unwrap(), b"existing executable");
-        assert_eq!(
-            fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
-            original_mode
-        );
-        assert!(
-            !marker.exists(),
-            "producer completed after the transfer cap instead of being stopped"
-        );
-        assert!(!download_staging_path(&destination).exists());
     }
 
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]

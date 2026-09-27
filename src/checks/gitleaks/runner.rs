@@ -305,79 +305,98 @@ fn classify_after_cleanup(
 mod tests {
     use super::*;
 
+    use crate::test_support::run_in_isolated_process;
+
     #[test]
     fn group_kill_closes_pipe_inheriting_child() {
-        // Keep the direct shell alive while it waits for a same-group child.
-        // The child holds both inherited pipes until the process-group kill;
-        // production escaped-descendant behavior is covered at its boundary.
-        let mut command = Command::new("/bin/sh");
-        command
-            .arg("-c")
-            .arg("( printf child; printf error >&2; exec /bin/sleep 120 ) & wait");
-        prepare_command(&mut command);
-        let mut child = command.spawn().expect("shell spawned");
-        let pid = child.id();
-        let stdout = drain_bounded(child.stdout.take(), MAX_CAPTURE_BYTES);
-        let stderr = drain_bounded(child.stderr.take(), MAX_CAPTURE_BYTES);
-        thread::sleep(Duration::from_millis(200));
-        kill_child(&mut child, pid);
-        let deadline = deadline_after(Duration::from_secs(2));
-        assert_eq!(join_bounded(stdout, deadline), Some(b"child".to_vec()));
-        assert_eq!(join_bounded(stderr, deadline), Some(b"error".to_vec()));
+        run_in_isolated_process(
+            "checks::gitleaks::runner::tests::group_kill_closes_pipe_inheriting_child",
+            || {
+                // Keep the direct shell alive while it waits for a same-group child.
+                // The child holds both inherited pipes until the process-group kill;
+                // production escaped-descendant behavior is covered at its boundary.
+                let mut command = Command::new("/bin/sh");
+                command
+                    .arg("-c")
+                    .arg("( printf child; printf error >&2; exec /bin/sleep 120 ) & wait");
+                prepare_command(&mut command);
+                let mut child = command.spawn().expect("shell spawned");
+                let pid = child.id();
+                let stdout = drain_bounded(child.stdout.take(), MAX_CAPTURE_BYTES);
+                let stderr = drain_bounded(child.stderr.take(), MAX_CAPTURE_BYTES);
+                thread::sleep(Duration::from_millis(200));
+                kill_child(&mut child, pid);
+                let deadline = deadline_after(Duration::from_secs(2));
+                assert_eq!(join_bounded(stdout, deadline), Some(b"child".to_vec()));
+                assert_eq!(join_bounded(stderr, deadline), Some(b"error".to_vec()));
+            },
+        );
     }
 
     #[test]
     fn absolute_deadline_covers_pipe_inheriting_child_cleanup() {
-        // The direct shell waits for its same-group child, so the timeout must
-        // kill the whole group and bound the inherited-pipe drain as well.
-        let mut command = Command::new("/bin/sh");
-        command
-            .arg("-c")
-            .arg("( printf child; printf error >&2; exec /bin/sleep 120 ) & wait");
-        let started = Instant::now();
-        let captured = run_details_with_timeout(command, Duration::from_millis(100));
-        assert!(captured.is_none());
-        assert!(started.elapsed() < Duration::from_secs(1));
+        run_in_isolated_process(
+            "checks::gitleaks::runner::tests::absolute_deadline_covers_pipe_inheriting_child_cleanup",
+            || {
+                // The direct shell waits for its same-group child, so the timeout must
+                // kill the whole group and bound the inherited-pipe drain as well.
+                let mut command = Command::new("/bin/sh");
+                command
+                    .arg("-c")
+                    .arg("( printf child; printf error >&2; exec /bin/sleep 120 ) & wait");
+                let started = Instant::now();
+                let captured = run_details_with_timeout(command, Duration::from_millis(100));
+                assert!(captured.is_none());
+                assert!(started.elapsed() < Duration::from_secs(1));
+            },
+        );
     }
 
     #[test]
     fn successful_scan_kills_pipe_closing_descendant_before_classifying() {
-        let group_path =
-            std::env::temp_dir().join(format!("lgtm-gitleaks-group-{}.pid", std::process::id()));
-        let mut command = Command::new("/bin/sh");
-        command
-            .arg("-c")
-            // Close both captured pipes in the surviving descendant. The
-            // process-group proof, not pipe draining, must gate classification.
-            .arg("(sleep 120) >/dev/null 2>&1 & printf '%s' \"$$\" > \"$1\"; exit 0")
-            .arg("lgtm-gitleaks-test")
-            .arg(&group_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let outcome = run_scan_with_deadline(
-            command,
-            Path::new("unused-report.json"),
-            deadline_after(Duration::from_secs(2)),
+        run_in_isolated_process(
+            "checks::gitleaks::runner::tests::successful_scan_kills_pipe_closing_descendant_before_classifying",
+            || {
+                let group_path = std::env::temp_dir()
+                    .join(format!("lgtm-gitleaks-group-{}.pid", std::process::id()));
+                let mut command = Command::new("/bin/sh");
+                command
+                    .arg("-c")
+                    // Close both captured pipes in the surviving descendant. The
+                    // process-group proof, not pipe draining, must gate classification.
+                    .arg("(sleep 120) >/dev/null 2>&1 & printf '%s' \"$$\" > \"$1\"; exit 0")
+                    .arg("lgtm-gitleaks-test")
+                    .arg(&group_path)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let outcome = run_scan_with_deadline(
+                    command,
+                    Path::new("unused-report.json"),
+                    deadline_after(Duration::from_secs(2)),
+                );
+                let group_id = std::fs::read_to_string(&group_path)
+                    .expect("scan wrote its process-group id")
+                    .trim()
+                    .parse::<u32>()
+                    .expect("scan wrote a numeric process-group id");
+                let cleanup =
+                    prove_process_group_gone(group_id, deadline_after(Duration::from_secs(2)));
+                if cleanup.is_err() {
+                    // Keep the mutation proof from leaking its intentionally surviving
+                    // descendant after this test fails.
+                    kill_process_group(group_id);
+                    let _ =
+                        prove_process_group_gone(group_id, deadline_after(Duration::from_secs(2)));
+                }
+                std::fs::remove_file(group_path).ok();
+                assert!(cleanup.is_ok(), "process group survived the returned scan");
+                assert!(matches!(
+                    outcome,
+                    ScanOutcome::Findings(findings) if findings.is_empty()
+                ));
+            },
         );
-        let group_id = std::fs::read_to_string(&group_path)
-            .expect("scan wrote its process-group id")
-            .trim()
-            .parse::<u32>()
-            .expect("scan wrote a numeric process-group id");
-        let cleanup = prove_process_group_gone(group_id, deadline_after(Duration::from_secs(2)));
-        if cleanup.is_err() {
-            // Keep the mutation proof from leaking its intentionally surviving
-            // descendant after this test fails.
-            kill_process_group(group_id);
-            let _ = prove_process_group_gone(group_id, deadline_after(Duration::from_secs(2)));
-        }
-        std::fs::remove_file(group_path).ok();
-        assert!(cleanup.is_ok(), "process group survived the returned scan");
-        assert!(matches!(
-            outcome,
-            ScanOutcome::Findings(findings) if findings.is_empty()
-        ));
     }
 
     #[test]

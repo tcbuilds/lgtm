@@ -77,12 +77,7 @@ fn git(repo: &TempRepo, args: &[&str]) {
     assert!(status.success(), "git command failed: {args:?}");
 }
 
-fn initialize_repo(repo: &TempRepo) {
-    repo.write(
-        ".lgtm/config.json",
-        r#"{"version":"2","profile":"default","workspaces":[],"disabled_rules":[],"severity_overrides":{}}"#,
-    );
-    repo.write(".gitignore", ".lgtm/evidence/\nbin/\n");
+fn initialize_git_repo(repo: &TempRepo) {
     git(repo, &["init", "-q"]);
     git(
         repo,
@@ -95,6 +90,15 @@ fn initialize_repo(repo: &TempRepo) {
     git(repo, &["config", "user.name", "LGTM tests"]);
     git(repo, &["add", "."]);
     git(repo, &["commit", "-qm", "fixture"]);
+}
+
+fn initialize_repo(repo: &TempRepo) {
+    repo.write(
+        ".lgtm/config.json",
+        r#"{"version":"2","profile":"default","workspaces":[],"disabled_rules":[],"severity_overrides":{}}"#,
+    );
+    repo.write(".gitignore", ".lgtm/evidence/\nbin/\n");
+    initialize_git_repo(repo);
     install_fake_gitleaks(repo);
 }
 
@@ -207,6 +211,8 @@ fn codex_exec_command_commit_runs_full_gate() {
         })
         .to_string(),
     );
+    initialize_git_repo(&repo);
+    install_fake_gitleaks(&repo);
 
     let output = run_hook(
         &repo,

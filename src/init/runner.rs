@@ -1,3 +1,4 @@
+use super::fs::stage_private_write;
 use super::*;
 
 /// Migrate `.lgtm/config.json` from V1 shell strings to validated V2 argv.
@@ -327,6 +328,12 @@ pub fn run_with_agent(
     notes.extend(rules_notes);
 
     let (guidance_plan, guidance_summary) = rules::plan(root, agent)?;
+    let guidance_backup_refs: Vec<&Path> = guidance_plan
+        .iter()
+        .filter_map(|write| write.backup.as_ref().map(|backup| backup.path.as_path()))
+        .collect();
+    preflight_targets(root, &guidance_backup_refs)?;
+    preflight_file_targets(&guidance_backup_refs)?;
 
     create_output_directories(
         &evidence_dir,
@@ -338,49 +345,87 @@ pub fn run_with_agent(
     )?;
 
     let mut planned: Vec<PlannedWrite<'_>> = vec![
-        (&config_path, ".lgtm/config.json".to_string(), config_render),
-        (
-            &execpolicy_path,
-            ".lgtm/execpolicy.json".to_string(),
-            execpolicy_default_render,
-        ),
-        (&gitignore_path, ".gitignore".to_string(), gitignore_render),
+        PlannedWrite {
+            path: &config_path,
+            label: ".lgtm/config.json".to_string(),
+            render: config_render,
+            private: false,
+        },
+        PlannedWrite {
+            path: &execpolicy_path,
+            label: ".lgtm/execpolicy.json".to_string(),
+            render: execpolicy_default_render,
+            private: false,
+        },
+        PlannedWrite {
+            path: &gitignore_path,
+            label: ".gitignore".to_string(),
+            render: gitignore_render,
+            private: false,
+        },
     ];
     if let (Some(path), Some(label)) = (settings_path.as_deref(), hooks_label(agent)) {
-        planned.push((path, label.to_string(), settings_render));
+        planned.push(PlannedWrite {
+            path,
+            label: label.to_string(),
+            render: settings_render,
+            private: false,
+        });
     }
     if let Some(path) = pi_settings_path.as_deref() {
-        planned.push((path, ".pi/settings.json".to_string(), pi_settings_render));
+        planned.push(PlannedWrite {
+            path,
+            label: ".pi/settings.json".to_string(),
+            render: pi_settings_render,
+            private: false,
+        });
     }
     if let Some(path) = pi_lsp_path.as_deref() {
-        planned.push((path, ".pi/pi-lsp.json".to_string(), pi_lsp_render));
+        planned.push(PlannedWrite {
+            path,
+            label: ".pi/pi-lsp.json".to_string(),
+            render: pi_lsp_render,
+            private: false,
+        });
     }
-    planned.push((
-        &rules_path,
-        ".codex/rules/lgtm.rules".to_string(),
-        rules_render,
-    ));
+    planned.push(PlannedWrite {
+        path: &rules_path,
+        label: ".codex/rules/lgtm.rules".to_string(),
+        render: rules_render,
+        private: false,
+    });
     if let Some(plan) = pi_plan.as_ref() {
         if let Some(contents) = plan.backup_contents.as_ref() {
-            planned.push((
-                &plan.backup,
-                ".pi/extensions/lgtm.ts.bak".to_string(),
-                Some(contents.clone()),
-            ));
+            planned.push(PlannedWrite {
+                path: &plan.backup,
+                label: ".pi/extensions/lgtm.ts.bak".to_string(),
+                render: Some(contents.clone()),
+                private: false,
+            });
         }
-        planned.push((
-            &plan.target,
-            ".pi/extensions/lgtm.ts".to_string(),
-            plan.target_contents.clone(),
-        ));
+        planned.push(PlannedWrite {
+            path: &plan.target,
+            label: ".pi/extensions/lgtm.ts".to_string(),
+            render: plan.target_contents.clone(),
+            private: false,
+        });
     }
-    planned.extend(guidance_plan.iter().map(|write| {
-        (
-            write.path.as_path(),
-            guidance_label(agent, &write.label),
-            Some(write.contents.clone()),
-        )
-    }));
+    for write in &guidance_plan {
+        if let Some(backup) = write.backup.as_ref() {
+            planned.push(PlannedWrite {
+                path: backup.path.as_path(),
+                label: guidance_label(agent, &backup.label),
+                render: Some(backup.contents.clone()),
+                private: true,
+            });
+        }
+        planned.push(PlannedWrite {
+            path: write.path.as_path(),
+            label: guidance_label(agent, &write.label),
+            render: Some(write.contents.clone()),
+            private: false,
+        });
+    }
 
     stage_and_commit(planned, &mut files_written)?;
 
@@ -446,11 +491,18 @@ fn track_note(agent: InitAgent) -> String {
 fn guidance_label(agent: InitAgent, label: &str) -> String {
     match agent {
         InitAgent::Claude => format!(".claude/rules/{label}"),
-        InitAgent::Codex | InitAgent::Pi => label.to_string(),
+        InitAgent::Codex => label.to_string(),
+        InitAgent::Pi if label == "AGENTS.md" => label.to_string(),
+        InitAgent::Pi => format!(".claude/rules/{label}"),
     }
 }
 
-type PlannedWrite<'a> = (&'a Path, String, Option<Vec<u8>>);
+struct PlannedWrite<'a> {
+    path: &'a Path,
+    label: String,
+    render: Option<Vec<u8>>,
+    private: bool,
+}
 
 fn note_unsupported_repo(detection: &Detection, notes: &mut Vec<String>) {
     if detection.languages.is_empty() {
@@ -491,9 +543,14 @@ fn stage_and_commit<'a>(
     files_written: &mut Vec<String>,
 ) -> Result<(), InitError> {
     let mut staged = Vec::new();
-    for (path, label, render) in planned {
-        if let Some(bytes) = render {
-            staged.push((stage_write(path, &bytes)?, label));
+    for write in planned {
+        if let Some(bytes) = write.render {
+            let handle = if write.private {
+                stage_private_write(write.path, &bytes)?
+            } else {
+                stage_write(write.path, &bytes)?
+            };
+            staged.push((handle, write.label));
         }
     }
     for (handle, label) in staged {

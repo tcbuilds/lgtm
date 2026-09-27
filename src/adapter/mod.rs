@@ -16,7 +16,63 @@ pub use pi::PiAdapter;
 
 use std::io::Write;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// The only approval capability currently negotiated by the Pi adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalCapability {
+    /// Pi finding approval protocol version 1.
+    PiFindingApprovalV1,
+}
+
+impl ApprovalCapability {
+    pub const NAME: &'static str = "lgtm-pi-finding-approval";
+    pub const VERSION: u64 = 1;
+
+    /// Parse the exact wire object; unknown fields and versions are unsupported.
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        if object.len() != 2
+            || object.get("name").and_then(Value::as_str) != Some(Self::NAME)
+            || object.get("version").and_then(Value::as_u64) != Some(Self::VERSION)
+        {
+            return None;
+        }
+        Some(Self::PiFindingApprovalV1)
+    }
+
+    /// Return the canonical wire representation used by the normalized Pi input.
+    pub fn as_value(self) -> Value {
+        match self {
+            Self::PiFindingApprovalV1 => serde_json::json!({
+                "name": Self::NAME,
+                "version": Self::VERSION,
+            }),
+        }
+    }
+}
+
+/// One redacted candidate shown by the live Pi confirmation UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiApprovalFinding {
+    pub rule_id: String,
+    pub path: String,
+    pub start_line: u64,
+    pub start_column: u64,
+    pub end_line: u64,
+    pub end_column: u64,
+    pub candidate_id: String,
+}
+
+/// Exact, redacted identity of one pending staged-commit assessment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiApprovalChallenge {
+    pub identity: String,
+    pub findings: Vec<PiApprovalFinding>,
+}
 
 /// Lifecycle events lgtm can normalize across harnesses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +128,8 @@ pub struct HookRequest {
     pub agent_type: Option<String>,
     /// Whether Codex already continued this hook, when present.
     pub stop_hook_active: Option<bool>,
+    /// A strictly validated capability advertised by a supported caller.
+    pub approval_capability: Option<ApprovalCapability>,
 }
 
 /// A normalized, closed set of hook outcomes.
@@ -104,6 +162,9 @@ pub enum HookResponse {
         /// The feedback and remediation text for the agent.
         reason: String,
     },
+    /// Ask a verified Pi extension to obtain native confirmation for exact
+    /// redacted staged-commit findings.
+    FindingApprovalRequired(PiApprovalChallenge),
     /// Report a clean completion summary without changing the decision.
     Summary(String),
 }

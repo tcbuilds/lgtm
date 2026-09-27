@@ -1,29 +1,4 @@
-//! Pi extension generation for project and global installation scopes.
-
-use std::path::{Path, PathBuf};
-
-use serde_json::to_string;
-use sha2::{Digest, Sha256};
-
-use super::{InitError, fs::read_if_exists};
-
-const OWNED_START: &str = "// lgtm-pi-extension: v1";
-const OWNED_END: &str = "// lgtm-pi-extension: end";
-// Only known canonical revisions may cross the ownership boundary during an
-// upgrade. The b45c/ed0f entries are the v0.10.1 Pi 0.84.2 project/global
-// templates.
-const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
-    "524b3d58c2f839420c14f8ec081855ea3499d4e219d1f5c4c131fe4051d28c2c",
-    "a6719ad16be1e48543acb3ae7014afa6b1361d4b85110cd56350807798cb2caa",
-    "b45c8c6756955338325fd4d80386523b846b14cc6066a07dc506ce71219079ca",
-    "becaa0ca4bc7006cd2d30c9844d24d063ec76e1a69af32725e5967d854a51793",
-    "ed0ff523f79e64c395184b3b3253a90b3643e088863ef683c60baa45699b1df3",
-    "9214f126c80ebe905f7c9b3441c36c4cd5dbeed8a4cf2d64359f002dff44826c",
-    "fe98f5b39be7610f8b2ba9286d9637cb45a25205de018b915ccfbcc1ac284a71",
-    "fdbd8826b5446203b0b749524a8905cbd50999a6b64f2fdc692e28b05e027512",
-    "ec19a05c2caef1c3f0a18c149642c0df1617b0645782f905de87ec007320384b",
-];
-const EXTENSION_TEMPLATE: &str = r#"// lgtm-pi-extension: v1
+// lgtm-pi-extension: v1
 // lgtm-pi-scope: __LGTM_SCOPE__
 
 import { dirname, join, resolve } from "node:path";
@@ -41,17 +16,8 @@ const MAX_INPUT_BYTES = 1024 * 1024;
 const TOOL_INPUT_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const NORMAL_TIMEOUT_MS = 10_000;
-const PRE_TOOL_TIMEOUT_MS = 310_000;
+const PRE_TOOL_TIMEOUT_MS = 40_000;
 const POLICY_INPUT_MARKER = "lgtm-pi-policy-input-v1";
-const APPROVAL_CAPABILITY = Object.freeze({
-  name: "lgtm-pi-finding-approval",
-  version: 1,
-});
-const APPROVAL_PROTOCOL = "lgtm-pi-finding-approval";
-const APPROVAL_CONFIRM_TIMEOUT_MS = 30_000;
-const MAX_APPROVAL_FINDINGS = 32;
-const MAX_APPROVAL_TEXT_BYTES = 512;
-const MAX_APPROVAL_COORDINATE = 1_000_000_000;
 const FAILURE_ENTRY = "lgtm";
 const TOOL_CONTRACTS = {
   read: { required: ["path"], properties: { path: "string", offset: "number", limit: "number" } },
@@ -383,7 +349,6 @@ function buildPayload(eventType, event, ctx, pi) {
   } else if (eventType === "tool_call") {
     payload.toolName = event.toolName;
     payload.input = policyToolInput(event.toolName, event.input);
-    payload.approvalCapability = APPROVAL_CAPABILITY;
   } else if (eventType === "tool_result") {
     payload.toolName = event.toolName;
     payload.input = policyToolInput(event.toolName, event.input);
@@ -537,9 +502,6 @@ function validateResponse(eventType, response) {
     return "response_not_object";
   }
   if (eventType === "tool_call") {
-    if (Object.prototype.hasOwnProperty.call(response, "approval")) {
-      return validApprovalResponse(response) ? undefined : "invalid_approval_response";
-    }
     if (responseKeys(response) !== "block\u0000reason"
         || response.block !== true || typeof response.reason !== "string"
         || !withinJsonBudget(response, 4096)) return "invalid_tool_call_response";
@@ -556,78 +518,6 @@ function validateResponse(eventType, response) {
     return undefined;
   }
   return "unexpected_response";
-}
-
-function validApprovalResponse(response) {
-  if (responseKeys(response) !== "approval\u0000block\u0000reason"
-      || response.block !== true
-      || typeof response.reason !== "string"
-      || boundedReason(response.reason) !== response.reason
-      || !withinJsonBudget(response, 64 * 1024)) return false;
-  const approval = response.approval;
-  if (!approval || typeof approval !== "object" || Array.isArray(approval)
-      || responseKeys(approval) !== "findings\u0000identity\u0000protocol\u0000version"
-      || approval.protocol !== APPROVAL_PROTOCOL || approval.version !== 1
-      || typeof approval.identity !== "string"
-      || !/^[0-9a-f]{64}$/.test(approval.identity)
-      || !Array.isArray(approval.findings)
-      || approval.findings.length < 1
-      || approval.findings.length > MAX_APPROVAL_FINDINGS) return false;
-  return approval.findings.every((finding) => {
-    if (!finding || typeof finding !== "object" || Array.isArray(finding)
-        || responseKeys(finding) !== "candidateId\u0000endColumn\u0000endLine\u0000path\u0000ruleId\u0000startColumn\u0000startLine"
-        || finding.ruleId !== "generic-api-key"
-        || typeof finding.path !== "string"
-        || finding.path.length === 0
-        || Buffer.byteLength(finding.path, "utf8") > MAX_APPROVAL_TEXT_BYTES
-        || /[\u0000-\u001f\u007f]/.test(finding.path)
-        || typeof finding.candidateId !== "string"
-        || !/^[0-9a-f]{64}$/.test(finding.candidateId)) return false;
-    return [finding.startLine, finding.startColumn, finding.endLine, finding.endColumn]
-      .every((coordinate) => Number.isSafeInteger(coordinate)
-        && coordinate >= 0 && coordinate <= MAX_APPROVAL_COORDINATE);
-  });
-}
-
-function approvalChallenge(response) {
-  return response && typeof response === "object" && !Array.isArray(response)
-    && response.block === true && response.approval && validApprovalResponse(response)
-    ? response.approval
-    : undefined;
-}
-
-function sameApprovalChallenge(left, right) {
-  if (!left || !right || left.identity !== right.identity
-      || left.findings.length !== right.findings.length) return false;
-  return left.findings.every((finding, index) => {
-    const other = right.findings[index];
-    return finding.ruleId === other.ruleId
-      && finding.path === other.path
-      && finding.startLine === other.startLine
-      && finding.startColumn === other.startColumn
-      && finding.endLine === other.endLine
-      && finding.endColumn === other.endColumn
-      && finding.candidateId === other.candidateId;
-  });
-}
-
-function approvalPromptMessage(challenge) {
-  const lines = challenge.findings.map((finding) =>
-    `- ${finding.ruleId} at ${finding.path}:${finding.startLine}:${finding.startColumn} (candidate ${finding.candidateId.slice(0, 16)})`);
-  return [
-    "LGTM found redacted heuristic findings in the staged commit.",
-    "Approve only these exact candidates?",
-    ...lines,
-  ].join("\n");
-}
-
-function isDirectCommitCandidate(event) {
-  const command = event?.toolName === "bash" ? event.input?.command : undefined;
-  return typeof command === "string" && /(^|\s)git\s+commit(?:\s|$)/.test(command);
-}
-
-function blocked(reason) {
-  return { block: true, reason: boundedReason(reason) };
 }
 
 function validToolResultContentItem(item) {
@@ -662,62 +552,8 @@ function mergeToolResult(event, response) {
   };
 }
 
-async function confirmAndRevalidateApproval(
-  root,
-  event,
-  ctx,
-  payload,
-  challenge,
-  approvalState,
-) {
-  if (ctx.mode !== "tui" || ctx.hasUI !== true || typeof ctx.ui?.confirm !== "function") {
-    return blocked("Pi native confirmation is unavailable; staged commit denied");
-  }
-  const confirmedSessionId = sessionId(ctx);
-  if (typeof confirmedSessionId !== "string" || confirmedSessionId.length === 0) {
-    return blocked("Pi session attestation is unavailable; staged commit denied");
-  }
-  let confirmed = false;
+async function handle(pi, eventType, event, ctx) {
   try {
-    confirmed = await ctx.ui.confirm(
-      "LGTM staged commit confirmation",
-      approvalPromptMessage(challenge),
-      { timeout: APPROVAL_CONFIRM_TIMEOUT_MS, signal: ctx.signal },
-    );
-  } catch {
-    return blocked("Pi native confirmation failed; staged commit denied");
-  }
-  if (confirmed !== true || sessionId(ctx) !== confirmedSessionId) {
-    return blocked("staged commit heuristic findings were not confirmed");
-  }
-
-  approvalState.live = { sessionId: confirmedSessionId, challenge };
-  let retry;
-  try {
-    retry = await invoke(LGTM_BINARY, root, "tool_call", payload);
-  } finally {
-    approvalState.live = undefined;
-  }
-  if (sessionId(ctx) !== confirmedSessionId || retry.failure || retry.diagnostics) {
-    return blocked("staged commit approval could not be revalidated; commit denied");
-  }
-  if (retry.response === undefined) return undefined;
-  const retryChallenge = approvalChallenge(retry.response);
-  if (retryChallenge && sameApprovalChallenge(challenge, retryChallenge)) return undefined;
-  if (retryChallenge) {
-    return blocked("staged commit findings changed during confirmation; commit denied");
-  }
-  return retry.response;
-}
-
-async function handle(pi, eventType, event, ctx, approvalState) {
-  try {
-    const currentSessionId = sessionId(ctx);
-    if (eventType === "session_start"
-        || (approvalState.sessionId && approvalState.sessionId !== currentSessionId)) {
-      approvalState.live = undefined;
-    }
-    approvalState.sessionId = currentSessionId;
     const root = resolveScopeRoot(ctx.cwd);
     if (!root) return undefined;
     const policyEvent = eventType === "tool_call" || eventType === "tool_result";
@@ -752,38 +588,12 @@ async function handle(pi, eventType, event, ctx, approvalState) {
       appendFailure(pi, ctx, eventType, "tool_provenance_unverified");
       return undefined;
     }
-    const payload = buildPayload(eventType, event, ctx, pi);
-    const result = await invoke(LGTM_BINARY, root, eventType, payload);
+    const result = await invoke(LGTM_BINARY, root, eventType, buildPayload(eventType, event, ctx, pi));
     if (result.failure) {
       appendFailure(pi, ctx, eventType, result.failure);
-      if (result.failure === "invalid_approval_response") {
-        return blocked("Pi approval response was malformed; staged commit denied");
-      }
-      if (eventType === "tool_call" && isDirectCommitCandidate(event)) {
-        return blocked("LGTM could not verify the staged commit; commit denied");
-      }
       return undefined;
     }
-    if (result.diagnostics) {
-      appendFailure(pi, ctx, eventType, "child_diagnostics");
-      if (eventType === "tool_call"
-          && (isDirectCommitCandidate(event) || approvalChallenge(result.response))) {
-        return blocked("LGTM diagnostics made staged commit approval unverified; commit denied");
-      }
-    }
-    if (eventType === "tool_call") {
-      const challenge = approvalChallenge(result.response);
-      if (challenge) {
-        return confirmAndRevalidateApproval(
-          root,
-          event,
-          ctx,
-          payload,
-          challenge,
-          approvalState,
-        );
-      }
-    }
+    if (result.diagnostics) appendFailure(pi, ctx, eventType, "child_diagnostics");
     return eventType === "tool_result" ? mergeToolResult(event, result.response) : result.response;
   } catch {
     appendFailure(pi, ctx, eventType, "handler");
@@ -795,267 +605,10 @@ export default function lgtm(pi) {
   if (SCOPE === "project" && projectBinaryIsRunnable() && projectTemplateIsCanonical()) {
     globalThis[PROJECT_SCOPE_LOADED] = true;
   }
-  const approvalState = { sessionId: undefined, live: undefined };
-  pi.on("session_start", (event, ctx) =>
-    handle(pi, "session_start", event, ctx, approvalState));
-  pi.on("tool_call", (event, ctx) =>
-    handle(pi, "tool_call", event, ctx, approvalState));
-  pi.on("tool_result", (event, ctx) =>
-    handle(pi, "tool_result", event, ctx, approvalState));
-  pi.on("agent_settled", (event, ctx) =>
-    handle(pi, "agent_settled", event, ctx, approvalState));
+  pi.on("session_start", (event, ctx) => handle(pi, "session_start", event, ctx));
+  pi.on("tool_call", (event, ctx) => handle(pi, "tool_call", event, ctx));
+  pi.on("tool_result", (event, ctx) => handle(pi, "tool_result", event, ctx));
+  pi.on("agent_settled", (event, ctx) => handle(pi, "agent_settled", event, ctx));
 }
 
 // lgtm-pi-extension: end
-"#;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExtensionScope {
-    Project,
-    Global,
-}
-
-impl ExtensionScope {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Project => "project",
-            Self::Global => "global",
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct ExtensionPlan {
-    pub(crate) target: PathBuf,
-    pub(crate) backup: PathBuf,
-    pub(crate) target_contents: Option<Vec<u8>>,
-    pub(crate) backup_contents: Option<Vec<u8>>,
-    pub(crate) preserved_collision: bool,
-}
-
-pub(crate) fn hook_binary() -> Result<String, InitError> {
-    if let Some(binary) = std::env::var_os("LGTM_HOOK_BINARY") {
-        let path = PathBuf::from(binary);
-        if !path.is_absolute() {
-            return Err(InitError::UnwritableTarget {
-                path,
-                reason: "Pi extension binary must be an absolute path".to_string(),
-            });
-        }
-        return Ok(path.to_string_lossy().into_owned());
-    }
-    std::env::current_exe()
-        .map(|path| path.to_string_lossy().into_owned())
-        .map_err(|source| InitError::Read {
-            path: PathBuf::from("current executable"),
-            source,
-        })
-}
-
-pub(crate) fn render(binary: &str, scope: ExtensionScope) -> Result<Vec<u8>, InitError> {
-    let binary_digest = digest_binary(Path::new(binary));
-    let binary = to_string(binary).map_err(|error| InitError::MalformedGuidance {
-        path: PathBuf::from(".pi/extensions/lgtm.ts"),
-        reason: format!("could not encode binary path: {error}"),
-    })?;
-    let project_digest = expected_template_digest(ExtensionScope::Project);
-    let scope_digest = expected_template_digest(scope);
-    Ok(EXTENSION_TEMPLATE
-        .replace("__LGTM_BINARY__", &binary)
-        .replace("__LGTM_SCOPE__", scope.as_str())
-        .replace("__LGTM_TEMPLATE_DIGEST__", &scope_digest)
-        .replace("__LGTM_PROJECT_TEMPLATE_DIGEST__", &project_digest)
-        .replace("__LGTM_BINARY_DIGEST__", &binary_digest)
-        .into_bytes())
-}
-
-pub(crate) fn expected_template_digest(scope: ExtensionScope) -> String {
-    let canonical = EXTENSION_TEMPLATE.replace("__LGTM_SCOPE__", scope.as_str());
-    digest(&normalize_template(&canonical))
-}
-
-pub(crate) fn plan(
-    target: &Path,
-    backup: &Path,
-    binary: &str,
-    scope: ExtensionScope,
-) -> Result<ExtensionPlan, InitError> {
-    let generated = render(binary, scope)?;
-    let existing = read_if_exists(target)?;
-    let backup_contents_existing = read_if_exists(backup)?;
-    let backup_is_owned = backup_contents_existing
-        .as_deref()
-        .is_none_or(|contents| owned_template(contents, &generated, scope));
-    let backup_exists = backup_contents_existing.is_some();
-    let (target_contents, backup_contents, preserved_collision) = match existing {
-        None => (Some(generated), None, false),
-        Some(existing) if existing.as_bytes() == generated.as_slice() => (None, None, false),
-        Some(existing) if owned_template(&existing, &generated, scope) => {
-            if !backup_is_owned {
-                return Err(InitError::UnwritableTarget {
-                    path: backup.to_path_buf(),
-                    reason: "existing Pi backup is not a canonical LGTM extension".to_string(),
-                });
-            }
-            (
-                Some(generated),
-                (!backup_exists).then_some(existing.into_bytes()),
-                false,
-            )
-        }
-        Some(existing) if existing.contains(OWNED_START) || existing.contains(OWNED_END) => {
-            return Err(InitError::MalformedGuidance {
-                path: target.to_path_buf(),
-                reason: "Pi extension has incomplete or mismatched LGTM ownership markers"
-                    .to_string(),
-            });
-        }
-        Some(_) => (None, None, true),
-    };
-    Ok(ExtensionPlan {
-        target: target.to_path_buf(),
-        backup: backup.to_path_buf(),
-        target_contents,
-        backup_contents,
-        preserved_collision,
-    })
-}
-
-fn owned_template(contents: &str, generated: &[u8], scope: ExtensionScope) -> bool {
-    let Ok(generated) = std::str::from_utf8(generated) else {
-        return false;
-    };
-    contents.contains(OWNED_START)
-        && contents.contains(OWNED_END)
-        && contents.contains(&format!("// lgtm-pi-scope: {}", scope.as_str()))
-        && (normalize_template(contents) == normalize_template(generated)
-            || KNOWN_TEMPLATE_DIGESTS
-                .iter()
-                .any(|known| *known == digest(&normalize_template(contents))))
-}
-
-pub(crate) fn normalize_for_attestation(contents: &str) -> String {
-    normalize_template(contents)
-}
-
-fn normalize_template(contents: &str) -> String {
-    contents
-        .replace("\r\n", "\n")
-        .lines()
-        .map(|line| {
-            if line.starts_with("const LGTM_BINARY = ") {
-                "const LGTM_BINARY = __LGTM_BINARY__;"
-            } else if line.starts_with("const BINARY_DIGEST = ") {
-                "const BINARY_DIGEST = \"__LGTM_BINARY_DIGEST__\";"
-            } else if line.starts_with("const TEMPLATE_DIGEST = ") {
-                "const TEMPLATE_DIGEST = \"__LGTM_TEMPLATE_DIGEST__\";"
-            } else if line.starts_with("const PROJECT_TEMPLATE_DIGEST = ") {
-                "const PROJECT_TEMPLATE_DIGEST = \"__LGTM_PROJECT_TEMPLATE_DIGEST__\";"
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn digest(contents: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(contents.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
-
-fn digest_binary(path: &Path) -> String {
-    let Ok(metadata) = std::fs::symlink_metadata(path) else {
-        return String::new();
-    };
-    if !metadata.is_file() || metadata.len() > 128 * 1024 * 1024 {
-        return String::new();
-    }
-    let Ok(bytes) = std::fs::read(path) else {
-        return String::new();
-    };
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const CURRENT_ARRAY_CHECK: &str = r#"  if (!property || typeof property !== "object" || Array.isArray(property)) return false;
-  const hasDescription = Object.prototype.hasOwnProperty.call(property, "description");
-  if (!sameKeys(property, hasDescription ? ["type", "items", "description"] : ["type", "items"])
-      || (hasDescription && typeof property.description !== "string")
-      || property.type !== expected.type || !property.items"#;
-    const V0101_ARRAY_CHECK: &str = r#"  if (!property || !sameKeys(property, ["type", "items"])
-      || property.type !== expected.type || !property.items"#;
-    const CURRENT_MARKER_LOOKUP: &str = r#"    const sessionEntryId = ctx.sessionManager?.getEntries?.()
-      .find((entry) => entry?.type === "custom"
-        && entry.customType === "lgtm-runtime"
-        && entry.data?.nonce === nonce)?.id;"#;
-    const V0110_MARKER_LOOKUP: &str =
-        r#"    const sessionEntryId = ctx.sessionManager?.getLeafId?.();"#;
-    const CURRENT_POLICY_ORDER: &str = r#"      const supported = eventType === "tool_call"
-        ? ["bash", "edit", "write"].includes(event.toolName)
-        : ["read", "edit", "write"].includes(event.toolName);
-      if (!supported) return undefined;
-      if (!verifiedToolContract(pi, event)) {
-        appendFailure(pi, ctx, eventType, "tool_provenance_unverified");
-        return undefined;
-      }"#;
-    const V0110_POLICY_ORDER: &str = r#"      if (!verifiedToolContract(pi, event)) {
-        appendFailure(pi, ctx, eventType, "tool_provenance_unverified");
-        return undefined;
-      }
-      const supported = eventType === "tool_call"
-        ? ["bash", "edit", "write"].includes(event.toolName)
-        : ["read", "edit", "write"].includes(event.toolName);
-      if (!supported) return undefined;"#;
-
-    #[test]
-    fn v0101_project_and_global_templates_remain_upgradeable() {
-        for (scope, expected_digest) in [
-            (
-                ExtensionScope::Project,
-                "b45c8c6756955338325fd4d80386523b846b14cc6066a07dc506ce71219079ca",
-            ),
-            (
-                ExtensionScope::Global,
-                "ed0ff523f79e64c395184b3b3253a90b3643e088863ef683c60baa45699b1df3",
-            ),
-        ] {
-            let old = include_str!("../../tests/fixtures/pi-v0120-extension.txt")
-                .replace("__LGTM_SCOPE__", scope.as_str())
-                .replace(
-                    "const PI_VERSION = \"0.84.3\";",
-                    "const PI_VERSION = \"0.84.2\";",
-                )
-                .replace(
-                    "const PRE_TOOL_TIMEOUT_MS = 310_000;",
-                    "const PRE_TOOL_TIMEOUT_MS = 40_000;",
-                )
-                .replace(CURRENT_ARRAY_CHECK, V0101_ARRAY_CHECK)
-                .replace(CURRENT_MARKER_LOOKUP, V0110_MARKER_LOOKUP)
-                .replace(CURRENT_POLICY_ORDER, V0110_POLICY_ORDER);
-            assert_eq!(digest(&normalize_template(&old)), expected_digest);
-            let current = render("/opt/lgtm", scope).expect("current template renders");
-            assert!(owned_template(&old, &current, scope));
-        }
-    }
-
-    #[test]
-    fn previous_pi_timeout_templates_remain_upgradeable() {
-        for scope in [ExtensionScope::Project, ExtensionScope::Global] {
-            let old = include_str!("../../tests/fixtures/pi-v0120-extension.txt")
-                .replace("__LGTM_SCOPE__", scope.as_str())
-                .replace(
-                    "const PRE_TOOL_TIMEOUT_MS = 310_000;",
-                    "const PRE_TOOL_TIMEOUT_MS = 40_000;",
-                );
-            let current = render("/opt/lgtm", scope).expect("current template renders");
-            assert!(owned_template(&old, &current, scope));
-        }
-    }
-}

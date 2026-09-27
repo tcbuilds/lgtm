@@ -1295,6 +1295,9 @@ fn normalize_pi_payload(raw: &str, request: &lgtm::adapter::HookRequest) -> Resu
         "tool_name".to_string(),
         serde_json::json!(canonical_pi_tool_name(tool_name)),
     );
+    if let Some(capability) = request.approval_capability {
+        object.insert("approval_capability".to_string(), capability.as_value());
+    }
     let mut normalized = serde_json::Map::new();
     match tool_name {
         "Bash" => {
@@ -1607,6 +1610,30 @@ mod tests {
         assert!(normalized.contains("secret.txt"));
         assert!(!normalized.contains("oldText"));
         assert!(!normalized.contains("newText"));
+    }
+
+    #[test]
+    fn generated_pi_capability_is_preserved_only_when_exactly_supported() {
+        use lgtm::adapter::{ApprovalCapability, HookAdapter, HookEvent, PiAdapter};
+
+        let raw = r#"{"type":"tool_call","toolName":"bash","input":{"command":"git commit -m test","__lgtmPolicyInput":"lgtm-pi-policy-input-v1"},"cwd":"/repo","sessionId":"session","approvalCapability":{"name":"lgtm-pi-finding-approval","version":1}}"#;
+        let request = PiAdapter
+            .parse_request(HookEvent::PreToolUse, raw)
+            .expect("capability payload parses");
+        assert_eq!(
+            request.approval_capability,
+            Some(ApprovalCapability::PiFindingApprovalV1)
+        );
+        let normalized = normalize_pi_payload(raw, &request).expect("payload normalizes");
+        assert!(normalized.contains("approval_capability"));
+        assert!(normalized.contains("lgtm-pi-finding-approval"));
+
+        let unknown = raw.replace("\"version\":1", "\"version\":2");
+        let request = PiAdapter
+            .parse_request(HookEvent::PreToolUse, &unknown)
+            .expect("unknown capability remains parseable");
+        let normalized = normalize_pi_payload(&unknown, &request).expect("payload normalizes");
+        assert!(!normalized.contains("approval_capability"));
     }
 
     #[test]

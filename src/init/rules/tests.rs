@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 use sha2::{Digest, Sha256};
 
 use super::super::template_digests::{
-    CURRENT_GENERATED_DOCUMENT_DIGESTS, CURRENT_TEMPLATE_DIGESTS, current_template_digest,
+    CURRENT_GENERATED_DOCUMENT_DIGESTS, CURRENT_TEMPLATE_DIGESTS, LEGACY_TEMPLATE_DIGESTS,
+    current_template_digest,
 };
 
 fn temp_root(name: &str) -> std::path::PathBuf {
@@ -214,6 +215,12 @@ fn crlf_copy_of_current_template_is_unchanged() {
 }
 
 #[test]
+fn standalone_carriage_returns_are_not_treated_as_line_ending_equivalent() {
+    assert!(same_template_line_endings(b"one\r\ntwo", b"one\ntwo"));
+    assert!(!same_template_line_endings(b"one\rtwo", b"one\ntwo"));
+}
+
+#[test]
 fn crlf_copy_of_prior_release_template_is_upgraded() {
     let root = temp_root("crlf-legacy");
     let target = root.join(".claude/rules/standards.md");
@@ -230,17 +237,166 @@ fn crlf_copy_of_prior_release_template_is_upgraded() {
 }
 
 #[test]
-fn edited_files_are_kept_rather_than_overwritten() {
+fn edited_named_rule_is_replaced_with_current_frontmatter_and_backed_up() {
     let root = temp_root("edited");
     install(&root).expect("first");
     let edited = root.join(".claude/rules/rust.md");
-    std::fs::write(&edited, "---\npaths:\n  - \"**/*.rs\"\n---\n\n# Local\n").expect("edit");
-    let second = install(&root).expect("second");
-    assert!(second.kept.contains(&"rust.md".to_string()));
-    assert!(
-        std::fs::read_to_string(&edited)
-            .expect("read")
-            .contains("# Local")
+    let local = "---\ndescription: Local Rust rules\npaths:\n  - \"**/*.rs\"\n---\n\n# Local\n";
+    std::fs::write(&edited, local).expect("edit");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&edited, std::fs::Permissions::from_mode(0o600))
+            .expect("restrictive rule mode");
+    }
+    let backup = edited.with_file_name(format!(
+        "rust.md.{:x}.bak",
+        Sha256::digest(local.as_bytes())
+    ));
+
+    let second = install(&root).expect("replace edited rule");
+    assert!(second.updated.contains(&"rust.md".to_string()));
+    assert_eq!(
+        std::fs::read(&edited).expect("read current"),
+        TEMPLATES
+            .iter()
+            .find(|(path, _)| *path == "rust.md")
+            .expect("rust template")
+            .1
+            .as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(&backup).expect("read backup"),
+        local.as_bytes()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&backup)
+                .expect("backup metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    let third = install(&root).expect("second replacement");
+    assert!(third.updated.is_empty());
+    assert!(third.unchanged.contains(&"rust.md".to_string()));
+    assert_eq!(
+        std::fs::read(&backup).expect("read backup"),
+        local.as_bytes()
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn successive_different_rule_edits_preserve_both_content_addressed_backups() {
+    let root = temp_root("successive-backups");
+    install(&root).expect("first");
+    let target = root.join(".claude/rules/rust.md");
+    let first = "# First local rule\n";
+    let second = "# Second local rule\n";
+    std::fs::write(&target, first).expect("first edit");
+    install(&root).expect("first refresh");
+    std::fs::write(&target, second).expect("second edit");
+    install(&root).expect("second refresh");
+
+    let first_backup = target.with_file_name(format!(
+        "rust.md.{:x}.bak",
+        Sha256::digest(first.as_bytes())
+    ));
+    let second_backup = target.with_file_name(format!(
+        "rust.md.{:x}.bak",
+        Sha256::digest(second.as_bytes())
+    ));
+    assert_eq!(
+        std::fs::read(first_backup).expect("first backup"),
+        first.as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(second_backup).expect("second backup"),
+        second.as_bytes()
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn custom_rule_filename_is_preserved_when_shipped_rules_are_refreshed() {
+    let root = temp_root("custom-file");
+    let custom = root.join(".claude/rules/custom.md");
+    std::fs::create_dir_all(custom.parent().expect("rules directory")).expect("create rules");
+    std::fs::write(&custom, "# Custom rule\n").expect("write custom rule");
+
+    install(&root).expect("install shipped rules");
+
+    assert_eq!(
+        std::fs::read(&custom).expect("read custom"),
+        b"# Custom rule\n"
+    );
+    assert!(!custom.with_file_name("custom.md.bak").exists());
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn differing_rule_backup_blocks_a_replacement_without_clobbering_either_file() {
+    let root = temp_root("backup-collision");
+    install(&root).expect("first");
+    let target = root.join(".claude/rules/rust.md");
+    let local = b"# Local rule\n";
+    let backup = root.join(format!(
+        ".claude/rules/rust.md.{:x}.bak",
+        Sha256::digest(local)
+    ));
+    std::fs::write(&target, local).expect("edit rule");
+    std::fs::write(&backup, "# Previous backup\n").expect("write foreign backup");
+
+    let error = install(&root).expect_err("differing backup must refuse replacement");
+
+    assert!(error.contains("existing rule backup differs"));
+    assert_eq!(
+        std::fs::read(&target).expect("read target"),
+        b"# Local rule\n"
+    );
+    assert_eq!(
+        std::fs::read(&backup).expect("read backup"),
+        b"# Previous backup\n"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn pi_refreshes_shipped_rules_but_preserves_custom_agents_guidance() {
+    let root = temp_root("pi-refresh");
+    let target = root.join(".claude/rules/rust.md");
+    std::fs::create_dir_all(target.parent().expect("rules directory")).expect("create rules");
+    let old_rule = b"---\ndescription: Old Rust\n---\n# Local\n";
+    std::fs::write(&target, old_rule).expect("old rule");
+    std::fs::write(root.join("AGENTS.md"), "# House rules\n").expect("house rules");
+
+    let outcome = install_pi_guidance(&root).expect("Pi guidance install");
+
+    assert!(outcome.updated.contains(&"rust.md".to_string()));
+    let agents = std::fs::read_to_string(root.join("AGENTS.md")).expect("read agents");
+    assert!(agents.starts_with(
+        "# House rules\n\n<!-- lgtm-pi-guidance:start -->\n<!-- lgtm-entry-document: standards-v1 -->\n# Engineering Standards"
+    ));
+    assert!(agents.ends_with("<!-- lgtm-pi-guidance:end -->\n"));
+    assert_eq!(
+        std::fs::read(&target).expect("read current"),
+        TEMPLATES
+            .iter()
+            .find(|(path, _)| *path == "rust.md")
+            .expect("rust template")
+            .1
+            .as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(target.with_file_name(format!("rust.md.{:x}.bak", Sha256::digest(old_rule))))
+            .expect("read backup"),
+        old_rule
     );
     std::fs::remove_dir_all(root).ok();
 }

@@ -4,12 +4,16 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "commit.rs"]
+pub(crate) mod commit;
 #[path = "report.rs"]
 pub(crate) mod report;
 #[path = "result.rs"]
 mod result;
 #[path = "runner.rs"]
 pub(crate) mod runner;
+
+pub(crate) use commit::{CommitAssessment, assess_commit};
 
 use report::{ReportDir, ScanOutcome};
 use result::{failed, passed, passed_with_version, unverified};
@@ -135,11 +139,11 @@ fn run_gitleaks(binary: &str, file: &str, deadline: Instant) -> ScanOutcome {
 fn tool_version_until(binary: &str, deadline: Instant) -> Option<String> {
     let mut command = Command::new(binary);
     command.arg("version").stdin(Stdio::null());
-    let (code, stdout) = runner::run_captured_with_deadline(command, deadline)?;
-    if code != Some(0) {
+    let captured = runner::run_details_with_deadline(command, deadline)?;
+    if captured.process_group_survived || captured.code != Some(0) {
         return None;
     }
-    let raw = String::from_utf8_lossy(&stdout);
+    let raw = String::from_utf8_lossy(&captured.stdout);
     let version = raw.trim();
     (!version.is_empty()).then(|| format!("gitleaks {version}"))
 }

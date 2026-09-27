@@ -39,6 +39,7 @@ impl HookAdapter for ClaudeAdapter {
             agent_id: string_field(&value, "agent_id"),
             agent_type: string_field(&value, "agent_type"),
             stop_hook_active: value.get("stop_hook_active").and_then(Value::as_bool),
+            approval_capability: None,
         })
     }
 
@@ -72,6 +73,9 @@ impl HookAdapter for ClaudeAdapter {
                 HookEvent::PostToolUse => block(event, &reason),
                 _ => Err(invalid_combination(event, "PostToolFeedback")),
             },
+            HookResponse::FindingApprovalRequired(_) => {
+                Err(invalid_combination(event, "FindingApprovalRequired"))
+            }
             HookResponse::Summary(summary) => match event {
                 HookEvent::Stop => Ok(EncodedResponse {
                     body: summary,

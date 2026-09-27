@@ -1,4 +1,7 @@
 use serde::Deserialize;
+use serde_json::Value;
+
+use crate::adapter::ApprovalCapability;
 
 pub(super) const MAX_PAYLOAD_BYTES: u64 = 256 * 1_024;
 
@@ -7,6 +10,8 @@ pub(super) struct HookInput {
     pub cwd: Option<String>,
     pub session_id: Option<String>,
     pub tool_name: Option<String>,
+    #[serde(default)]
+    pub approval_capability: Option<Value>,
     #[serde(default)]
     pub tool_input: ToolInput,
 }
@@ -36,6 +41,13 @@ pub(super) fn requested_command(input: &HookInput) -> Option<&str> {
         .flatten()
 }
 
+pub(super) fn approval_capability(input: &HookInput) -> Option<ApprovalCapability> {
+    input
+        .approval_capability
+        .as_ref()
+        .and_then(ApprovalCapability::from_value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,6 +58,7 @@ mod tests {
             cwd: None,
             session_id: None,
             tool_name: Some("Edit".to_string()),
+            approval_capability: None,
             tool_input: ToolInput {
                 file_path: Some("src/lib.rs".to_string()),
                 command: None,
@@ -65,6 +78,7 @@ mod tests {
             cwd: None,
             session_id: None,
             tool_name: Some("Bash".to_string()),
+            approval_capability: None,
             tool_input: ToolInput {
                 file_path: None,
                 command: Some("cargo test".to_string()),
@@ -84,6 +98,7 @@ mod tests {
             cwd: None,
             session_id: None,
             tool_name: Some("Bash".to_string()),
+            approval_capability: None,
             tool_input: ToolInput {
                 file_path: None,
                 command: None,

@@ -51,7 +51,7 @@ Pi init writes the LGTM extension under `.pi/extensions/`, merges the pinned Pi 
 
 Pi packages and project extensions execute with the user's permissions. Review the generated files before trusting the project. Roll back by removing only LGTM's extension and generated package/server entries; do not delete either JSON file when it also contains user configuration.
 
-To take the standards as guidance with no hooks and nothing enforced, use `lgtm init --rules-only`. It writes `.claude/rules/` for Claude Code, or `AGENTS.md` with `--agent codex` or `--agent pi`.
+To take the standards as guidance with no hooks and nothing enforced, use `lgtm init --rules-only`. It writes `.claude/rules/` for Claude Code and Pi, or the concatenated `AGENTS.md` document with `--agent codex`. Shipped rule files are refreshed on init; changed files are saved once beside the rule as `<rule>.<sha256>.bak`, while custom filenames and Codex `AGENTS.md` content are preserved.
 
 ## Initialize All Harnesses Globally
 

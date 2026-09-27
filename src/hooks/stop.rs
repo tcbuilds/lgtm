@@ -7,8 +7,12 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::adapter::{ClaudeAdapter, HookAdapter, HookResponse, PiAdapter};
+use crate::adapter::{
+    ApprovalCapability, ClaudeAdapter, HookAdapter, HookResponse, PiAdapter, PiApprovalChallenge,
+    PiApprovalFinding,
+};
 use crate::checks::tiers::{self, Hook, Tier};
 use crate::checks::{EnforcementResult, Location, ResultEvidence, Status};
 use crate::checks::{commands, gitleaks, ruff, semgrep};
@@ -30,6 +34,10 @@ const CURRENT_TASK_PERSISTENCE_MESSAGE: &str =
 const CURRENT_TASK_RETENTION_REASON: &str = "current-task evidence was truncated at the bounded retention limit; repair or regenerate evidence";
 const CURRENT_TASK_RECORD_TRUNCATION_REASON: &str = "current-task evidence record details were truncated at a bounded limit; repair or regenerate evidence";
 const CURRENT_TASK_PERSISTENCE_REASON: &str = "current-task evidence could not be persisted within the bounded ledger limit; repair or regenerate evidence";
+const PI_PRE_COMMIT_GATE_BUDGET: Duration = Duration::from_secs(300);
+const MAX_PI_APPROVAL_FINDINGS: usize = 32;
+const MAX_PI_APPROVAL_TEXT_BYTES: usize = 512;
+const MAX_PI_APPROVAL_COORDINATE: u64 = 1_000_000_000;
 
 #[cfg(test)]
 thread_local! {
@@ -132,7 +140,8 @@ struct TaskEvidence<'a> {
 
 struct GateLimits {
     total_deadline: Option<Instant>,
-    precomputed_check_paths: Option<(Vec<String>, bool)>,
+    precomputed_check_paths: Option<(Vec<String>, CheckPathScanStatus)>,
+    commit_scope: bool,
 }
 
 struct EvidenceMeta<'a> {
@@ -215,18 +224,134 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
 /// Codex commit retry does not rerun unchanged tests. Deadline-bound Pi gates
 /// always rerun. `Ok(None)` means the commit may proceed; `Ok(Some(reason))`
 /// means the full gate found a blocking failure.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PreCommitGateDecision {
+    Allow,
+    Deny(String),
+    FindingApprovalRequired(PiApprovalChallenge),
+}
+
 pub(crate) fn run_pre_commit_gate_for_adapter(
     root: &Path,
     session_id: Option<&str>,
     harness: &str,
-) -> Result<Option<String>, String> {
-    let (command_budget, total_deadline) = if harness == "pi" {
-        let total = Duration::from_secs(30);
-        (total, Instant::now().checked_add(total))
+    commit_argv: &[String],
+    approval_capability: Option<ApprovalCapability>,
+) -> Result<PreCommitGateDecision, String> {
+    let command_budget = pre_commit_gate_budget(harness);
+    let total_deadline = (harness == "pi")
+        .then(|| Instant::now().checked_add(command_budget))
+        .flatten();
+    if let Some(reason) =
+        run_pre_commit_gate_with_scope(root, session_id, command_budget, total_deadline, true)?
+    {
+        return Ok(PreCommitGateDecision::Deny(reason));
+    }
+    let assessment = gitleaks::assess_commit(
+        root,
+        commit_argv,
+        session_id,
+        harness,
+        total_deadline.unwrap_or_else(|| {
+            Instant::now()
+                .checked_add(command_budget)
+                .unwrap_or_else(Instant::now)
+        }),
+    );
+    match assessment {
+        gitleaks::CommitAssessment::Pass { .. } => Ok(PreCommitGateDecision::Allow),
+        gitleaks::CommitAssessment::Deny { reason, .. } => Ok(PreCommitGateDecision::Deny(reason)),
+        gitleaks::CommitAssessment::PendingHeuristicApproval { identity, findings }
+            if harness == "pi"
+                && approval_capability == Some(ApprovalCapability::PiFindingApprovalV1) =>
+        {
+            match build_pi_approval_challenge(&identity.digest, &findings) {
+                Ok(challenge) => Ok(PreCommitGateDecision::FindingApprovalRequired(challenge)),
+                Err(reason) => Ok(PreCommitGateDecision::Deny(reason)),
+            }
+        }
+        assessment @ gitleaks::CommitAssessment::PendingHeuristicApproval { .. } => {
+            Ok(PreCommitGateDecision::Deny(assessment.blocking_reason()))
+        }
+    }
+}
+
+fn build_pi_approval_challenge(
+    identity: &str,
+    findings: &[gitleaks::commit::CommitFinding],
+) -> Result<PiApprovalChallenge, String> {
+    if identity.len() != 64 || !identity.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("staged commit heuristic assessment has an invalid identity".to_string());
+    }
+    if findings.is_empty() || findings.len() > MAX_PI_APPROVAL_FINDINGS {
+        return Err(
+            "staged commit heuristic findings exceed the bounded approval limit".to_string(),
+        );
+    }
+    let mut redacted = Vec::with_capacity(findings.len());
+    for finding in findings {
+        if finding.rule_id != "generic-api-key"
+            || finding.start_line > MAX_PI_APPROVAL_COORDINATE
+            || finding.start_column > MAX_PI_APPROVAL_COORDINATE
+            || finding.end_line > MAX_PI_APPROVAL_COORDINATE
+            || finding.end_column > MAX_PI_APPROVAL_COORDINATE
+        {
+            return Err(
+                "staged commit heuristic assessment contains an ineligible finding".to_string(),
+            );
+        }
+        validate_approval_text(&finding.file, "finding path")?;
+        redacted.push(PiApprovalFinding {
+            rule_id: finding.rule_id.clone(),
+            path: finding.file.clone(),
+            start_line: finding.start_line,
+            start_column: finding.start_column,
+            end_line: finding.end_line,
+            end_column: finding.end_column,
+            candidate_id: approval_candidate_id(finding),
+        });
+    }
+    Ok(PiApprovalChallenge {
+        identity: identity.to_string(),
+        findings: redacted,
+    })
+}
+
+fn validate_approval_text(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > MAX_PI_APPROVAL_TEXT_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(format!("staged commit {label} is not safely displayable"));
+    }
+    Ok(())
+}
+
+fn approval_candidate_id(finding: &gitleaks::commit::CommitFinding) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"lgtm.pi-finding-approval.candidate.v1");
+    for value in [
+        finding.rule_id.as_str(),
+        finding.file.as_str(),
+        &finding.start_line.to_string(),
+        &finding.start_column.to_string(),
+        &finding.end_line.to_string(),
+        &finding.end_column.to_string(),
+        finding.fingerprint.as_str(),
+        finding.blob_identity.as_str(),
+    ] {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn pre_commit_gate_budget(harness: &str) -> Duration {
+    if harness == "pi" {
+        PI_PRE_COMMIT_GATE_BUDGET
     } else {
-        (commands::STOP_COMMAND_BUDGET, None)
-    };
-    run_pre_commit_gate_with_limits(root, session_id, command_budget, total_deadline)
+        commands::STOP_COMMAND_BUDGET
+    }
 }
 
 #[cfg(test)]
@@ -238,17 +363,29 @@ fn run_pre_commit_gate_with_budget(
     run_pre_commit_gate_with_limits(root, session_id, command_budget, None)
 }
 
+#[cfg(test)]
 fn run_pre_commit_gate_with_limits(
     root: &Path,
     session_id: Option<&str>,
     command_budget: Duration,
     total_deadline: Option<Instant>,
 ) -> Result<Option<String>, String> {
-    let (paths, path_scan_incomplete) = check_paths_with_deadline(root, total_deadline)?;
+    run_pre_commit_gate_with_scope(root, session_id, command_budget, total_deadline, false)
+}
+
+fn run_pre_commit_gate_with_scope(
+    root: &Path,
+    session_id: Option<&str>,
+    command_budget: Duration,
+    total_deadline: Option<Instant>,
+    commit_scope: bool,
+) -> Result<Option<String>, String> {
+    let (paths, path_scan_status) = check_paths_with_deadline(root, total_deadline)?;
     // Deadline-bound Pi gates must rerun rather than authorize from a record
     // that may have crossed the deadline while it was being persisted.
-    if total_deadline.is_none()
-        && !path_scan_incomplete
+    if !commit_scope
+        && total_deadline.is_none()
+        && path_scan_status.is_complete()
         && matching_full_evidence(root, session_id, &paths).is_some()
     {
         return Ok(None);
@@ -270,7 +407,8 @@ fn run_pre_commit_gate_with_limits(
         true,
         GateLimits {
             total_deadline,
-            precomputed_check_paths: Some((paths, path_scan_incomplete)),
+            precomputed_check_paths: Some((paths, path_scan_status)),
+            commit_scope,
         },
     )?;
     if code == ExitCode::SUCCESS {
@@ -348,6 +486,7 @@ fn run_inner_with_budget(
         GateLimits {
             total_deadline: None,
             precomputed_check_paths: None,
+            commit_scope: false,
         },
     )
 }
@@ -364,6 +503,7 @@ fn run_inner_with_options(
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Targeted);
     let total_deadline = limits.total_deadline;
     let precomputed_check_paths = limits.precomputed_check_paths;
+    let commit_scope = limits.commit_scope;
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
@@ -373,22 +513,22 @@ fn run_inner_with_options(
             .validate_workspace(hook_input.workspace.as_deref())
             .err()
     });
-    let (paths, had_edits, ledger_issue, path_scan_incomplete) = if hook_input.check {
-        let (paths, incomplete) = match precomputed_check_paths {
+    let (paths, had_edits, ledger_issue, path_scan_status) = if hook_input.check {
+        let (paths, status) = match precomputed_check_paths {
             Some(paths) => paths,
             None => check_paths_with_deadline(&root, total_deadline)?,
         };
-        (paths, false, None, incomplete)
+        (paths, false, None, status)
     } else {
         let touched = touched_paths(&root, hook_input.session_id.as_deref())?;
         (
             touched.files,
             touched.had_edits,
             touched.ledger_issue,
-            false,
+            CheckPathScanStatus::Complete,
         )
     };
-    let total_deadline = if path_scan_incomplete && total_deadline.is_some() {
+    let total_deadline = if path_scan_status.is_deadline() && total_deadline.is_some() {
         Some(Instant::now())
     } else {
         total_deadline
@@ -406,13 +546,16 @@ fn run_inner_with_options(
     let (profile, registry, overrides, waivers, compatibility, policy_sources) =
         crate::policy::load_profiled_registry(&root)?;
     let run_file_checks = (hook_input.check || had_edits)
-        && !path_scan_incomplete
+        && path_scan_status.is_complete()
         && !deadline_expired(total_deadline);
-    let mut results = if run_file_checks {
+    let mut results = if run_file_checks && !commit_scope {
         rerun_checks(&paths, total_deadline)
     } else {
         Vec::new()
     };
+    if let Some(result) = check_path_scan_result(path_scan_status, pre_commit) {
+        results.push(result);
+    }
     if let Some(reason) = ledger_issue.as_deref() {
         results.push(current_task_ledger_unverified(reason));
     }
@@ -453,27 +596,27 @@ fn run_inner_with_options(
         )
     });
     let mut budget = commands::ExecutionBudget::new(command_budget);
-    let (mut command_run, coverage) =
-        if deadline_expired_for_gate(path_scan_incomplete, total_deadline) {
-            (
-                commands::RunResults {
-                    results: vec![commands::budget_unverified()],
-                    evidence: Vec::new(),
-                },
-                commands::run_coverage(&root, &[]),
-            )
-        } else {
-            run_repository_commands(
-                &root,
-                config_snapshot.settings.as_ref(),
-                hook_input.workspace.as_deref(),
-                Some(tier),
-                &paths,
-                &mut budget,
-            )
-        };
+    let (mut command_run, coverage) = if deadline_expired_for_gate(path_scan_status, total_deadline)
+    {
+        (
+            commands::RunResults {
+                results: vec![commands::budget_unverified()],
+                evidence: Vec::new(),
+            },
+            commands::run_coverage(&root, &[]),
+        )
+    } else {
+        run_repository_commands(
+            &root,
+            config_snapshot.settings.as_ref(),
+            hook_input.workspace.as_deref(),
+            Some(tier),
+            &paths,
+            &mut budget,
+        )
+    };
     if budget.is_exhausted()
-        || (deadline_expired_for_gate(path_scan_incomplete, total_deadline)
+        || (deadline_expired_for_gate(path_scan_status, total_deadline)
             && !command_run.results.iter().any(is_aggregate_budget_result))
     {
         command_run.results.push(commands::budget_unverified());
@@ -534,7 +677,7 @@ fn run_inner_with_options(
     if let Some(reason) = workspace_error {
         results.push(commands::invalid_workspace(&reason));
     }
-    if deadline_expired_for_gate(path_scan_incomplete, total_deadline)
+    if deadline_expired_for_gate(path_scan_status, total_deadline)
         && !results.iter().any(is_aggregate_budget_result)
     {
         let mut timeout = commands::budget_unverified();
@@ -565,7 +708,7 @@ fn run_inner_with_options(
         &waivers,
     )?;
 
-    if deadline_expired_for_gate(path_scan_incomplete, total_deadline)
+    if deadline_expired_for_gate(path_scan_status, total_deadline)
         && !results.iter().any(is_aggregate_budget_result)
     {
         let mut timeout = commands::budget_unverified();
@@ -643,8 +786,12 @@ fn deadline_expired(deadline: Option<Instant>) -> bool {
     deadline.is_some_and(|deadline| Instant::now() >= deadline)
 }
 
-fn deadline_expired_for_gate(path_scan_incomplete: bool, deadline: Option<Instant>) -> bool {
-    deadline.is_some() && (path_scan_incomplete || deadline_expired(deadline))
+fn deadline_expired_for_gate(
+    path_scan_status: CheckPathScanStatus,
+    deadline: Option<Instant>,
+) -> bool {
+    deadline
+        .is_some_and(|deadline| path_scan_status.is_deadline() || deadline_expired(Some(deadline)))
 }
 
 fn effective_tier(tier: Option<&str>) -> &str {
@@ -1551,21 +1698,101 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckPathScanStatus {
+    Complete,
+    PathLimit,
+    EntryLimit,
+    DepthLimit,
+    Deadline,
+}
+
+impl CheckPathScanStatus {
+    fn is_complete(self) -> bool {
+        self == Self::Complete
+    }
+
+    fn is_deadline(self) -> bool {
+        self == Self::Deadline
+    }
+}
+
 const MAX_CHECK_PATHS: usize = 512;
 const MAX_CHECK_PATH_ENTRIES: usize = 16_384;
+const MAX_CHECK_PATH_DEPTH: usize = 8;
+const CHECK_PATH_SCAN_RULE_ID: &str = "repository-source-scan";
+const CHECK_PATH_SCAN_CHECK: &str = "repository.source_scan";
 
 #[cfg(test)]
 fn check_paths(root: &Path) -> Result<Vec<String>, String> {
     check_paths_with_deadline(root, None).map(|(paths, _)| paths)
 }
 
+const EXCLUDED_CHECK_SUBTREES: [&str; 5] = [
+    ".pi/orca-recovery",
+    ".pi/subagents",
+    ".pi/subagent-output",
+    ".pi/npm",
+    ".killer-whale",
+];
+
+fn check_path_scan_result(
+    status: CheckPathScanStatus,
+    pre_commit: bool,
+) -> Option<EnforcementResult> {
+    let (message, remediation) = match status {
+        CheckPathScanStatus::Complete | CheckPathScanStatus::Deadline => return None,
+        CheckPathScanStatus::PathLimit => (
+            format!(
+                "reached the maximum of {MAX_CHECK_PATHS} scannable paths; some files were not checked"
+            ),
+            format!(
+                "Reduce the number of scannable repository files below {MAX_CHECK_PATHS}, then retry Stop."
+            ),
+        ),
+        CheckPathScanStatus::EntryLimit => (
+            format!(
+                "reached the maximum of {MAX_CHECK_PATH_ENTRIES} directory entries; some files were not checked"
+            ),
+            format!(
+                "Reduce the number of directory entries scanned below {MAX_CHECK_PATH_ENTRIES}, then retry Stop."
+            ),
+        ),
+        CheckPathScanStatus::DepthLimit => (
+            format!(
+                "exceeded the maximum repository scan depth of {MAX_CHECK_PATH_DEPTH}; some files were not checked"
+            ),
+            format!(
+                "Reduce repository nesting below the maximum scan depth of {MAX_CHECK_PATH_DEPTH}, then retry Stop."
+            ),
+        ),
+    };
+    Some(EnforcementResult {
+        rule_id: CHECK_PATH_SCAN_RULE_ID.to_string(),
+        status: if pre_commit {
+            Status::Failed
+        } else {
+            Status::Unverified
+        },
+        severity: Severity::Error,
+        message: format!("Repository source scan {message}."),
+        locations: Vec::new(),
+        remediation: Some(remediation),
+        evidence: ResultEvidence {
+            check: CHECK_PATH_SCAN_CHECK.to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    })
+}
+
 fn check_paths_with_deadline(
     root: &Path,
     deadline: Option<Instant>,
-) -> Result<(Vec<String>, bool), String> {
+) -> Result<(Vec<String>, CheckPathScanStatus), String> {
     let mut paths = Vec::new();
     let mut entries_seen = 0;
-    let mut incomplete = false;
+    let mut status = CheckPathScanStatus::Complete;
     collect_check_paths(
         root,
         root,
@@ -1573,11 +1800,24 @@ fn check_paths_with_deadline(
         &mut paths,
         deadline,
         &mut entries_seen,
-        &mut incomplete,
+        &mut status,
     )?;
     paths.sort();
     paths.dedup();
-    Ok((paths, incomplete || deadline_expired(deadline)))
+    if status.is_complete() && deadline_expired(deadline) {
+        status = CheckPathScanStatus::Deadline;
+    }
+    Ok((paths, status))
+}
+
+fn is_excluded_check_subtree(root: &Path, current: &Path) -> bool {
+    let Ok(relative) = current.strip_prefix(root) else {
+        return false;
+    };
+    EXCLUDED_CHECK_SUBTREES.iter().any(|subtree| {
+        let subtree = Path::new(subtree);
+        relative == subtree || relative.starts_with(subtree)
+    })
 }
 
 fn collect_check_paths(
@@ -1587,21 +1827,33 @@ fn collect_check_paths(
     paths: &mut Vec<String>,
     deadline: Option<Instant>,
     entries_seen: &mut usize,
-    incomplete: &mut bool,
+    status: &mut CheckPathScanStatus,
 ) -> Result<(), String> {
-    if deadline_expired(deadline)
-        || depth > 8
-        || paths.len() >= MAX_CHECK_PATHS
-        || *entries_seen >= MAX_CHECK_PATH_ENTRIES
-    {
-        *incomplete = true;
+    if deadline_expired(deadline) {
+        *status = CheckPathScanStatus::Deadline;
+        return Ok(());
+    }
+    if depth > MAX_CHECK_PATH_DEPTH {
+        *status = CheckPathScanStatus::DepthLimit;
+        return Ok(());
+    }
+    if paths.len() >= MAX_CHECK_PATHS {
+        *status = CheckPathScanStatus::PathLimit;
+        return Ok(());
+    }
+    if *entries_seen >= MAX_CHECK_PATH_ENTRIES {
+        *status = CheckPathScanStatus::EntryLimit;
         return Ok(());
     }
     let entries =
         std::fs::read_dir(current).map_err(|error| format!("scan check paths ({error})"))?;
     for entry in entries {
-        if deadline_expired(deadline) || *entries_seen >= MAX_CHECK_PATH_ENTRIES {
-            *incomplete = true;
+        if deadline_expired(deadline) {
+            *status = CheckPathScanStatus::Deadline;
+            break;
+        }
+        if *entries_seen >= MAX_CHECK_PATH_ENTRIES {
+            *status = CheckPathScanStatus::EntryLimit;
             break;
         }
         *entries_seen += 1;
@@ -1617,6 +1869,7 @@ fn collect_check_paths(
             let relative = path.strip_prefix(root).unwrap_or(&path);
             if relative != Path::new("tests/fixtures/semgrep-python")
                 && relative != Path::new("tests/fixtures/pi/0.84.2/captures")
+                && !is_excluded_check_subtree(root, &path)
                 && !matches!(
                     name.as_str(),
                     ".git"
@@ -1638,7 +1891,7 @@ fn collect_check_paths(
                     paths,
                     deadline,
                     entries_seen,
-                    incomplete,
+                    status,
                 )?;
             }
         } else if metadata.is_file()
@@ -1665,11 +1918,11 @@ fn collect_check_paths(
         {
             paths.push(path.to_string_lossy().into_owned());
             if paths.len() >= MAX_CHECK_PATHS {
-                *incomplete = true;
+                *status = CheckPathScanStatus::PathLimit;
                 break;
             }
         }
-        if *incomplete {
+        if !status.is_complete() {
             break;
         }
     }
@@ -2498,6 +2751,150 @@ mod tests {
         assert!(!paths.iter().any(|path| path.contains("semgrep-python")));
         assert!(!paths.iter().any(|path| path.contains("pi/0.84.2/captures")));
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn runtime_subtrees_are_excluded_without_excluding_legitimate_pi_files() {
+        let fixture = TestTempDir::new("check-path-runtime-subtrees");
+        for directory in [
+            ".pi/orca-recovery",
+            ".pi/subagents",
+            ".pi/subagent-output",
+            ".pi/npm",
+            ".killer-whale",
+        ] {
+            let directory = fixture.path.join(directory);
+            std::fs::create_dir_all(&directory).expect("runtime directory");
+            for index in 0..128 {
+                std::fs::write(directory.join(format!("{index}.json")), "{}\n")
+                    .expect("runtime artifact");
+            }
+        }
+        for (relative, contents) in [
+            (".pi/extensions/lgtm.ts", "export default {};\n"),
+            (".pi/settings.json", "{}\n"),
+            (".pi/pi-lsp.json", "{}\n"),
+            (".pi/subagents-copy/keep.json", "{}\n"),
+            (".killer-whale-extra/keep.json", "{}\n"),
+        ] {
+            let path = fixture.path.join(relative);
+            std::fs::create_dir_all(path.parent().expect("fixture parent"))
+                .expect("fixture parent directory");
+            std::fs::write(path, contents).expect("legitimate fixture");
+        }
+
+        let (paths, status) = check_paths_with_deadline(
+            &fixture.path,
+            Instant::now().checked_add(Duration::from_secs(30)),
+        )
+        .expect("check paths");
+
+        assert_eq!(status, CheckPathScanStatus::Complete);
+        for relative in [
+            ".pi/extensions/lgtm.ts",
+            ".pi/settings.json",
+            ".pi/pi-lsp.json",
+            ".pi/subagents-copy/keep.json",
+            ".killer-whale-extra/keep.json",
+        ] {
+            assert!(
+                paths.iter().any(|path| Path::new(path).ends_with(relative)),
+                "legitimate path was not collected: {relative}"
+            );
+        }
+        for relative in [
+            ".pi/orca-recovery",
+            ".pi/subagents",
+            ".pi/subagent-output",
+            ".pi/npm",
+            ".killer-whale",
+        ] {
+            assert!(
+                !paths
+                    .iter()
+                    .any(|path| Path::new(path).starts_with(relative)),
+                "runtime subtree was collected: {relative}"
+            );
+        }
+    }
+
+    #[test]
+    fn real_source_path_limit_reports_scan_failure_without_aggregate_timeout() {
+        let fixture = TestTempDir::new("check-path-real-source-limit");
+        let source_directory = fixture.path.join("src");
+        std::fs::create_dir_all(&source_directory).expect("source directory");
+        for index in 0..=MAX_CHECK_PATHS {
+            std::fs::write(
+                source_directory.join(format!("source-{index}.rs")),
+                "pub fn value() -> u8 { 1 }\n",
+            )
+            .expect("source fixture");
+        }
+
+        let (paths, status) = check_paths_with_deadline(
+            &fixture.path,
+            Instant::now().checked_add(Duration::from_secs(30)),
+        )
+        .expect("check paths");
+        assert_eq!(paths.len(), MAX_CHECK_PATHS);
+        assert_eq!(status, CheckPathScanStatus::PathLimit);
+
+        let payload = serde_json::json!({
+            "cwd": fixture.path,
+            "check": true,
+            "tier": "full",
+        });
+        let mut input = std::io::Cursor::new(payload.to_string());
+        let mut output = Vec::new();
+        let code = run_inner_with_options(
+            &mut input,
+            &mut output,
+            &InternalGateAdapter,
+            crate::adapter::HookEvent::Stop,
+            Duration::from_secs(1),
+            true,
+            GateLimits {
+                total_deadline: Instant::now().checked_add(Duration::from_secs(30)),
+                precomputed_check_paths: Some((paths, status)),
+                commit_scope: false,
+            },
+        )
+        .expect("pre-commit gate runs");
+        let output = String::from_utf8(output).expect("gate output is UTF-8");
+
+        assert_eq!(code, ExitCode::from(2), "path limit must deny pre-commit");
+        assert!(
+            output.contains("maximum of 512 scannable paths"),
+            "path-limit remediation is missing: {output}"
+        );
+        assert!(
+            !output.contains("aggregate execution budget expired"),
+            "path-limit failure must not fabricate a timeout: {output}"
+        );
+    }
+
+    #[test]
+    fn expired_check_path_deadline_is_not_classified_as_path_limit() {
+        let fixture = TestTempDir::new("check-path-expired-deadline");
+        let (_, status) = check_paths_with_deadline(&fixture.path, Some(Instant::now()))
+            .expect("expired scan is classified");
+
+        assert_eq!(status, CheckPathScanStatus::Deadline);
+        assert!(check_path_scan_result(status, true).is_none());
+        let result = run_pre_commit_gate_with_limits(
+            &fixture.path,
+            Some("expired-check-path-deadline"),
+            Duration::from_secs(1),
+            Some(Instant::now()),
+        )
+        .expect("expired gate returns a decision");
+        assert!(result.is_some(), "expired gate must deny");
+        assert!(
+            result
+                .as_deref()
+                .is_some_and(|reason| reason.contains("aggregate execution budget expired")),
+            "expired deadline must remain an aggregate timeout: {result:?}"
+        );
     }
 
     #[test]
@@ -3636,6 +4033,16 @@ mod tests {
     }
 
     #[test]
+    fn pi_precommit_budget_is_fixed_and_exceeds_legacy_timeout() {
+        assert_eq!(pre_commit_gate_budget("pi"), Duration::from_secs(300));
+        assert!(pre_commit_gate_budget("pi") > Duration::from_secs(30));
+        assert_eq!(
+            pre_commit_gate_budget("claude"),
+            commands::STOP_COMMAND_BUDGET
+        );
+    }
+
+    #[test]
     fn expired_total_precommit_deadline_denies_instead_of_passing() {
         let root =
             std::env::temp_dir().join(format!("lgtm-stop-total-deadline-{}", std::process::id()));
@@ -4357,5 +4764,46 @@ mod tests {
         }));
 
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn pi_approval_challenge_redacts_secret_fingerprint_and_binds_identity() {
+        let challenge = build_pi_approval_challenge(
+            &"a".repeat(64),
+            &[gitleaks::commit::CommitFinding {
+                rule_id: "generic-api-key".to_string(),
+                file: "src/app.rs".to_string(),
+                start_line: 4,
+                start_column: 2,
+                end_line: 4,
+                end_column: 9,
+                fingerprint: "raw-secret-fingerprint".to_string(),
+                blob_identity: "b".repeat(40),
+            }],
+        )
+        .expect("eligible finding is representable");
+        assert_eq!(challenge.identity, "a".repeat(64));
+        assert_eq!(challenge.findings.len(), 1);
+        assert_eq!(challenge.findings[0].path, "src/app.rs");
+        assert!(!challenge.findings[0].candidate_id.contains("raw-secret"));
+        assert_eq!(challenge.findings[0].candidate_id.len(), 64);
+    }
+
+    #[test]
+    fn pi_approval_challenge_rejects_ineligible_or_unbounded_findings() {
+        let mut finding = gitleaks::commit::CommitFinding {
+            rule_id: "aws-access-token".to_string(),
+            file: "src/app.rs".to_string(),
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 2,
+            fingerprint: "fingerprint".to_string(),
+            blob_identity: "b".repeat(40),
+        };
+        assert!(build_pi_approval_challenge(&"a".repeat(64), &[finding.clone()]).is_err());
+        finding.rule_id = "generic-api-key".to_string();
+        finding.file = "x".repeat(MAX_PI_APPROVAL_TEXT_BYTES + 1);
+        assert!(build_pi_approval_challenge(&"a".repeat(64), &[finding]).is_err());
     }
 }
