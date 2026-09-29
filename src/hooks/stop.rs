@@ -1713,7 +1713,6 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckPathScanStatus {
     Complete,
-    PathLimit,
     EntryLimit,
     DepthLimit,
     Deadline,
@@ -1729,7 +1728,6 @@ impl CheckPathScanStatus {
     }
 }
 
-const MAX_CHECK_PATHS: usize = 512;
 const MAX_CHECK_PATH_ENTRIES: usize = 16_384;
 const MAX_CHECK_PATH_DEPTH: usize = 8;
 const CHECK_PATH_SCAN_RULE_ID: &str = "repository-source-scan";
@@ -1754,14 +1752,6 @@ fn check_path_scan_result(
 ) -> Option<EnforcementResult> {
     let (message, remediation) = match status {
         CheckPathScanStatus::Complete | CheckPathScanStatus::Deadline => return None,
-        CheckPathScanStatus::PathLimit => (
-            format!(
-                "reached the maximum of {MAX_CHECK_PATHS} scannable paths; some files were not checked"
-            ),
-            format!(
-                "Reduce the number of scannable repository files below {MAX_CHECK_PATHS}, then retry Stop."
-            ),
-        ),
         CheckPathScanStatus::EntryLimit => (
             format!(
                 "reached the maximum of {MAX_CHECK_PATH_ENTRIES} directory entries; some files were not checked"
@@ -1849,10 +1839,6 @@ fn collect_check_paths(
         *status = CheckPathScanStatus::DepthLimit;
         return Ok(());
     }
-    if paths.len() >= MAX_CHECK_PATHS {
-        *status = CheckPathScanStatus::PathLimit;
-        return Ok(());
-    }
     if *entries_seen >= MAX_CHECK_PATH_ENTRIES {
         *status = CheckPathScanStatus::EntryLimit;
         return Ok(());
@@ -1929,10 +1915,6 @@ fn collect_check_paths(
             && path.strip_prefix(root).is_ok()
         {
             paths.push(path.to_string_lossy().into_owned());
-            if paths.len() >= MAX_CHECK_PATHS {
-                *status = CheckPathScanStatus::PathLimit;
-                break;
-            }
         }
         if !status.is_complete() {
             break;
@@ -2831,11 +2813,11 @@ mod tests {
     }
 
     #[test]
-    fn real_source_path_limit_reports_scan_failure_without_aggregate_timeout() {
+    fn repository_scan_includes_all_source_files_beyond_512() {
         let fixture = TestTempDir::new("check-path-real-source-limit");
         let source_directory = fixture.path.join("src");
         std::fs::create_dir_all(&source_directory).expect("source directory");
-        for index in 0..=MAX_CHECK_PATHS {
+        for index in 0..1024 {
             std::fs::write(
                 source_directory.join(format!("source-{index}.rs")),
                 "pub fn value() -> u8 { 1 }\n",
@@ -2848,41 +2830,9 @@ mod tests {
             Instant::now().checked_add(Duration::from_secs(30)),
         )
         .expect("check paths");
-        assert_eq!(paths.len(), MAX_CHECK_PATHS);
-        assert_eq!(status, CheckPathScanStatus::PathLimit);
-
-        let payload = serde_json::json!({
-            "cwd": fixture.path,
-            "check": true,
-            "tier": "full",
-        });
-        let mut input = std::io::Cursor::new(payload.to_string());
-        let mut output = Vec::new();
-        let code = run_inner_with_options(
-            &mut input,
-            &mut output,
-            &InternalGateAdapter,
-            crate::adapter::HookEvent::Stop,
-            Duration::from_secs(1),
-            true,
-            GateLimits {
-                total_deadline: Instant::now().checked_add(Duration::from_secs(30)),
-                precomputed_check_paths: Some((paths, status)),
-                commit_scope: false,
-            },
-        )
-        .expect("pre-commit gate runs");
-        let output = String::from_utf8(output).expect("gate output is UTF-8");
-
-        assert_eq!(code, ExitCode::from(2), "path limit must deny pre-commit");
-        assert!(
-            output.contains("maximum of 512 scannable paths"),
-            "path-limit remediation is missing: {output}"
-        );
-        assert!(
-            !output.contains("aggregate execution budget expired"),
-            "path-limit failure must not fabricate a timeout: {output}"
-        );
+        assert_eq!(paths.len(), 1024);
+        assert_eq!(status, CheckPathScanStatus::Complete);
+        assert!(check_path_scan_result(status, true).is_none());
     }
 
     #[test]
