@@ -33,6 +33,7 @@ mod gitignore;
 mod global;
 pub(crate) mod pi;
 mod pi_config;
+pub mod pi_installations;
 mod rules;
 mod runner;
 mod settings;

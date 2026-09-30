@@ -167,6 +167,15 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
     for (handle, _) in staged {
         commit_write(handle)?;
     }
+    if !pi_plan.preserved_collision {
+        super::pi_installations::register(
+            home,
+            &pi_extension,
+            &pi::hook_binary()?,
+            pi::ExtensionScope::Global,
+        )?;
+        notes.push("Pi extension registered for automatic refresh by lgtm update".to_string());
+    }
 
     Ok(GlobalInitSummary {
         files_written,

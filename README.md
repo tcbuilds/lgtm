@@ -241,12 +241,21 @@ git config core.hooksPath .githooks
 Keep the repository CI workflow enabled as the final authority; `git push
 --no-verify` can bypass local hooks.
 
+Pi project/global init and verified session starts track managed extensions.
+`lgtm update` refreshes tracked extensions using the new binary; reload running Pi
+sessions afterward. When upgrading from v0.12.1 or earlier, register existing
+project installations once with `lgtm init --agent pi` (global: `lgtm init -g`).
+Customized or disabled extensions are not overwritten or re-enabled.
+
 ## Common Commands
 
 ```bash
 # Check for or install the latest LGTM release
 lgtm update --check
 lgtm update
+
+# Refresh tracked Pi extensions after replacing the binary manually
+lgtm refresh-pi
 
 # Check that the bundled policy is valid
 lgtm compile --validate

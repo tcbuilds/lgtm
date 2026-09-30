@@ -29,6 +29,7 @@ fn run_init(repo: &TempRepo, binary: Option<&str>, dry_run: bool) -> std::proces
         command.env("LGTM_HOOK_BINARY", binary);
     }
     command
+        .env("HOME", repo.path())
         .current_dir(repo.path())
         .output()
         .expect("Pi init should execute")
@@ -213,6 +214,9 @@ fn generated_session_marker_produces_active_runtime_state() {
             .status
             .success()
     );
+    let registry = repo.path().join(".local/state/lgtm/pi-installations");
+    fs::remove_dir_all(&registry)
+        .expect("remove init registration to model an existing installation");
     let session = repo.path().join("pi-session.jsonl");
     let harness = repo.path().join("run-extension.cjs");
     fs::write(
@@ -259,6 +263,7 @@ handlers.session_start({}, {
         .arg(&harness)
         .arg(repo.path().join(".pi/extensions/lgtm.ts"))
         .arg(&session)
+        .env("HOME", repo.path())
         .current_dir(repo.path())
         .output()
         .expect("Node runtime harness executes");
@@ -268,6 +273,12 @@ handlers.session_start({}, {
     );
     let report = assess_at(repo.path(), None, now_ms());
     assert_eq!(report.state, PiEnforcementState::Active, "{report:?}");
+    assert_eq!(
+        fs::read_dir(&registry)
+            .expect("verified session registers extension")
+            .count(),
+        1
+    );
 
     let drift_session = repo.path().join("pi-drift-session.jsonl");
     let output = Command::new("node")
@@ -275,6 +286,7 @@ handlers.session_start({}, {
         .arg(repo.path().join(".pi/extensions/lgtm.ts"))
         .arg(&drift_session)
         .arg("drift")
+        .env("HOME", repo.path())
         .current_dir(repo.path())
         .output()
         .expect("Node schema-drift harness executes");

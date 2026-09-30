@@ -32,7 +32,10 @@ pub fn run(check: bool, requested: Option<&str>) -> Result<String, String> {
         });
     }
     if ordering == std::cmp::Ordering::Equal {
-        return Ok(format!("lgtm {current} is already current"));
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("resolve current executable ({error})"))?;
+        let refresh = refresh_pi_extensions(&executable)?;
+        return Ok(format!("lgtm {current} is already current\n{refresh}"));
     }
     if !pinned && ordering == std::cmp::Ordering::Less {
         return Ok(format!("lgtm {current} is newer than available {version}"));
@@ -55,11 +58,34 @@ pub fn run(check: bool, requested: Option<&str>) -> Result<String, String> {
     let binary = temporary.path.join("lgtm");
     require_regular_file(&binary, MAX_DOWNLOAD_BYTES)?;
     install(&binary, &executable, parent)?;
+    let refresh = refresh_pi_extensions(&executable).map_err(|error| {
+        format!(
+            "binary installed at {}; Pi refresh failed ({error}); run lgtm refresh-pi after repair",
+            executable.display()
+        )
+    })?;
     Ok(format!(
-        "updated lgtm {current} -> {} at {}",
+        "updated lgtm {current} -> {} at {}\n{refresh}",
         version.trim_start_matches('v'),
         executable.display()
     ))
+}
+
+// Run the new executable, not the old process's embedded extension template.
+fn refresh_pi_extensions(executable: &Path) -> Result<String, String> {
+    let output = run_bounded(
+        Command::new(executable).arg("refresh-pi"),
+        Duration::from_secs(45),
+    )?;
+    if output.status != Some(0) {
+        return Err(
+            "new binary could not refresh Pi extensions; run lgtm refresh-pi for repair details"
+                .to_string(),
+        );
+    }
+    String::from_utf8(output.stdout)
+        .map(|message| message.trim().to_string())
+        .map_err(|error| format!("Pi refresh output was not UTF-8 ({error})"))
 }
 
 fn platform_target() -> Result<&'static str, String> {
@@ -769,6 +795,28 @@ mod tests {
         assert!(verify_checksum(&archive, &checksum).is_ok());
         fs::write(&archive, b"tampered").unwrap();
         assert!(verify_checksum(&archive, &checksum).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extension_refresh_executes_the_newly_installed_binary_and_reports_failure() {
+        let directory = TemporaryDirectory::create().unwrap();
+        let source = directory.path.join("new-lgtm");
+        let executable = directory.path.join("installed-lgtm");
+        fs::write(&executable, b"old binary").unwrap();
+        fs::write(
+            &source,
+            b"#!/bin/sh\n[ \"$1\" = refresh-pi ] || exit 2\nprintf 'new-template-refreshed\\n'\n",
+        )
+        .unwrap();
+        install(&source, &executable, &directory.path).unwrap();
+        assert_eq!(
+            refresh_pi_extensions(&executable).unwrap(),
+            "new-template-refreshed"
+        );
+        fs::write(&source, b"#!/bin/sh\nexit 3\n").unwrap();
+        install(&source, &executable, &directory.path).unwrap();
+        assert!(refresh_pi_extensions(&executable).is_err());
     }
 
     #[test]

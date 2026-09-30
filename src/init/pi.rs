@@ -1030,7 +1030,7 @@ pub(crate) fn plan(
     })
 }
 
-fn owned_template(contents: &str, generated: &[u8], scope: ExtensionScope) -> bool {
+pub(crate) fn owned_template(contents: &str, generated: &[u8], scope: ExtensionScope) -> bool {
     let Ok(generated) = std::str::from_utf8(generated) else {
         return false;
     };

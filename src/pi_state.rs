@@ -284,7 +284,22 @@ pub fn record_attestation(root: &Path, payload: &Value) -> Result<(), String> {
     if bytes.len() as u64 > MAX_ATTESTATION_BYTES {
         return Err("Pi attestation exceeds maximum size".to_string());
     }
-    write_attestation(&root, &bytes)
+    write_attestation(&root, &bytes)?;
+    if trusted && tool_contracts_verified {
+        let home = home.ok_or("HOME is required to track the verified Pi installation")?;
+        let scope = if attestation.scope == "global" {
+            crate::init::pi::ExtensionScope::Global
+        } else {
+            crate::init::pi::ExtensionScope::Project
+        };
+        let binary = extension
+            .binary
+            .to_str()
+            .ok_or("Pi executable path is not UTF-8")?;
+        crate::init::pi_installations::register(&home, &path, binary, scope)
+            .map_err(|error| format!("track verified Pi installation ({error})"))?;
+    }
+    Ok(())
 }
 
 fn extension_for_scope(root: &Path, home: Option<&Path>, scope: &str) -> Result<PathBuf, String> {

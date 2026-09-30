@@ -122,6 +122,8 @@ enum Command {
         #[arg(long)]
         tier: Option<CheckTier>,
     },
+    /// Refresh tracked Pi extensions after a binary replacement.
+    RefreshPi,
     #[command(name = "__command-supervisor", hide = true)]
     InternalSupervisor,
 }
@@ -311,6 +313,16 @@ fn run(command: Command) -> ExitCode {
         Command::Policy { command } => run_policy(command),
         Command::Config { command } => run_config(command),
         Command::Check { workspace, tier } => run_check(workspace.as_deref(), tier),
+        Command::RefreshPi => match lgtm::init::pi_installations::refresh() {
+            Ok(message) => {
+                println!("{message}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("Pi extension refresh failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Command::InternalSupervisor => lgtm::checks::commands::run_command_supervisor(),
     }
 }
