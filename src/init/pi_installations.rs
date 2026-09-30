@@ -1,4 +1,5 @@
-//! Track managed Pi extensions without searching unrelated repositories.
+//! Track and refresh managed installations without searching unrelated repositories.
+//! The registry keeps its original Pi directory name for compatibility.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -16,13 +17,26 @@ use super::{InitError, read_if_exists};
 const MAX_INSTALLATIONS: usize = 4096;
 const REFRESH_BUDGET: Duration = Duration::from_secs(30);
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Installation {
     version: u8,
     target: PathBuf,
     binary: PathBuf,
     global: bool,
+    #[serde(default)]
+    managed: Option<ManagedInstallation>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedInstallation {
+    root: PathBuf,
+    agent: String,
+    rules_only: bool,
+    guidance: Vec<PathBuf>,
+    #[serde(default)]
+    codex_digest: Option<String>,
 }
 
 fn registry(home: &Path) -> PathBuf {
@@ -46,17 +60,64 @@ pub(crate) fn register(
         path: target.to_path_buf(),
         source,
     })?;
+    let global = scope == ExtensionScope::Global;
+    let root = target
+        .ancestors()
+        .nth(if global { 4 } else { 3 })
+        .ok_or_else(|| InitError::UnwritableTarget {
+            path: target.clone(),
+            reason: "Pi installation has no root".to_string(),
+        })?;
+    let managed = managed_record(root, super::InitAgent::Pi, global, false);
+    persist(
+        home,
+        Installation {
+            version: 1,
+            target,
+            binary: PathBuf::from(binary),
+            global,
+            managed: Some(managed),
+        },
+    )
+}
+
+fn managed_record(
+    root: &Path,
+    agent: super::InitAgent,
+    global: bool,
+    rules_only: bool,
+) -> ManagedInstallation {
+    ManagedInstallation {
+        root: root.to_path_buf(),
+        agent: format!("{agent:?}").to_lowercase(),
+        rules_only,
+        guidance: super::managed_refresh::guidance_paths(root, agent, global),
+        codex_digest: (agent == super::InitAgent::Codex && !global).then(|| {
+            format!(
+                "{:x}",
+                Sha256::digest(super::rules::agents_document().as_bytes())
+            )
+        }),
+    }
+}
+
+fn persist(home: &Path, installation: Installation) -> Result<(), InitError> {
+    if !home.is_absolute() {
+        return Err(InitError::UnwritableTarget {
+            path: home.to_path_buf(),
+            reason: "installation HOME must be absolute".to_string(),
+        });
+    }
     let directory = registry(home);
     preflight_targets(home, &[&directory.join("installation.json")])?;
     create_private_dir_all(&directory)?;
-    let key = Sha256::digest(target.as_os_str().as_encoded_bytes());
-    let path = directory.join(format!("{key:x}.json"));
-    let installation = Installation {
-        version: 1,
-        target,
-        binary: PathBuf::from(binary),
-        global: scope == ExtensionScope::Global,
-    };
+    let mut key = Sha256::new();
+    key.update(installation.target.as_os_str().as_encoded_bytes());
+    if let Some(managed) = &installation.managed {
+        key.update(b"\0");
+        key.update(managed.agent.as_bytes());
+    }
+    let path = directory.join(format!("{:x}.json", key.finalize()));
     let bytes = serde_json::to_vec(&installation).map_err(|error| InitError::UnwritableTarget {
         path: path.clone(),
         reason: format!("serialize Pi installation ({error})"),
@@ -92,6 +153,59 @@ fn require_registry_capacity(directory: &Path) -> Result<(), InitError> {
     Ok(())
 }
 
+pub(crate) fn register_adapter(
+    root: &Path,
+    agent: super::InitAgent,
+    rules_only: bool,
+) -> Result<(), InitError> {
+    let home = std::env::var_os("HOME").ok_or_else(|| InitError::UnwritableTarget {
+        path: root.to_path_buf(),
+        reason: "HOME is required to track installations".to_string(),
+    })?;
+    let root = std::fs::canonicalize(root).map_err(|source| InitError::Read {
+        path: root.to_path_buf(),
+        source,
+    })?;
+    let target = root.join(match agent {
+        super::InitAgent::Claude => {
+            if rules_only {
+                ".claude/rules"
+            } else {
+                ".claude/settings.json"
+            }
+        }
+        super::InitAgent::Codex => {
+            if rules_only {
+                "AGENTS.md"
+            } else {
+                ".codex/hooks.json"
+            }
+        }
+        super::InitAgent::Pi => {
+            if rules_only {
+                "AGENTS.md"
+            } else {
+                ".pi/extensions/lgtm.ts"
+            }
+        }
+    });
+    let managed = managed_record(&root, agent, false, rules_only);
+    persist(
+        Path::new(&home),
+        Installation {
+            version: 1,
+            target,
+            binary: PathBuf::from(pi::hook_binary()?),
+            global: false,
+            managed: Some(managed),
+        },
+    )
+}
+
+pub fn register_rules(root: &Path, agent: super::InitAgent) -> Result<(), String> {
+    register_adapter(root, agent, true).map_err(|error| error.to_string())
+}
+
 pub(crate) fn register_project(target: &Path, binary: &str) -> Result<(), InitError> {
     let home = std::env::var_os("HOME").ok_or_else(|| InitError::UnwritableTarget {
         path: target.to_path_buf(),
@@ -100,8 +214,8 @@ pub(crate) fn register_project(target: &Path, binary: &str) -> Result<(), InitEr
     register(Path::new(&home), target, binary, ExtensionScope::Project)
 }
 
-/// Refresh only registered, still-present, canonical managed extensions.
-/// Never install a missing extension: absence may mean deliberate disablement.
+/// Refresh registered managed output without redetecting repository policy.
+/// Never reinstall removed hooks or files: absence may mean deliberate disablement.
 pub fn refresh() -> Result<String, String> {
     let home = std::env::var_os("HOME").ok_or("HOME is required to refresh Pi installations")?;
     let binary =
@@ -119,13 +233,14 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
     let entries = match std::fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok("No tracked Pi extensions. Register existing repositories once with lgtm init --agent pi.".to_string());
+            return Ok("No tracked LGTM installations. Register existing project/global installations once with the appropriate lgtm init command.".to_string());
         }
         Err(error) => return Err(format!("read Pi installation registry ({error})")),
     };
     let deadline = Instant::now() + REFRESH_BUDGET;
     let mut refreshed = 0;
     let mut preserved = 0;
+    let mut file_writes = 0;
     for (index, entry) in entries.enumerate() {
         if index >= MAX_INSTALLATIONS || Instant::now() >= deadline {
             return Err(
@@ -138,14 +253,31 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
         if path.extension().is_none_or(|extension| extension != "json") {
             continue;
         }
-        let installation = read_installation(&path)?;
+        let mut installation = read_installation(&path)?;
         if std::fs::canonicalize(&installation.binary).ok().as_deref() != Some(binary) {
             preserved += 1;
             continue;
         }
-        match refresh_one(&installation) {
-            Ok(true) => refreshed += 1,
-            Ok(false) => preserved += 1,
+        let managed = refresh_managed(&mut installation)?;
+        file_writes += managed;
+        if managed > 0 {
+            persist(home, installation.clone()).map_err(|error| error.to_string())?;
+        }
+        let pi_result = if installation
+            .managed
+            .as_ref()
+            .is_none_or(|managed| managed.agent == "pi" && !managed.rules_only)
+        {
+            refresh_one(&installation)
+        } else {
+            Ok(0)
+        };
+        match pi_result {
+            Ok(count) if count > 0 || managed > 0 => {
+                refreshed += 1;
+                file_writes += count;
+            }
+            Ok(_) => preserved += 1,
             Err(error) => {
                 return Err(format!(
                     "refresh Pi extension {} ({error}); binary is installed, repair and run lgtm refresh-pi",
@@ -155,8 +287,60 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
         }
     }
     Ok(format!(
-        "Pi extensions: {refreshed} refreshed, {preserved} unchanged or preserved. Reload running Pi sessions. Register untracked repositories once with lgtm init --agent pi."
+        "LGTM installations: {refreshed} refreshed, {preserved} unchanged or preserved; {file_writes} managed file writes. Reload running agent sessions. Register untracked installations once with the appropriate lgtm init command."
     ))
+}
+
+fn refresh_managed(installation: &mut Installation) -> Result<usize, String> {
+    let Some(managed) = installation.managed.as_mut() else {
+        return Ok(0);
+    };
+    let agent = match managed.agent.as_str() {
+        "claude" => super::InitAgent::Claude,
+        "codex" => super::InitAgent::Codex,
+        "pi" => super::InitAgent::Pi,
+        _ => return Err("registered adapter is unsupported".to_string()),
+    };
+    if !managed.root.is_absolute() || !installation.target.starts_with(&managed.root) {
+        return Err("registered installation root is invalid".to_string());
+    }
+    let metadata = match std::fs::symlink_metadata(&managed.root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("inspect registered installation root ({error})")),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("registered installation root is not a regular directory".to_string());
+    }
+    if !installation.global
+        && !managed.rules_only
+        && !managed.root.join(".lgtm/config.json").is_file()
+    {
+        return Ok(0);
+    }
+    let count = super::managed_refresh::refresh(
+        &managed.root,
+        agent,
+        installation.global,
+        managed.rules_only,
+        &managed.guidance,
+        managed.codex_digest.as_deref(),
+    )
+    .map_err(|error| {
+        format!(
+            "refresh managed files in {} ({error})",
+            managed.root.display()
+        )
+    })?;
+    managed.guidance =
+        super::managed_refresh::guidance_paths(&managed.root, agent, installation.global);
+    if agent == super::InitAgent::Codex && !installation.global {
+        managed.codex_digest = Some(format!(
+            "{:x}",
+            Sha256::digest(super::rules::agents_document().as_bytes())
+        ));
+    }
+    Ok(count)
 }
 
 fn read_installation(path: &Path) -> Result<Installation, String> {
@@ -177,7 +361,7 @@ fn read_installation(path: &Path) -> Result<Installation, String> {
     Ok(installation)
 }
 
-fn refresh_one(installation: &Installation) -> Result<bool, String> {
+fn refresh_one(installation: &Installation) -> Result<usize, String> {
     let target = &installation.target;
     let suffix = if installation.global {
         ".pi/agent/extensions/lgtm.ts"
@@ -195,7 +379,7 @@ fn refresh_one(installation: &Installation) -> Result<bool, String> {
     preflight_file_targets(&[target]).map_err(|error| error.to_string())?;
     let binary = &installation.binary;
     let Some(existing) = read_if_exists(target).map_err(|error| error.to_string())? else {
-        return Ok(false);
+        return Ok(0);
     };
     // A tracked path must still reference the same executable. Do not repoint
     // extensions that the owner deliberately moved to a different installation.
@@ -205,7 +389,7 @@ fn refresh_one(installation: &Installation) -> Result<bool, String> {
             .and_then(|value| serde_json::from_str::<String>(value).ok())
     });
     if declared_binary.as_deref().map(Path::new) != Some(binary) {
-        return Ok(false);
+        return Ok(0);
     }
     let scope = if installation.global {
         ExtensionScope::Global
@@ -215,19 +399,21 @@ fn refresh_one(installation: &Installation) -> Result<bool, String> {
     let binary = binary.to_str().ok_or("Pi executable path is not UTF-8")?;
     let generated = pi::render(binary, scope).map_err(|error| error.to_string())?;
     if !pi::owned_template(&existing, &generated, scope) {
-        return Ok(false);
+        return Ok(0);
     }
     let backup = target.with_file_name("lgtm.ts.bak");
     preflight_file_targets(&[&backup]).map_err(|error| error.to_string())?;
     let plan = pi::plan(target, &backup, binary, scope).map_err(|error| error.to_string())?;
+    let mut writes = 0;
     if let Some(bytes) = plan.backup_contents {
         commit_write(stage_private_write(&backup, &bytes).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?;
+        writes += 1;
     }
     if let Some(bytes) = plan.target_contents {
         commit_write(stage_write(target, &bytes).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?;
-        return Ok(true);
+        writes += 1;
     }
-    Ok(false)
+    Ok(writes)
 }

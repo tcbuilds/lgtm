@@ -97,28 +97,35 @@ owned project extension.
 
 ## Automatic upgrade refresh
 
-Project/global init and verified Pi session starts register managed extension
-locations in `$HOME/.local/state/lgtm/pi-installations/`. Registration is outside
-repository tracking. LGTM does not search the disk for repositories.
+Project/global init, rules-only init, and verified Pi session starts register
+managed installations in `$HOME/.local/state/lgtm/pi-installations/` (the registry
+retains its original directory name). Registration is outside repository tracking.
+LGTM does not search the disk for repositories.
 
-`lgtm update` invokes the newly installed executable to refresh those extensions
-with its current template and executable digest. An already-current update also
-refreshes them. Only canonical LGTM extensions pointing to that executable are
-changed; customized, repointed, missing, or disabled extensions are preserved.
+`lgtm update` invokes the newly installed executable to refresh all tracked managed
+files: rules, guidance, installed hooks, generated Codex execpolicy, Pi extensions,
+and installed Pi package/LSP configuration. An already-current update also refreshes
+them. Only canonical Pi extensions pointing to that executable are changed;
+customized, repointed, missing, or disabled extensions are preserved. Existing
+hook events are reconciled without re-adding removed events. Repo policy and
+command configuration, owner settings, and custom files remain untouched. Edited
+shipped rules are backed up using the existing init backup behavior.
+
 Existing backup collisions fail visibly without overwriting owner content. If
 refresh fails after binary installation, repair the reported problem and run
-`lgtm refresh-pi`; the updater reports that the binary was already installed.
+`lgtm refresh`; the updater reports that the binary was already installed.
 
 **One-time migration:** versions through v0.12.1 have no installation registry or
 post-update refresh. After upgrading from those versions, run
 `lgtm init --agent pi` once in existing project installations (or `lgtm init -g`
 for global setup). Future updates refresh registered extensions automatically.
-A verified session start in the new version also registers its extension.
+A verified session start in the new version also registers its Pi installation.
 
 **Running sessions still need `/reload` or a restart.** Updating a file on disk
 cannot replace an extension already loaded in Pi. Automatic refresh does not
 claim native UI approval verification or re-enable disabled integrations. If you
-replace the binary outside `lgtm update`, run `lgtm refresh-pi` afterward.
+replace the binary outside `lgtm update`, run `lgtm refresh` afterward.
+`refresh-pi` remains a compatibility alias.
 
 Pi lifecycle hooks use a 10-second transport deadline. Bash pre-tool calls use a
 310-second transport deadline because they may run the Pi-specific pre-commit gate;

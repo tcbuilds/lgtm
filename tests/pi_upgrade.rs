@@ -83,6 +83,9 @@ fn refresh_updates_registered_project_and_global_pins_and_is_idempotent() {
     assert!(String::from_utf8_lossy(&result.stdout).contains("0 refreshed"));
 }
 
+// ELF accepts trailing bytes without invalidating executable loading. Other
+// platforms exercise pin refresh without modifying their executable format.
+#[cfg(target_os = "linux")]
 #[test]
 fn replacing_binary_refreshes_the_registered_extension_without_reinitializing() {
     use std::io::Write;

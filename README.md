@@ -241,11 +241,26 @@ git config core.hooksPath .githooks
 Keep the repository CI workflow enabled as the final authority; `git push
 --no-verify` can bypass local hooks.
 
-Pi project/global init and verified session starts track managed extensions.
-`lgtm update` refreshes tracked extensions using the new binary; reload running Pi
-sessions afterward. When upgrading from v0.12.1 or earlier, register existing
-project installations once with `lgtm init --agent pi` (global: `lgtm init -g`).
-Customized or disabled extensions are not overwritten or re-enabled.
+### Automatic upgrades
+
+From v0.12.2 onward, `lgtm update` refreshes **all tracked LGTM-managed output**,
+not just the binary: shipped rules, managed guidance, installed Claude/Codex hook
+wiring, generated Codex execpolicy, Pi extensions, and installed Pi package/LSP
+configuration. It covers registered project and global installations regardless
+of the directory where you run the update. Rules-only installs are tracked too.
+
+Repository policy and command configuration are not redetected or rewritten.
+Unrelated settings, custom files, customized Pi extensions, and edited Codex
+files are preserved. Edited shipped rule files are backed up before replacement.
+Removed files and hook events stay disabled; refresh does not add missing
+previously installed hooks. Reload or restart running agent sessions afterward.
+
+**One-time migration from v0.12.1 or earlier:** after upgrading, run your original
+init command once for each existing installation (`lgtm init`,
+`lgtm init --agent codex`, `lgtm init --agent pi`, or `lgtm init -g` for global).
+Those versions did not track installations. New init and verified Pi session
+starts register installations automatically. LGTM does not search your disk for
+unregistered repositories. Future upgrades need no per-repo reinitialization.
 
 ## Common Commands
 
@@ -254,8 +269,8 @@ Customized or disabled extensions are not overwritten or re-enabled.
 lgtm update --check
 lgtm update
 
-# Refresh tracked Pi extensions after replacing the binary manually
-lgtm refresh-pi
+# Refresh all tracked managed files after replacing the binary manually
+lgtm refresh
 
 # Check that the bundled policy is valid
 lgtm compile --validate

@@ -167,15 +167,15 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
     for (handle, _) in staged {
         commit_write(handle)?;
     }
-    if !pi_plan.preserved_collision {
-        super::pi_installations::register(
-            home,
-            &pi_extension,
-            &pi::hook_binary()?,
-            pi::ExtensionScope::Global,
-        )?;
-        notes.push("Pi extension registered for automatic refresh by lgtm update".to_string());
-    }
+    super::pi_installations::register(
+        home,
+        &pi_extension,
+        &pi::hook_binary()?,
+        pi::ExtensionScope::Global,
+    )?;
+    notes.push(
+        "LGTM-managed global files registered for automatic refresh by lgtm update".to_string(),
+    );
 
     Ok(GlobalInitSummary {
         files_written,
@@ -203,7 +203,7 @@ fn render_claude_hooks(validated: config::ValidatedSettings, binary: &str) -> Op
     Some(serialized.into_bytes())
 }
 
-fn render_agents(path: &Path) -> Result<Option<Vec<u8>>, InitError> {
+pub(super) fn render_agents(path: &Path) -> Result<Option<Vec<u8>>, InitError> {
     let existing = read_if_exists(path)?.unwrap_or_default();
     let managed = format!(
         "{MANAGED_START}\n{}\n{MANAGED_END}\n",

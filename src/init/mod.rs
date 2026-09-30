@@ -31,6 +31,7 @@ pub(crate) mod execpolicy;
 mod fs;
 mod gitignore;
 mod global;
+mod managed_refresh;
 pub(crate) mod pi;
 mod pi_config;
 pub mod pi_installations;

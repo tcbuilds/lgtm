@@ -69,6 +69,23 @@ pub(super) fn render_hooks(validated: ValidatedSettings) -> Option<Vec<u8>> {
     Some(serialized.into_bytes())
 }
 
+pub(super) fn refresh_existing_hooks(existing: &Map<String, Value>) -> Map<String, Value> {
+    let mut refreshed = existing.clone();
+    if let Some(hooks) = refreshed.get_mut("hooks").and_then(Value::as_object_mut) {
+        for wiring in &CODEX_HOOKS {
+            if let Some(entries) = hooks.get_mut(wiring.event).and_then(Value::as_array_mut) {
+                for entry in entries
+                    .iter_mut()
+                    .filter(|entry| entry_runs_command(entry, wiring.command))
+                {
+                    reconcile_matcher(entry, wiring.matcher);
+                }
+            }
+        }
+    }
+    refreshed
+}
+
 #[cfg(test)]
 pub(super) fn merge_hooks(existing: &Map<String, Value>) -> Map<String, Value> {
     merge_hooks_with_binary(existing, "lgtm")

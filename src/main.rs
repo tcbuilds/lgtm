@@ -122,8 +122,9 @@ enum Command {
         #[arg(long)]
         tier: Option<CheckTier>,
     },
-    /// Refresh tracked Pi extensions after a binary replacement.
-    RefreshPi,
+    /// Refresh all tracked LGTM-managed files after a binary replacement.
+    #[command(alias = "refresh-pi")]
+    Refresh,
     #[command(name = "__command-supervisor", hide = true)]
     InternalSupervisor,
 }
@@ -313,13 +314,13 @@ fn run(command: Command) -> ExitCode {
         Command::Policy { command } => run_policy(command),
         Command::Config { command } => run_config(command),
         Command::Check { workspace, tier } => run_check(workspace.as_deref(), tier),
-        Command::RefreshPi => match lgtm::init::pi_installations::refresh() {
+        Command::Refresh => match lgtm::init::pi_installations::refresh() {
             Ok(message) => {
                 println!("{message}");
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("Pi extension refresh failed: {error}");
+                eprintln!("LGTM managed-file refresh failed: {error}");
                 ExitCode::FAILURE
             }
         },
@@ -974,6 +975,12 @@ fn run_init_rules_only(agent: InitAgentKind) -> ExitCode {
     };
     match result {
         Ok(summary) => {
+            if let Err(error) =
+                init::pi_installations::register_rules(Path::new("."), init_agent(agent))
+            {
+                eprintln!("init failed: register rules ({error})");
+                return ExitCode::FAILURE;
+            }
             report_rules_only_summary(agent, &summary);
             ExitCode::SUCCESS
         }

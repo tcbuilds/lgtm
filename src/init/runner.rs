@@ -428,12 +428,16 @@ pub fn run_with_agent(
     }
 
     stage_and_commit(planned, &mut files_written)?;
-    if let Some(plan) = pi_plan.as_ref()
-        && !plan.preserved_collision
-    {
-        super::pi_installations::register_project(&plan.target, &pi::hook_binary()?)?;
-        notes.push("Pi extension registered for automatic refresh by lgtm update".to_string());
+    if let Some(plan) = pi_plan.as_ref() {
+        if plan.preserved_collision {
+            super::pi_installations::register_adapter(root, agent, true)?;
+        } else {
+            super::pi_installations::register_project(&plan.target, &pi::hook_binary()?)?;
+        }
+    } else {
+        super::pi_installations::register_adapter(root, agent, false)?;
     }
+    notes.push("LGTM-managed files registered for automatic refresh by lgtm update".to_string());
 
     Ok(InitSummary {
         detection,
