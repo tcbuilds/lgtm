@@ -1,108 +1,243 @@
 mod common;
 
-use std::io::Write;
+use std::io::Read;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Stdio};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 use common::TempRepo;
 use serde_json::json;
 
-fn run_stop(repo: &TempRepo, claim: &str) -> std::process::Output {
+const TEST_PROCESS_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_TEST_CAPTURE_BYTES: u64 = 1024 * 1024;
+
+#[derive(Clone, Copy)]
+enum HookEnvironment {
+    Inherited,
+    #[cfg(target_os = "linux")]
+    FixtureBin,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum FullStopMode {
+    Stop,
+    Check,
+}
+
+// Regular-file capture avoids pipe backpressure and waiting for descendant EOF.
+fn run_bounded_process(
+    repo: &TempRepo,
+    mut command: Command,
+    input: Option<&str>,
+    timeout: Duration,
+) -> Output {
+    let deadline = Instant::now() + timeout;
+    let input = input.unwrap_or_default();
+    assert!(input.len() as u64 <= MAX_TEST_CAPTURE_BYTES);
+    repo.write(".lgtm/test-process/stdin", input);
+    let capture = repo.path().join(".lgtm/test-process");
+    command
+        .stdin(std::fs::File::open(capture.join("stdin")).expect("fixture input"))
+        .stdout(std::fs::File::create(capture.join("stdout")).expect("stdout capture"))
+        .stderr(std::fs::File::create(capture.join("stderr")).expect("stderr capture"));
+    prepare_fixture_process(&mut command);
+    let mut child = command.spawn().expect("fixture process starts");
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("fixture process status") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            kill_fixture_group(child.id());
+            child.kill().expect("timed-out fixture process is killed");
+            child.wait().expect("timed-out fixture process is reaped");
+            panic!("fixture process exceeded {timeout:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    kill_fixture_group(child.id());
+    Output {
+        status,
+        stdout: read_fixture_capture(capture.join("stdout")),
+        stderr: read_fixture_capture(capture.join("stderr")),
+    }
+}
+
+fn read_fixture_capture(path: std::path::PathBuf) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .expect("capture file opens")
+        .take(MAX_TEST_CAPTURE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .expect("capture file reads");
+    assert!(bytes.len() as u64 <= MAX_TEST_CAPTURE_BYTES);
+    bytes
+}
+
+fn prepare_fixture_process(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+        // SAFETY: only async-safe process-local resource limits change after fork.
+        unsafe {
+            command.pre_exec(|| {
+                let limit = libc::rlimit {
+                    rlim_cur: MAX_TEST_CAPTURE_BYTES as libc::rlim_t,
+                    rlim_max: MAX_TEST_CAPTURE_BYTES as libc::rlim_t,
+                };
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
+fn kill_fixture_group(pid: u32) {
+    #[cfg(unix)]
+    {
+        // The owned process group may already be gone; direct-child reaping is separate.
+        // SAFETY: the fixture owns the group whose identifier is its child's PID.
+        unsafe {
+            let _ = libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
+fn run_hook(
+    repo: &TempRepo,
+    args: &[&str],
+    payload: &serde_json::Value,
+    environment: HookEnvironment,
+) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_lgtm"));
+    command.args(args);
+    match environment {
+        HookEnvironment::Inherited => {}
+        #[cfg(target_os = "linux")]
+        HookEnvironment::FixtureBin => {
+            let path = format!(
+                "{}:{}",
+                repo.path().join("bin").display(),
+                std::env::var("PATH").unwrap_or_default()
+            );
+            command.env("PATH", path);
+        }
+    }
+    run_bounded_process(
+        repo,
+        command,
+        Some(&format!("{payload}\n")),
+        TEST_PROCESS_TIMEOUT,
+    )
+}
+
+fn run_stop(repo: &TempRepo, claim: &str) -> Output {
     repo.write(
         ".lgtm/config.json",
         r#"{"version":"2","profile":"default","workspaces":[{"id":"verify","language":"shell","root":".","commands":[{"argv":["true"],"cwd":".","timeout_seconds":30,"tier":"full","purpose":"verify","source":"test","confidence":"high"}],"coverage":[]}],"disabled_rules":[],"severity_overrides":{}}"#,
     );
     repo.write("transcript.jsonl", &format!("{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":{}}}]}}}}\n", serde_json::to_string(claim).expect("claim serializes")));
     let payload = json!({ "cwd": repo.path(), "session_id": "claims", "transcript_path": repo.path().join("transcript.jsonl"), "tier": "full" });
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["hook", "stop"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Stop starts");
-    writeln!(child.stdin.take().expect("stdin"), "{payload}").expect("payload writes");
-    child.wait_with_output().expect("Stop completes")
+    run_hook(
+        repo,
+        &["hook", "stop"],
+        &payload,
+        HookEnvironment::Inherited,
+    )
 }
 
 #[cfg(target_os = "linux")]
-fn run_pre_tool_use_command(
-    repo: &TempRepo,
-    session_id: &str,
-    command: &str,
-) -> std::process::Output {
+fn run_pre_tool_use_command(repo: &TempRepo, session_id: &str, command_text: &str) -> Output {
     let payload = json!({
         "cwd": repo.path(),
         "session_id": session_id,
         "tool_name": "Bash",
-        "tool_input": {"command": command}
+        "tool_input": {"command": command_text}
     });
-    let path = format!(
-        "{}:{}",
-        repo.path().join("bin").display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["hook", "pre-tool-use"])
-        .env("PATH", path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("PreToolUse starts");
-    writeln!(child.stdin.take().expect("stdin"), "{payload}").expect("payload writes");
-    child.wait_with_output().expect("PreToolUse completes")
+    run_hook(
+        repo,
+        &["hook", "pre-tool-use"],
+        &payload,
+        HookEnvironment::FixtureBin,
+    )
 }
 
 #[cfg(target_os = "linux")]
-fn run_full_stop(repo: &TempRepo, session_id: &str) -> std::process::Output {
+fn run_full_stop_mode(repo: &TempRepo, session_id: &str, mode: FullStopMode) -> Output {
     let payload = json!({
         "cwd": repo.path(),
         "session_id": session_id,
-        "check": false,
+        "check": matches!(mode, FullStopMode::Check),
         "tier": "full"
     });
-    let path = format!(
-        "{}:{}",
-        repo.path().join("bin").display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["hook", "stop"])
-        .env("PATH", path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("full Stop starts");
-    writeln!(child.stdin.take().expect("stdin"), "{payload}").expect("payload writes");
-    child.wait_with_output().expect("full Stop completes")
+    run_hook(
+        repo,
+        &["hook", "stop"],
+        &payload,
+        HookEnvironment::FixtureBin,
+    )
 }
 
 #[cfg(target_os = "linux")]
-fn run_full_check(repo: &TempRepo, session_id: &str) -> std::process::Output {
-    let payload = json!({
-        "cwd": repo.path(),
-        "session_id": session_id,
-        "check": true,
-        "tier": "full"
-    });
-    let path = format!(
-        "{}:{}",
-        repo.path().join("bin").display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["hook", "stop"])
-        .env("PATH", path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("full check starts");
-    writeln!(child.stdin.take().expect("stdin"), "{payload}").expect("payload writes");
-    child.wait_with_output().expect("full check completes")
+fn run_full_stop(repo: &TempRepo, session_id: &str) -> Output {
+    run_full_stop_mode(repo, session_id, FullStopMode::Stop)
+}
+
+#[cfg(target_os = "linux")]
+fn run_full_check(repo: &TempRepo, session_id: &str) -> Output {
+    run_full_stop_mode(repo, session_id, FullStopMode::Check)
+}
+
+#[cfg(unix)]
+#[test]
+fn fixture_process_captures_output_larger_than_pipe_capacity() {
+    let repo = TempRepo::new();
+    let mut command = Command::new("/bin/sh");
+    command.args([
+        "-c",
+        "/usr/bin/head -c 300000 /dev/zero; /usr/bin/head -c 300000 /dev/zero >&2",
+    ]);
+    let output = run_bounded_process(&repo, command, None, Duration::from_secs(2));
+    assert!(output.status.success());
+    assert_eq!(output.stdout, vec![0; 300000]);
+    assert_eq!(output.stderr, vec![0; 300000]);
+}
+
+#[cfg(unix)]
+#[test]
+fn fixture_process_timeout_kills_and_reaps_stalled_child() {
+    let repo = TempRepo::new();
+    let mut command = Command::new("/bin/sleep");
+    command.arg("20");
+    let started = Instant::now();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_bounded_process(&repo, command, None, Duration::from_millis(100))
+    }));
+    assert!(result.is_err());
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[cfg(unix)]
+#[test]
+fn fixture_process_does_not_wait_for_descendant_output_eof() {
+    let repo = TempRepo::new();
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", "/bin/sleep 20 & printf 'retained\\n'; exit 0"]);
+    let started = Instant::now();
+    let output = run_bounded_process(&repo, command, None, Duration::from_secs(2));
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"retained\n");
+    assert!(started.elapsed() < Duration::from_secs(1));
 }
 
 #[test]
@@ -137,6 +272,80 @@ fn operational_lgtm_claim_does_not_block_stop() {
 #[cfg(target_os = "linux")]
 fn clean_gitleaks_script() -> &'static str {
     "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'fixture\\n'; exit 0; fi\nreport=\nwhile [ \"$#\" -gt 0 ]; do\n    if [ \"$1\" = --report-path ]; then report=\"$2\"; shift 2; continue; fi\n    shift\ndone\nprintf '[]\\n' > \"$report\"\n"
+}
+
+#[cfg(target_os = "linux")]
+fn write_full_gate_config(repo: &TempRepo, command_argv: &[&Path]) {
+    let command_argv = command_argv
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    repo.write(
+        ".lgtm/config.json",
+        &json!({
+            "version": "2",
+            "profile": "default",
+            "workspaces": [{
+                "id": "verify",
+                "language": "shell",
+                "root": ".",
+                "commands": [{
+                    "argv": command_argv,
+                    "cwd": ".",
+                    "timeout_seconds": 30,
+                    "tier": "full",
+                    "purpose": "verify",
+                    "source": "test",
+                    "confidence": "high"
+                }],
+                "coverage": []
+            }],
+            "disabled_rules": [],
+            "severity_overrides": {}
+        })
+        .to_string(),
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn set_gate_fixture_executables(repo: &TempRepo, command: &Path) {
+    let gitleaks = repo.path().join("bin/gitleaks");
+    for executable in [command, gitleaks.as_path()] {
+        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture executable");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_fixture_git(repo: &TempRepo, args: &[&str]) {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo.path()).args(args);
+    let output = run_bounded_process(repo, command, None, TEST_PROCESS_TIMEOUT);
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn initialize_gate_fixture_git(repo: &TempRepo, staged_paths: &[&str]) {
+    run_fixture_git(repo, &["init", "-q"]);
+    let mut add_args = vec!["add"];
+    add_args.extend_from_slice(staged_paths);
+    run_fixture_git(repo, &add_args);
+    run_fixture_git(
+        repo,
+        &[
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -247,72 +456,22 @@ fn oversized_gate_fixture_with_command(
     // Keep the full-gate result deterministic without depending on a host
     // gitleaks installation.
     repo.write("bin/gitleaks", gitleaks_script);
-    let gitleaks = repo.path().join("bin/gitleaks");
-    for executable in [&command, &gitleaks] {
-        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o700))
-            .expect("fixture executable");
-    }
+    set_gate_fixture_executables(&repo, &command);
     repo.write("src/oversized.json", initial_contents);
-    repo.write(
-        ".lgtm/config.json",
-        &json!({
-            "version": "2",
-            "profile": "default",
-            "workspaces": [{
-                "id": "verify",
-                "language": "shell",
-                "root": ".",
-                "commands": [{
-                    "argv": [
-                        command.to_string_lossy(),
-                        counter.to_string_lossy(),
-                        touched.to_string_lossy()
-                    ],
-                    "cwd": ".",
-                    "timeout_seconds": 30,
-                    "tier": "full",
-                    "purpose": "verify",
-                    "source": "test",
-                    "confidence": "high"
-                }],
-                "coverage": []
-            }],
-            "disabled_rules": [],
-            "severity_overrides": {}
-        })
-        .to_string(),
+    write_full_gate_config(
+        &repo,
+        &[command.as_path(), counter.as_path(), touched.as_path()],
     );
 
-    let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .args(args)
-            .output()
-            .expect("git starts");
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    git(&["init", "-q"]);
-    git(&[
-        "add",
-        "bin/oversized-check",
-        "bin/gitleaks",
-        "src/oversized.json",
-        ".lgtm/config.json",
-    ]);
-    git(&[
-        "-c",
-        "user.email=test@example.invalid",
-        "-c",
-        "user.name=test",
-        "commit",
-        "-qm",
-        "initial",
-    ]);
+    initialize_gate_fixture_git(
+        &repo,
+        &[
+            "bin/oversized-check",
+            "bin/gitleaks",
+            "src/oversized.json",
+            ".lgtm/config.json",
+        ],
+    );
 
     repo
 }
@@ -338,73 +497,23 @@ fn symlink_gate_fixture() -> TempRepo {
     std::os::unix::fs::symlink("../vendor/ignored.json", &link)
         .expect("tracked supported-extension symlink");
 
-    let gitleaks = repo.path().join("bin/gitleaks");
-    for executable in [&command, &gitleaks] {
-        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o700))
-            .expect("fixture executable");
-    }
-    repo.write(
-        ".lgtm/config.json",
-        &json!({
-            "version": "2",
-            "profile": "default",
-            "workspaces": [{
-                "id": "verify",
-                "language": "shell",
-                "root": ".",
-                "commands": [{
-                    "argv": [
-                        command.to_string_lossy(),
-                        counter.to_string_lossy(),
-                        link.to_string_lossy()
-                    ],
-                    "cwd": ".",
-                    "timeout_seconds": 30,
-                    "tier": "full",
-                    "purpose": "verify",
-                    "source": "test",
-                    "confidence": "high"
-                }],
-                "coverage": []
-            }],
-            "disabled_rules": [],
-            "severity_overrides": {}
-        })
-        .to_string(),
+    set_gate_fixture_executables(&repo, &command);
+    write_full_gate_config(
+        &repo,
+        &[command.as_path(), counter.as_path(), link.as_path()],
     );
 
-    let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .args(args)
-            .output()
-            .expect("git starts");
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    git(&["init", "-q"]);
-    git(&[
-        "add",
-        ".gitignore",
-        "bin/symlink-check",
-        "bin/gitleaks",
-        "src/ordinary.rs",
-        "src/tracked.json",
-        ".lgtm/config.json",
-    ]);
-    git(&[
-        "-c",
-        "user.email=test@example.invalid",
-        "-c",
-        "user.name=test",
-        "commit",
-        "-qm",
-        "initial",
-    ]);
+    initialize_gate_fixture_git(
+        &repo,
+        &[
+            ".gitignore",
+            "bin/symlink-check",
+            "bin/gitleaks",
+            "src/ordinary.rs",
+            "src/tracked.json",
+            ".lgtm/config.json",
+        ],
+    );
 
     repo
 }
@@ -435,73 +544,23 @@ exit 0
     std::os::unix::fs::symlink("../vendor/hidden", &hidden)
         .expect("extensionless directory symlink");
 
-    let gitleaks = repo.path().join("bin/gitleaks");
-    for executable in [&command, &gitleaks] {
-        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o700))
-            .expect("fixture executable");
-    }
-    repo.write(
-        ".lgtm/config.json",
-        &json!({
-            "version": "2",
-            "profile": "default",
-            "workspaces": [{
-                "id": "verify",
-                "language": "shell",
-                "root": ".",
-                "commands": [{
-                    "argv": [
-                        command.to_string_lossy(),
-                        counter.to_string_lossy(),
-                        touched.to_string_lossy()
-                    ],
-                    "cwd": ".",
-                    "timeout_seconds": 30,
-                    "tier": "full",
-                    "purpose": "verify",
-                    "source": "test",
-                    "confidence": "high"
-                }],
-                "coverage": []
-            }],
-            "disabled_rules": [],
-            "severity_overrides": {}
-        })
-        .to_string(),
+    set_gate_fixture_executables(&repo, &command);
+    write_full_gate_config(
+        &repo,
+        &[command.as_path(), counter.as_path(), touched.as_path()],
     );
 
-    let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .args(args)
-            .output()
-            .expect("git starts");
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    git(&["init", "-q"]);
-    git(&[
-        "add",
-        ".gitignore",
-        "bin/directory-symlink-check",
-        "bin/gitleaks",
-        "src/ordinary.rs",
-        "src/hidden",
-        ".lgtm/config.json",
-    ]);
-    git(&[
-        "-c",
-        "user.email=test@example.invalid",
-        "-c",
-        "user.name=test",
-        "commit",
-        "-qm",
-        "initial",
-    ]);
+    initialize_gate_fixture_git(
+        &repo,
+        &[
+            ".gitignore",
+            "bin/directory-symlink-check",
+            "bin/gitleaks",
+            "src/ordinary.rs",
+            "src/hidden",
+            ".lgtm/config.json",
+        ],
+    );
 
     repo
 }
@@ -524,68 +583,17 @@ fn overdepth_gate_fixture() -> TempRepo {
     repo.write("bin/gitleaks", clean_gitleaks_script());
     repo.write("src/ordinary.rs", "fn ordinary() -> u8 { 1 }\n");
     repo.write(&overdepth_file, "fn over() -> u8 { 1 }\n");
-    let gitleaks = repo.path().join("bin/gitleaks");
-    for executable in [&command, &gitleaks] {
-        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o700))
-            .expect("fixture executable");
-    }
-    repo.write(
-        ".lgtm/config.json",
-        &json!({
-            "version": "2",
-            "profile": "default",
-            "workspaces": [{
-                "id": "verify",
-                "language": "shell",
-                "root": ".",
-                "commands": [{
-                    "argv": [command.to_string_lossy(), counter.to_string_lossy()],
-                    "cwd": ".",
-                    "timeout_seconds": 30,
-                    "tier": "full",
-                    "purpose": "verify",
-                    "source": "test",
-                    "confidence": "high"
-                }],
-                "coverage": []
-            }],
-            "disabled_rules": [],
-            "severity_overrides": {}
-        })
-        .to_string(),
-    );
+    set_gate_fixture_executables(&repo, &command);
+    write_full_gate_config(&repo, &[command.as_path(), counter.as_path()]);
 
-    let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .args(args)
-            .output()
-            .expect("git starts");
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    git(&["init", "-q"]);
-    let mut staged = vec![
+    let staged_paths = [
         "bin/overdepth-check",
         "bin/gitleaks",
         "src/ordinary.rs",
         ".lgtm/config.json",
+        overdepth_file.as_str(),
     ];
-    staged.push(overdepth_file.as_str());
-    git(&["add", staged[0], staged[1], staged[2], staged[3], staged[4]]);
-    git(&[
-        "-c",
-        "user.email=test@example.invalid",
-        "-c",
-        "user.name=test",
-        "commit",
-        "-qm",
-        "initial",
-    ]);
+    initialize_gate_fixture_git(&repo, &staged_paths);
 
     repo
 }
@@ -691,11 +699,7 @@ fn unresolved_ledger_gate_fixture() -> TempRepo {
         "bin/gitleaks",
         "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'fixture\\n'; exit 0; fi\nreport=\nwhile [ \"$#\" -gt 0 ]; do\n    if [ \"$1\" = --report-path ]; then report=\"$2\"; shift 2; continue; fi\n    shift\ndone\nprintf '[]\\n' > \"$report\"\n",
     );
-    let gitleaks = repo.path().join("bin/gitleaks");
-    for executable in [&command, &gitleaks] {
-        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o700))
-            .expect("fixture executable");
-    }
+    set_gate_fixture_executables(&repo, &command);
 
     // Keep the anchor under a test path so the Stop diff-association policy
     // has no missing-source obligation unrelated to this reuse regression.
@@ -723,64 +727,19 @@ fn unresolved_ledger_gate_fixture() -> TempRepo {
         ".lgtm/evidence/current-task.results.jsonl",
         &format!("{anchor_record}\n"),
     );
-    repo.write(
-        ".lgtm/config.json",
-        &json!({
-            "version": "2",
-            "profile": "default",
-            "workspaces": [{
-                "id": "verify",
-                "language": "shell",
-                "root": ".",
-                "commands": [{
-                    "argv": [command.to_string_lossy(), counter.to_string_lossy()],
-                    "cwd": ".",
-                    "timeout_seconds": 30,
-                    "tier": "full",
-                    "purpose": "verify",
-                    "source": "test",
-                    "confidence": "high"
-                }],
-                "coverage": []
-            }],
-            "disabled_rules": [],
-            "severity_overrides": {}
-        })
-        .to_string(),
-    );
+    write_full_gate_config(&repo, &[command.as_path(), counter.as_path()]);
 
     // The diff association check must see a real repository so a passing Stop
     // record is not obscured by an unrelated git-unavailable result.
-    let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .args(args)
-            .output()
-            .expect("git starts");
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    git(&["init", "-q"]);
-    git(&[
-        "add",
-        "bin/unresolved-check",
-        "bin/gitleaks",
-        "tests/anchor.rs",
-        ".lgtm/config.json",
-    ]);
-    git(&[
-        "-c",
-        "user.email=test@example.invalid",
-        "-c",
-        "user.name=test",
-        "commit",
-        "-qm",
-        "initial",
-    ]);
+    initialize_gate_fixture_git(
+        &repo,
+        &[
+            "bin/unresolved-check",
+            "bin/gitleaks",
+            "tests/anchor.rs",
+            ".lgtm/config.json",
+        ],
+    );
 
     repo
 }
