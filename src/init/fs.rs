@@ -193,6 +193,8 @@ pub(super) struct StagedWrite {
     pub(super) final_path: PathBuf,
     /// The sibling temp file already written and fsynced.
     pub(super) temp_path: PathBuf,
+    /// Whether this staged output must remain owner-only on Unix.
+    private: bool,
     /// Set once the temp has been renamed over its target, so [`Drop`] does not
     /// try to remove an already-committed (renamed-away) path.
     committed: bool,
@@ -236,6 +238,19 @@ impl Drop for StagedWrite {
 /// should be normally readable. The commit step reasserts the mode as a safety
 /// net in case the target's mode changed between stage and commit.
 pub(super) fn stage_write(path: &Path, bytes: &[u8]) -> Result<StagedWrite, InitError> {
+    stage_write_with_mode(path, bytes, false)
+}
+
+/// Stage a generated backup with owner-only permissions on Unix.
+pub(super) fn stage_private_write(path: &Path, bytes: &[u8]) -> Result<StagedWrite, InitError> {
+    stage_write_with_mode(path, bytes, true)
+}
+
+fn stage_write_with_mode(
+    path: &Path,
+    bytes: &[u8],
+    private: bool,
+) -> Result<StagedWrite, InitError> {
     ensure_not_symlink(path)?;
     let temp_path = build_temp_path(path);
     write_temp_file(&temp_path, bytes).map_err(|source| {
@@ -245,10 +260,11 @@ pub(super) fn stage_write(path: &Path, bytes: &[u8]) -> Result<StagedWrite, Init
             source,
         }
     })?;
-    set_final_permissions(path, &temp_path)?;
+    set_final_permissions(path, &temp_path, private)?;
     Ok(StagedWrite {
         final_path: path.to_path_buf(),
         temp_path,
+        private,
         committed: false,
     })
 }
@@ -286,13 +302,17 @@ fn write_temp_file(temp_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.sync_all()
 }
 
-fn set_final_permissions(path: &Path, temp_path: &Path) -> Result<(), InitError> {
+fn set_final_permissions(path: &Path, temp_path: &Path, private: bool) -> Result<(), InitError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let final_permissions = match std::fs::metadata(path) {
-            Ok(metadata) => metadata.permissions(),
-            Err(_) => std::fs::Permissions::from_mode(0o644),
+        let final_permissions = if private {
+            std::fs::Permissions::from_mode(0o600)
+        } else {
+            match std::fs::metadata(path) {
+                Ok(metadata) => metadata.permissions(),
+                Err(_) => std::fs::Permissions::from_mode(0o644),
+            }
         };
         if let Err(source) = std::fs::set_permissions(temp_path, final_permissions) {
             let _ = std::fs::remove_file(temp_path);
@@ -318,14 +338,21 @@ fn set_final_permissions(path: &Path, temp_path: &Path) -> Result<(), InitError>
 pub(super) fn commit_write(mut staged: StagedWrite) -> Result<(), InitError> {
     #[cfg(unix)]
     {
-        if let Ok(metadata) = std::fs::metadata(&staged.final_path) {
-            let permissions = metadata.permissions();
-            if let Err(source) = std::fs::set_permissions(&staged.temp_path, permissions) {
-                return Err(InitError::Write {
-                    path: staged.final_path.clone(),
-                    source,
-                });
-            }
+        let permissions = if staged.private {
+            use std::os::unix::fs::PermissionsExt;
+            Some(std::fs::Permissions::from_mode(0o600))
+        } else {
+            std::fs::metadata(&staged.final_path)
+                .ok()
+                .map(|metadata| metadata.permissions())
+        };
+        if let Some(permissions) = permissions
+            && let Err(source) = std::fs::set_permissions(&staged.temp_path, permissions)
+        {
+            return Err(InitError::Write {
+                path: staged.final_path.clone(),
+                source,
+            });
         }
     }
 

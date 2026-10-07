@@ -47,6 +47,7 @@ impl HookAdapter for CodexAdapter {
             agent_id: string_field(&value, "agent_id"),
             agent_type: string_field(&value, "agent_type"),
             stop_hook_active: value.get("stop_hook_active").and_then(Value::as_bool),
+            approval_capability: None,
         })
     }
 
@@ -104,6 +105,7 @@ impl HookAdapter for CodexAdapter {
                 })),
                 _ => Err(invalid_combination(event, "Deny")),
             },
+            HookResponse::Ask { .. } => Err(invalid_combination(event, "Ask")),
             HookResponse::BlockStop { reason } => match event {
                 HookEvent::PostToolUse | HookEvent::Stop | HookEvent::SubagentStop => {
                     stdout_json(json!({ "decision": "block", "reason": reason }))
@@ -116,6 +118,9 @@ impl HookAdapter for CodexAdapter {
                 }
                 _ => Err(invalid_combination(event, "PostToolFeedback")),
             },
+            HookResponse::FindingApprovalRequired(_) => {
+                Err(invalid_combination(event, "FindingApprovalRequired"))
+            }
             HookResponse::Summary(summary) => match event {
                 HookEvent::Stop | HookEvent::SubagentStop => stdout_json(json!({
                     "systemMessage": summary,

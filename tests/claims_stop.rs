@@ -80,6 +80,31 @@ fn run_full_stop(repo: &TempRepo, session_id: &str) -> std::process::Output {
     child.wait_with_output().expect("full Stop completes")
 }
 
+#[cfg(target_os = "linux")]
+fn run_full_check(repo: &TempRepo, session_id: &str) -> std::process::Output {
+    let payload = json!({
+        "cwd": repo.path(),
+        "session_id": session_id,
+        "check": true,
+        "tier": "full"
+    });
+    let path = format!(
+        "{}:{}",
+        repo.path().join("bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["hook", "stop"])
+        .env("PATH", path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("full check starts");
+    writeln!(child.stdin.take().expect("stdin"), "{payload}").expect("payload writes");
+    child.wait_with_output().expect("full check completes")
+}
+
 #[test]
 fn unsupported_success_claim_blocks_stop() {
     let repo = TempRepo::new();
@@ -134,7 +159,7 @@ fn oversized_truncating_gate_fixture() -> (TempRepo, String) {
     let initial = format!("{{\"state\":\"initial\",\"padding\":\"{filler}\"}}\n");
     let repo = oversized_gate_fixture_with_command(
         "#!/bin/sh\nprintf x >> \"$1\"\nexit 0\n",
-        "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'fixture\\n'; exit 0; fi\nreport=\nsource=\nwhile [ \"$#\" -gt 0 ]; do\n    if [ \"$1\" = --report-path ]; then report=\"$2\"; shift 2; continue; fi\n    if [ \"$1\" = --source ]; then source=\"$2\"; shift 2; continue; fi\n    shift\ndone\n: > \"$source\"\nprintf '[]\\n' > \"$report\"\n",
+        "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'fixture\\n'; exit 0; fi\nreport=\nsource=\nwhile [ \"$#\" -gt 0 ]; do\n    if [ \"$1\" = --report-path ]; then report=\"$2\"; shift 2; continue; fi\n    if [ \"$1\" = --source ]; then source=\"$2\"; shift 2; continue; fi\n    shift\ndone\nif [ -n \"$source\" ]; then : > \"$source\"; fi\nprintf '[]\\n' > \"$report\"\n",
         &initial,
     );
     (repo, filler)
@@ -188,7 +213,7 @@ while [ "$#" -gt 0 ]; do
         *) shift ;;
     esac
 done
-printf '{"state":"b"}\n' > "$source"
+if [ -n "$source" ]; then printf '{"state":"b"}\n' > "$source"; fi
 printf '[]\n' > "$report"
 "#,
         "{\"state\":\"a\"}\n",
@@ -571,7 +596,13 @@ fn overdepth_scanner_uncertainty_forces_same_session_full_gate_rerun() {
     let repo = overdepth_gate_fixture();
     let first = run_pre_tool_use_command(&repo, "overdepth-retry", "git commit -m first");
     assert!(first.status.success(), "first gate: {:?}", first.stderr);
-    assert!(first.stdout.is_empty(), "first full gate should pass");
+    let decision: serde_json::Value = serde_json::from_slice(&first.stdout).expect("deny decision");
+    assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(
+        decision["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("repository-source-scan"))
+    );
     assert_eq!(repo.read("full-gate-runs"), "x");
 
     let first_record: serde_json::Value = serde_json::from_str(
@@ -594,7 +625,8 @@ fn overdepth_scanner_uncertainty_forces_same_session_full_gate_rerun() {
 
     let second = run_pre_tool_use_command(&repo, "overdepth-retry", "git commit -m retry");
     assert!(second.status.success(), "retry gate: {:?}", second.stderr);
-    assert!(second.stdout.is_empty(), "second full gate should pass");
+    let decision: serde_json::Value = serde_json::from_slice(&second.stdout).expect("retry denial");
+    assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
     assert_eq!(
         repo.read("full-gate-runs"),
         "xx",
@@ -604,7 +636,7 @@ fn overdepth_scanner_uncertainty_forces_same_session_full_gate_rerun() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn ordinary_unchanged_file_reuses_generated_same_session_full_gate_evidence() {
+fn ordinary_unchanged_file_reruns_staged_commit_gate() {
     let repo = oversized_gate_fixture_with_command(
         "#!/bin/sh\nprintf x >> \"$1\"\nexit 0\n",
         clean_gitleaks_script(),
@@ -637,8 +669,8 @@ fn ordinary_unchanged_file_reuses_generated_same_session_full_gate_evidence() {
     assert!(second.stdout.is_empty(), "second full gate should pass");
     assert_eq!(
         repo.read("full-gate-runs"),
-        "x",
-        "unchanged certain evidence should reuse the generated full-gate record"
+        "xx",
+        "staged commits require a fresh full gate even when workspace evidence is unchanged"
     );
 }
 
@@ -964,9 +996,12 @@ fn oversized_file_mutation_reruns_same_session_full_gate() {
 #[test]
 fn oversized_file_truncation_by_gitleaks_latches_non_reusable_full_gate_evidence() {
     let (repo, _filler) = oversized_truncating_gate_fixture();
-    let first = run_pre_tool_use_command(&repo, "oversized-truncate", "git commit -m first");
-    assert!(first.status.success(), "first gate: {:?}", first.stderr);
-    assert!(first.stdout.is_empty(), "first full gate should pass");
+    let first = run_full_check(&repo, "oversized-truncate");
+    assert!(
+        first.status.success(),
+        "first full check: {:?}",
+        first.stderr
+    );
     assert_eq!(repo.read("full-gate-runs"), "x");
     assert_eq!(
         repo.read("src/oversized.json"),
@@ -1168,9 +1203,12 @@ fn post_command_oversized_file_persists_uncertainty_and_forces_same_session_reru
 #[test]
 fn scanner_oversized_then_configured_command_empty_latches_non_reusable_evidence() {
     let repo = scanner_oversized_then_command_empty_fixture();
-    let first = run_pre_tool_use_command(&repo, "scanner-command-truncate", "git commit -m first");
-    assert!(first.status.success(), "first gate: {:?}", first.stderr);
-    assert!(first.stdout.is_empty(), "first full gate should pass");
+    let first = run_full_check(&repo, "scanner-command-truncate");
+    assert!(
+        first.status.success(),
+        "first full check: {:?}",
+        first.stderr
+    );
     assert_eq!(repo.read("full-gate-runs"), "x");
     assert_eq!(
         repo.read("src/scanner-mutated"),
@@ -1224,9 +1262,12 @@ fn scanner_oversized_then_configured_command_empty_latches_non_reusable_evidence
 #[test]
 fn valid_scanner_mutation_requires_post_scan_digest_equality() {
     let repo = scanner_valid_content_then_command_restores_pre_scan_fixture();
-    let first = run_pre_tool_use_command(&repo, "scanner-valid-equality", "git commit -m first");
-    assert!(first.status.success(), "first gate: {:?}", first.stderr);
-    assert!(first.stdout.is_empty(), "first gate should pass");
+    let first = run_full_check(&repo, "scanner-valid-equality");
+    assert!(
+        first.status.success(),
+        "first full check: {:?}",
+        first.stderr
+    );
     assert_eq!(repo.read("full-gate-runs"), "x");
     assert_eq!(repo.read("src/oversized.json"), "{\"state\":\"a\"}\n");
 

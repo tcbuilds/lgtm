@@ -83,6 +83,7 @@ fn doctor_reports_gitleaks_state_and_guidance() {
     let home = TempRepo::new();
     let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .arg("doctor")
+        .current_dir(home.path())
         .env("HOME", home.path())
         .output()
         .expect("doctor executes");

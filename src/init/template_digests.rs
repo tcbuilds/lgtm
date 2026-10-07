@@ -8,8 +8,13 @@ pub(super) struct TemplateDigest {
     pub(super) sha256: &'static str,
 }
 
-/// Digests for every rule document shipped by the v0.5.0 and v0.6.0 releases.
+/// Digests for v0.5.0/v0.6.0 rules and the pre-mobile v0.11.1 Codex document.
 pub(super) const LEGACY_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
+    TemplateDigest {
+        release: "v0.11.1",
+        path: "AGENTS.md",
+        sha256: "0688a63bf06089e5bacf458ab5ebf1dbf846ae64efc264bf72959980b82caea6",
+    },
     TemplateDigest {
         release: "v0.5.0",
         path: "standards.md",
@@ -257,6 +262,21 @@ pub(super) const LEGACY_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
 pub(super) const CURRENT_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
     TemplateDigest {
         release: "current",
+        path: "mobile-ui.md",
+        sha256: "e5021d18c50a9387bc3eecc32eaad9f3301eeac5e13322f3a6de5f82de5a1d91",
+    },
+    TemplateDigest {
+        release: "current",
+        path: "ios-ui.md",
+        sha256: "7156b3718310971b1c33495cf4f6b09657c083fba9f71d886ad5bed240f985de",
+    },
+    TemplateDigest {
+        release: "current",
+        path: "android-ui.md",
+        sha256: "7cd016f2955c27b6c22f9e29aba1e683993f5873929d6cfa3cdeeff2746df256",
+    },
+    TemplateDigest {
+        release: "current",
         path: "standards.md",
         sha256: "009c709b343c43080d02382943c0914eb34fefec64f0dfbc2186fe1d2972bf78",
     },
@@ -412,7 +432,7 @@ pub(super) const CURRENT_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
 pub(super) const CURRENT_GENERATED_DOCUMENT_DIGESTS: &[TemplateDigest] = &[TemplateDigest {
     release: "current",
     path: "AGENTS.md",
-    sha256: "0688a63bf06089e5bacf458ab5ebf1dbf846ae64efc264bf72959980b82caea6",
+    sha256: "26b46d1976dbe90bf979878cf82650797f46e7bcb2df7887fa896e29d18b4909",
 }];
 
 /// Return the recorded digest for one currently embedded template path.

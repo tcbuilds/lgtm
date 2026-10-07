@@ -7,8 +7,12 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::adapter::{ClaudeAdapter, HookAdapter, HookResponse, PiAdapter};
+use crate::adapter::{
+    ApprovalCapability, ClaudeAdapter, HookAdapter, HookResponse, PiAdapter, PiApprovalChallenge,
+    PiApprovalFinding,
+};
 use crate::checks::tiers::{self, Hook, Tier};
 use crate::checks::{EnforcementResult, Location, ResultEvidence, Status};
 use crate::checks::{commands, gitleaks, ruff, semgrep};
@@ -22,9 +26,7 @@ const MAX_LEDGER_RECORDS: usize = 16 * 1024;
 const MAX_TOUCHED_PATHS: usize = 512;
 const MAX_TASK_EVIDENCE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_DIGEST_FILE_BYTES: u64 = 256 * 1024;
-// Evidence records must keep a schema-valid digest even when a touched path
-// cannot be represented. This value is never reusable; matching rejects it
-// explicitly in addition to requiring a complete current digest.
+// Keep uncertainty schema-valid while ensuring it can never authorize reuse.
 const UNCERTAIN_TOUCHED_FILES_DIGEST: &str = concat!(
     "00000000000000000000000000000000",
     "00000000000000000000000000000000",
@@ -38,6 +40,10 @@ const CURRENT_TASK_PERSISTENCE_MESSAGE: &str =
 const CURRENT_TASK_RETENTION_REASON: &str = "current-task evidence was truncated at the bounded retention limit; repair or regenerate evidence";
 const CURRENT_TASK_RECORD_TRUNCATION_REASON: &str = "current-task evidence record details were truncated at a bounded limit; repair or regenerate evidence";
 const CURRENT_TASK_PERSISTENCE_REASON: &str = "current-task evidence could not be persisted within the bounded ledger limit; repair or regenerate evidence";
+const PI_PRE_COMMIT_GATE_BUDGET: Duration = Duration::from_secs(300);
+const MAX_PI_APPROVAL_FINDINGS: usize = 32;
+const MAX_PI_APPROVAL_TEXT_BYTES: usize = 512;
+const MAX_PI_APPROVAL_COORDINATE: u64 = 1_000_000_000;
 
 #[cfg(test)]
 thread_local! {
@@ -141,7 +147,8 @@ struct TaskEvidence<'a> {
 
 struct GateLimits {
     total_deadline: Option<Instant>,
-    precomputed_check_paths: Option<(Vec<String>, bool, bool)>,
+    precomputed_check_paths: Option<(Vec<String>, CheckPathScanStatus, bool)>,
+    commit_scope: bool,
 }
 
 struct EvidenceMeta<'a> {
@@ -226,18 +233,146 @@ pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
 /// Codex commit retry does not rerun unchanged tests. Deadline-bound Pi gates
 /// always rerun. `Ok(None)` means the commit may proceed; `Ok(Some(reason))`
 /// means the full gate found a blocking failure.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PreCommitGateDecision {
+    Allow,
+    Deny(String),
+    FindingApprovalRequired(PiApprovalChallenge),
+    ClaudeApprovalRequired {
+        identity: String,
+        findings: Vec<gitleaks::commit::CommitFinding>,
+    },
+}
+
 pub(crate) fn run_pre_commit_gate_for_adapter(
     root: &Path,
     session_id: Option<&str>,
     harness: &str,
-) -> Result<Option<String>, String> {
-    let (command_budget, total_deadline) = if harness == "pi" {
-        let total = Duration::from_secs(30);
-        (total, Instant::now().checked_add(total))
+    commit_argv: &[String],
+    approval_capability: Option<ApprovalCapability>,
+) -> Result<PreCommitGateDecision, String> {
+    let command_budget = pre_commit_gate_budget(harness);
+    let total_deadline = (harness == "pi")
+        .then(|| Instant::now().checked_add(command_budget))
+        .flatten();
+    if let Some(reason) =
+        run_pre_commit_gate_with_scope(root, session_id, command_budget, total_deadline, true)?
+    {
+        return Ok(PreCommitGateDecision::Deny(reason));
+    }
+    let assessment = gitleaks::assess_commit(
+        root,
+        commit_argv,
+        session_id,
+        harness,
+        total_deadline.unwrap_or_else(|| {
+            Instant::now()
+                .checked_add(command_budget)
+                .unwrap_or_else(Instant::now)
+        }),
+    );
+    match assessment {
+        gitleaks::CommitAssessment::Pass { .. } => Ok(PreCommitGateDecision::Allow),
+        gitleaks::CommitAssessment::Deny { reason, .. } => Ok(PreCommitGateDecision::Deny(reason)),
+        gitleaks::CommitAssessment::PendingHeuristicApproval { identity, findings }
+            if harness == "pi"
+                && approval_capability == Some(ApprovalCapability::PiFindingApprovalV1) =>
+        {
+            match build_pi_approval_challenge(&identity.digest, &findings) {
+                Ok(challenge) => Ok(PreCommitGateDecision::FindingApprovalRequired(challenge)),
+                Err(reason) => Ok(PreCommitGateDecision::Deny(reason)),
+            }
+        }
+        gitleaks::CommitAssessment::PendingHeuristicApproval { identity, findings }
+            if harness == "claude-code" =>
+        {
+            Ok(PreCommitGateDecision::ClaudeApprovalRequired {
+                identity: identity.digest,
+                findings,
+            })
+        }
+        assessment @ gitleaks::CommitAssessment::PendingHeuristicApproval { .. } => {
+            Ok(PreCommitGateDecision::Deny(assessment.blocking_reason()))
+        }
+    }
+}
+
+pub(crate) fn build_pi_approval_challenge(
+    identity: &str,
+    findings: &[gitleaks::commit::CommitFinding],
+) -> Result<PiApprovalChallenge, String> {
+    if identity.len() != 64 || !identity.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("staged commit heuristic assessment has an invalid identity".to_string());
+    }
+    if findings.is_empty() || findings.len() > MAX_PI_APPROVAL_FINDINGS {
+        return Err(
+            "staged commit heuristic findings exceed the bounded approval limit".to_string(),
+        );
+    }
+    let mut redacted = Vec::with_capacity(findings.len());
+    for finding in findings {
+        if finding.rule_id != "generic-api-key"
+            || finding.start_line > MAX_PI_APPROVAL_COORDINATE
+            || finding.start_column > MAX_PI_APPROVAL_COORDINATE
+            || finding.end_line > MAX_PI_APPROVAL_COORDINATE
+            || finding.end_column > MAX_PI_APPROVAL_COORDINATE
+        {
+            return Err(
+                "staged commit heuristic assessment contains an ineligible finding".to_string(),
+            );
+        }
+        validate_approval_text(&finding.file, "finding path")?;
+        redacted.push(PiApprovalFinding {
+            rule_id: finding.rule_id.clone(),
+            path: finding.file.clone(),
+            start_line: finding.start_line,
+            start_column: finding.start_column,
+            end_line: finding.end_line,
+            end_column: finding.end_column,
+            candidate_id: approval_candidate_id(finding),
+        });
+    }
+    Ok(PiApprovalChallenge {
+        identity: identity.to_string(),
+        findings: redacted,
+    })
+}
+
+fn validate_approval_text(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > MAX_PI_APPROVAL_TEXT_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(format!("staged commit {label} is not safely displayable"));
+    }
+    Ok(())
+}
+
+fn approval_candidate_id(finding: &gitleaks::commit::CommitFinding) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"lgtm.pi-finding-approval.candidate.v1");
+    for value in [
+        finding.rule_id.as_str(),
+        finding.file.as_str(),
+        &finding.start_line.to_string(),
+        &finding.start_column.to_string(),
+        &finding.end_line.to_string(),
+        &finding.end_column.to_string(),
+        finding.fingerprint.as_str(),
+        finding.blob_identity.as_str(),
+    ] {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn pre_commit_gate_budget(harness: &str) -> Duration {
+    if harness == "pi" {
+        PI_PRE_COMMIT_GATE_BUDGET
     } else {
-        (commands::STOP_COMMAND_BUDGET, None)
-    };
-    run_pre_commit_gate_with_limits(root, session_id, command_budget, total_deadline)
+        commands::STOP_COMMAND_BUDGET
+    }
 }
 
 #[cfg(test)]
@@ -249,20 +384,30 @@ fn run_pre_commit_gate_with_budget(
     run_pre_commit_gate_with_limits(root, session_id, command_budget, None)
 }
 
+#[cfg(test)]
 fn run_pre_commit_gate_with_limits(
     root: &Path,
     session_id: Option<&str>,
     command_budget: Duration,
     total_deadline: Option<Instant>,
 ) -> Result<Option<String>, String> {
-    let (paths, path_scan_incomplete, reuse_uncertain) =
+    run_pre_commit_gate_with_scope(root, session_id, command_budget, total_deadline, false)
+}
+
+fn run_pre_commit_gate_with_scope(
+    root: &Path,
+    session_id: Option<&str>,
+    command_budget: Duration,
+    total_deadline: Option<Instant>,
+    commit_scope: bool,
+) -> Result<Option<String>, String> {
+    let (paths, path_scan_status, reuse_uncertain) =
         check_paths_with_deadline(root, total_deadline)?;
-    // Deadline-bound Pi gates must rerun rather than authorize from a record
-    // that may have crossed the deadline while it was being persisted. An
-    // uncertain candidate set must also run the ordinary full gate rather than
-    // authorizing from a digest that omitted an entry.
-    if total_deadline.is_none()
-        && !path_scan_incomplete
+    // Deadline-bound Pi gates and uncertain candidate sets must rerun rather
+    // than authorize from evidence that omits paths or crossed the deadline.
+    if !commit_scope
+        && total_deadline.is_none()
+        && path_scan_status.is_complete()
         && !reuse_uncertain
         && matching_full_evidence(root, session_id, &paths, reuse_uncertain).is_some()
     {
@@ -285,7 +430,8 @@ fn run_pre_commit_gate_with_limits(
         true,
         GateLimits {
             total_deadline,
-            precomputed_check_paths: Some((paths, path_scan_incomplete, reuse_uncertain)),
+            precomputed_check_paths: Some((paths, path_scan_status, reuse_uncertain)),
+            commit_scope,
         },
     )?;
     if code == ExitCode::SUCCESS {
@@ -363,6 +509,7 @@ fn run_inner_with_budget(
         GateLimits {
             total_deadline: None,
             precomputed_check_paths: None,
+            commit_scope: false,
         },
     )
 }
@@ -379,6 +526,7 @@ fn run_inner_with_options(
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Targeted);
     let total_deadline = limits.total_deadline;
     let precomputed_check_paths = limits.precomputed_check_paths;
+    let commit_scope = limits.commit_scope;
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
@@ -388,28 +536,31 @@ fn run_inner_with_options(
             .validate_workspace(hook_input.workspace.as_deref())
             .err()
     });
-    let (paths, had_edits, ledger_issue, path_scan_incomplete, reuse_uncertain) =
+    let (paths, had_edits, ledger_issue, path_scan_status, mut reuse_uncertain) =
         if hook_input.check {
-            let (paths, incomplete, reuse_uncertain) = match precomputed_check_paths {
+            let (paths, status, reuse_uncertain) = match precomputed_check_paths {
                 Some(paths) => paths,
                 None => check_paths_with_deadline(&root, total_deadline)?,
             };
-            (paths, false, None, incomplete, reuse_uncertain)
+            (paths, false, None, status, reuse_uncertain)
         } else {
             let touched = touched_paths(&root, hook_input.session_id.as_deref())?;
             (
                 touched.files,
                 touched.had_edits,
                 touched.ledger_issue,
-                false,
+                CheckPathScanStatus::Complete,
                 touched.reuse_uncertain,
             )
         };
-    // External scanners and configured commands can mutate known files. Keep a
-    // successful bounded digest of the candidate set as the authorization
-    // checkpoint while it still has its original state. Once uncertainty is
-    // observed, it is latched and no later normalization can clear it.
-    let mut reuse_uncertain = reuse_uncertain;
+    let total_deadline = if path_scan_status.is_deadline() && total_deadline.is_some() {
+        Some(Instant::now())
+    } else {
+        total_deadline
+    };
+    reuse_uncertain |= !path_scan_status.is_complete();
+    // Retain the original candidate state so later successful reads cannot
+    // clear uncertainty discovered by a scanner or command.
     let pre_scan_digest = if reuse_uncertain {
         None
     } else {
@@ -420,11 +571,6 @@ fn run_inner_with_options(
                 None
             }
         }
-    };
-    let total_deadline = if path_scan_incomplete && total_deadline.is_some() {
-        Some(Instant::now())
-    } else {
-        total_deadline
     };
     let configured = configured_executables(config_snapshot.settings.as_ref().ok());
     let claims_only = !hook_input.check
@@ -439,13 +585,16 @@ fn run_inner_with_options(
     let (profile, registry, overrides, waivers, compatibility, policy_sources) =
         crate::policy::load_profiled_registry(&root)?;
     let run_file_checks = (hook_input.check || had_edits)
-        && !path_scan_incomplete
+        && path_scan_status.is_complete()
         && !deadline_expired(total_deadline);
-    let mut results = if run_file_checks {
+    let mut results = if run_file_checks && !commit_scope {
         rerun_checks(&paths, total_deadline)
     } else {
         Vec::new()
     };
+    if let Some(result) = check_path_scan_result(path_scan_status, pre_commit) {
+        results.push(result);
+    }
     if let Some(reason) = ledger_issue.as_deref() {
         results.push(current_task_ledger_unverified(reason));
     }
@@ -478,10 +627,7 @@ fn run_inner_with_options(
             results.extend(crate::checks::auth::scan(&paths));
         }
     }
-    // Compare the post-scanner state with the retained pre-scan checkpoint
-    // before any configured repository command runs. A scanner-produced valid
-    // digest is not enough: changing valid content A to valid content B must
-    // also make this gate non-reusable, even if a later command restores A.
+    // A scanner may leave a valid but changed file; compare with the state it saw.
     if !reuse_uncertain {
         match (
             pre_scan_digest.as_deref(),
@@ -499,27 +645,27 @@ fn run_inner_with_options(
         )
     });
     let mut budget = commands::ExecutionBudget::new(command_budget);
-    let (mut command_run, coverage) =
-        if deadline_expired_for_gate(path_scan_incomplete, total_deadline) {
-            (
-                commands::RunResults {
-                    results: vec![commands::budget_unverified()],
-                    evidence: Vec::new(),
-                },
-                commands::run_coverage(&root, &[]),
-            )
-        } else {
-            run_repository_commands(
-                &root,
-                config_snapshot.settings.as_ref(),
-                hook_input.workspace.as_deref(),
-                Some(tier),
-                &paths,
-                &mut budget,
-            )
-        };
+    let (mut command_run, coverage) = if deadline_expired_for_gate(path_scan_status, total_deadline)
+    {
+        (
+            commands::RunResults {
+                results: vec![commands::budget_unverified()],
+                evidence: Vec::new(),
+            },
+            commands::run_coverage(&root, &[]),
+        )
+    } else {
+        run_repository_commands(
+            &root,
+            config_snapshot.settings.as_ref(),
+            hook_input.workspace.as_deref(),
+            Some(tier),
+            &paths,
+            &mut budget,
+        )
+    };
     if budget.is_exhausted()
-        || (deadline_expired_for_gate(path_scan_incomplete, total_deadline)
+        || (deadline_expired_for_gate(path_scan_status, total_deadline)
             && !command_run.results.iter().any(is_aggregate_budget_result))
     {
         command_run.results.push(commands::budget_unverified());
@@ -593,7 +739,7 @@ fn run_inner_with_options(
     if let Some(reason) = workspace_error {
         results.push(commands::invalid_workspace(&reason));
     }
-    if deadline_expired_for_gate(path_scan_incomplete, total_deadline)
+    if deadline_expired_for_gate(path_scan_status, total_deadline)
         && !results.iter().any(is_aggregate_budget_result)
     {
         let mut timeout = commands::budget_unverified();
@@ -626,7 +772,7 @@ fn run_inner_with_options(
         &waivers,
     )?;
 
-    if deadline_expired_for_gate(path_scan_incomplete, total_deadline)
+    if deadline_expired_for_gate(path_scan_status, total_deadline)
         && !results.iter().any(is_aggregate_budget_result)
     {
         let mut timeout = commands::budget_unverified();
@@ -669,7 +815,7 @@ fn run_inner_with_options(
             mutation.severity = Severity::Error;
         }
         results.push(mutation);
-        append_task_evidence(
+        let _ = append_task_evidence(
             EvidenceMeta {
                 adapter,
                 root: &root,
@@ -708,8 +854,12 @@ fn deadline_expired(deadline: Option<Instant>) -> bool {
     deadline.is_some_and(|deadline| Instant::now() >= deadline)
 }
 
-fn deadline_expired_for_gate(path_scan_incomplete: bool, deadline: Option<Instant>) -> bool {
-    deadline.is_some() && (path_scan_incomplete || deadline_expired(deadline))
+fn deadline_expired_for_gate(
+    path_scan_status: CheckPathScanStatus,
+    deadline: Option<Instant>,
+) -> bool {
+    deadline
+        .is_some_and(|deadline| path_scan_status.is_deadline() || deadline_expired(Some(deadline)))
 }
 
 fn effective_tier(tier: Option<&str>) -> &str {
@@ -878,6 +1028,8 @@ fn workspace_touched(root: &Path, workspace_root: &Path, touched_paths: &[String
         .any(|path| Path::new(path).starts_with(&workspace))
 }
 
+// Command results are reusable only if their post-command digest still matches
+// the state originally presented to the scanners.
 fn bind_command_provenance(
     config_digest: &str,
     paths: &[String],
@@ -886,10 +1038,6 @@ fn bind_command_provenance(
     pre_scan_digest: Option<&str>,
     evidence: &mut [commands::CommandEvidence],
 ) -> (Option<String>, bool) {
-    // A command may change valid content after all scanners have finished. Only
-    // a bounded post-command digest equal to the retained pre-scan checkpoint
-    // is reusable. Once uncertainty is already latched, avoid another read and
-    // put the non-reusable sentinel on every nested command record.
     let (touched_files_digest, verified_digest, digest_uncertain) = if reuse_uncertain {
         (UNCERTAIN_TOUCHED_FILES_DIGEST.to_string(), None, false)
     } else {
@@ -916,6 +1064,9 @@ fn matching_full_evidence(
     reuse_uncertain: bool,
 ) -> Option<Vec<commands::CommandEvidence>> {
     let session_id = session_id?;
+    // Reuse is authorization, not just a digest lookup: revalidate that the
+    // current path is a trusted regular file (or an absent default config) and
+    // parse the exact bytes whose digest is compared with durable evidence.
     let snapshot = commands::load_snapshot(root);
     let settings = snapshot.settings.as_ref().ok()?;
     if !settings.commands.is_empty() && settings.structured.is_empty() {
@@ -957,15 +1108,9 @@ fn matching_full_evidence(
             crate::fsutil::directory_identity(&capability).ok()
         })
         .collect::<Option<Vec<_>>>()?;
-    // Reuse is authorization, not just a digest lookup: reject an uncertain
-    // candidate set even when the known paths happen to have a reusable
-    // digest. Keep this after all configuration, command, coverage,
-    // capability, identity, and path checks so those provenance checks are not
-    // bypassed by an early return.
     if reuse_uncertain {
         return None;
     }
-    // Parse the exact bytes whose digest is compared with durable evidence.
     let expected_files = digest_paths_until(paths, None)?;
     let raw = crate::fsutil::read_optional_bounded(
         &root.join(".lgtm/evidence/evidence.jsonl"),
@@ -1029,9 +1174,6 @@ fn full_record_passed(
     {
         return false;
     }
-    // Command evidence is reusable only when each command carries the same
-    // complete provenance as the top-level record. In particular, a command
-    // sentinel must not be hidden beneath a reusable top-level digest.
     if record.touched_files_digest == UNCERTAIN_TOUCHED_FILES_DIGEST
         || !record.commands.iter().all(|evidence| {
             evidence.touched_files_digest.as_deref() == Some(record.touched_files_digest.as_str())
@@ -1586,7 +1728,7 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
                 &mut raw_candidates,
                 &mut resolved_candidates,
             ) {
-                Ok(path) => path,
+                Ok(candidate) => candidate,
                 Err(()) => {
                     retain_structural_issue(
                         &mut structural_issue,
@@ -1617,7 +1759,7 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
                 &mut raw_candidates,
                 &mut resolved_candidates,
             ) {
-                Ok(path) => path,
+                Ok(candidate) => candidate,
                 Err(()) => {
                     retain_structural_issue(
                         &mut structural_issue,
@@ -1640,9 +1782,6 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
             }
         }
     }
-    // A structural or truncation issue can hide additional candidates even
-    // when the surviving paths resolved successfully, so its digest cannot
-    // authorize reuse either.
     let reuse_uncertain =
         reuse_uncertain || structural_issue.is_some() || truncation_issue.is_some();
     Ok(TouchedPaths {
@@ -1654,8 +1793,121 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
     })
 }
 
-const MAX_CHECK_PATHS: usize = 512;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckPathScanStatus {
+    Complete,
+    EntryLimit,
+    DepthLimit,
+    Deadline,
+}
+
+impl CheckPathScanStatus {
+    fn is_complete(self) -> bool {
+        self == Self::Complete
+    }
+
+    fn is_deadline(self) -> bool {
+        self == Self::Deadline
+    }
+}
+
 const MAX_CHECK_PATH_ENTRIES: usize = 16_384;
+const MAX_CHECK_PATH_DEPTH: usize = 8;
+const CHECK_PATH_SCAN_RULE_ID: &str = "repository-source-scan";
+const CHECK_PATH_SCAN_CHECK: &str = "repository.source_scan";
+
+#[cfg(test)]
+fn check_paths(root: &Path) -> Result<Vec<String>, String> {
+    check_paths_with_deadline(root, None).map(|(paths, _, _)| paths)
+}
+
+const EXCLUDED_CHECK_SUBTREES: [&str; 5] = [
+    ".pi/orca-recovery",
+    ".pi/subagents",
+    ".pi/subagent-output",
+    ".pi/npm",
+    ".killer-whale",
+];
+
+fn check_path_scan_result(
+    status: CheckPathScanStatus,
+    pre_commit: bool,
+) -> Option<EnforcementResult> {
+    let (message, remediation) = match status {
+        CheckPathScanStatus::Complete | CheckPathScanStatus::Deadline => return None,
+        CheckPathScanStatus::EntryLimit => (
+            format!(
+                "reached the maximum of {MAX_CHECK_PATH_ENTRIES} directory entries; some files were not checked"
+            ),
+            format!(
+                "Reduce the number of directory entries scanned below {MAX_CHECK_PATH_ENTRIES}, then retry Stop."
+            ),
+        ),
+        CheckPathScanStatus::DepthLimit => (
+            format!(
+                "exceeded the maximum repository scan depth of {MAX_CHECK_PATH_DEPTH}; some files were not checked"
+            ),
+            format!(
+                "Reduce repository nesting below the maximum scan depth of {MAX_CHECK_PATH_DEPTH}, then retry Stop."
+            ),
+        ),
+    };
+    Some(EnforcementResult {
+        rule_id: CHECK_PATH_SCAN_RULE_ID.to_string(),
+        status: if pre_commit {
+            Status::Failed
+        } else {
+            Status::Unverified
+        },
+        severity: Severity::Error,
+        message: format!("Repository source scan {message}."),
+        locations: Vec::new(),
+        remediation: Some(remediation),
+        evidence: ResultEvidence {
+            check: CHECK_PATH_SCAN_CHECK.to_string(),
+            tool_version: None,
+            finding_descriptions: Vec::new(),
+        },
+    })
+}
+
+fn check_paths_with_deadline(
+    root: &Path,
+    deadline: Option<Instant>,
+) -> Result<(Vec<String>, CheckPathScanStatus, bool), String> {
+    let mut paths = Vec::new();
+    let mut entries_seen = 0;
+    let mut scan = CheckPathScan {
+        status: CheckPathScanStatus::Complete,
+        reuse_uncertain: false,
+    };
+    collect_check_paths(
+        root,
+        root,
+        0,
+        &mut paths,
+        deadline,
+        &mut entries_seen,
+        &mut scan,
+    )?;
+    paths.sort();
+    paths.dedup();
+    if scan.status.is_complete() && deadline_expired(deadline) {
+        scan.status = CheckPathScanStatus::Deadline;
+    }
+    scan.reuse_uncertain |= !scan.status.is_complete();
+    Ok((paths, scan.status, scan.reuse_uncertain))
+}
+
+fn is_excluded_check_subtree(root: &Path, current: &Path) -> bool {
+    let Ok(relative) = current.strip_prefix(root) else {
+        return false;
+    };
+    EXCLUDED_CHECK_SUBTREES.iter().any(|subtree| {
+        let subtree = Path::new(subtree);
+        relative == subtree || relative.starts_with(subtree)
+    })
+}
 
 fn is_supported_check_path(path: &Path) -> bool {
     path.extension()
@@ -1678,40 +1930,11 @@ fn is_supported_check_path(path: &Path) -> bool {
         })
 }
 
-#[cfg(test)]
-fn check_paths(root: &Path) -> Result<Vec<String>, String> {
-    check_paths_with_deadline(root, None).map(|(paths, _, _)| paths)
+struct CheckPathScan {
+    status: CheckPathScanStatus,
+    reuse_uncertain: bool,
 }
 
-fn check_paths_with_deadline(
-    root: &Path,
-    deadline: Option<Instant>,
-) -> Result<(Vec<String>, bool, bool), String> {
-    let mut paths = Vec::new();
-    let mut entries_seen = 0;
-    let mut incomplete = false;
-    let mut reuse_uncertain = false;
-    collect_check_paths(
-        root,
-        root,
-        0,
-        &mut paths,
-        deadline,
-        &mut entries_seen,
-        &mut incomplete,
-        &mut reuse_uncertain,
-    )?;
-    paths.sort();
-    paths.dedup();
-    if deadline_expired(deadline) {
-        incomplete = true;
-        reuse_uncertain = true;
-    }
-    Ok((paths, incomplete, reuse_uncertain))
-}
-
-// Independent mutable arguments are bounded traversal accumulators kept explicit for recursive scanning.
-#[allow(clippy::too_many_arguments)]
 fn collect_check_paths(
     root: &Path,
     current: &Path,
@@ -1719,24 +1942,34 @@ fn collect_check_paths(
     paths: &mut Vec<String>,
     deadline: Option<Instant>,
     entries_seen: &mut usize,
-    incomplete: &mut bool,
-    reuse_uncertain: &mut bool,
+    scan: &mut CheckPathScan,
 ) -> Result<(), String> {
-    if deadline_expired(deadline)
-        || depth > 8
-        || paths.len() >= MAX_CHECK_PATHS
-        || *entries_seen >= MAX_CHECK_PATH_ENTRIES
-    {
-        *incomplete = true;
-        *reuse_uncertain = true;
+    if deadline_expired(deadline) {
+        scan.status = CheckPathScanStatus::Deadline;
+        scan.reuse_uncertain = true;
+        return Ok(());
+    }
+    if depth > MAX_CHECK_PATH_DEPTH {
+        scan.status = CheckPathScanStatus::DepthLimit;
+        scan.reuse_uncertain = true;
+        return Ok(());
+    }
+    if *entries_seen >= MAX_CHECK_PATH_ENTRIES {
+        scan.status = CheckPathScanStatus::EntryLimit;
+        scan.reuse_uncertain = true;
         return Ok(());
     }
     let entries =
         std::fs::read_dir(current).map_err(|error| format!("scan check paths ({error})"))?;
     for entry in entries {
-        if deadline_expired(deadline) || *entries_seen >= MAX_CHECK_PATH_ENTRIES {
-            *incomplete = true;
-            *reuse_uncertain = true;
+        if deadline_expired(deadline) {
+            scan.status = CheckPathScanStatus::Deadline;
+            scan.reuse_uncertain = true;
+            break;
+        }
+        if *entries_seen >= MAX_CHECK_PATH_ENTRIES {
+            scan.status = CheckPathScanStatus::EntryLimit;
+            scan.reuse_uncertain = true;
             break;
         }
         *entries_seen += 1;
@@ -1745,21 +1978,19 @@ fn collect_check_paths(
         let metadata = std::fs::symlink_metadata(&path)
             .map_err(|error| format!("inspect check path ({error})"))?;
         if metadata.file_type().is_symlink() {
-            // A symlink can hide a supported file behind an extensionless
-            // directory entry, so every encountered symlink makes the
-            // candidate set non-reusable even though it is never scanned.
-            *reuse_uncertain = true;
+            scan.reuse_uncertain = true;
             continue;
         }
         let supported = path.strip_prefix(root).is_ok() && is_supported_check_path(&path);
         if supported && !metadata.file_type().is_file() {
-            *reuse_uncertain = true;
+            scan.reuse_uncertain = true;
         }
         if metadata.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
             let relative = path.strip_prefix(root).unwrap_or(&path);
             if relative != Path::new("tests/fixtures/semgrep-python")
                 && relative != Path::new("tests/fixtures/pi/0.84.2/captures")
+                && !is_excluded_check_subtree(root, &path)
                 && !matches!(
                     name.as_str(),
                     ".git"
@@ -1774,32 +2005,16 @@ fn collect_check_paths(
                         | "venv"
                 )
             {
-                collect_check_paths(
-                    root,
-                    &path,
-                    depth + 1,
-                    paths,
-                    deadline,
-                    entries_seen,
-                    incomplete,
-                    reuse_uncertain,
-                )?;
+                collect_check_paths(root, &path, depth + 1, paths, deadline, entries_seen, scan)?;
             }
         } else if metadata.is_file() && supported {
             let Some(path) = path.to_str() else {
-                // A lossy spelling could collide with another repository path
-                // and would not identify the file the scanner should read.
-                *reuse_uncertain = true;
+                scan.reuse_uncertain = true;
                 continue;
             };
             paths.push(path.to_owned());
-            if paths.len() >= MAX_CHECK_PATHS {
-                *incomplete = true;
-                *reuse_uncertain = true;
-                break;
-            }
         }
-        if *incomplete {
+        if !scan.status.is_complete() {
             break;
         }
     }
@@ -1813,10 +2028,6 @@ fn canonical_contained_file(root: &Path, file: &str) -> Option<String> {
     } else {
         root.join(path)
     };
-    // Reject symlinked ancestors as well as a symlink final component before
-    // canonicalization can follow any of them into a different filesystem
-    // object. A path that cannot be represented losslessly is not a reusable
-    // string candidate either.
     if crate::fsutil::path_contains_symlink(&candidate) {
         return None;
     }
@@ -1902,8 +2113,7 @@ pub fn write_pi_settled_evidence(root: &Path, session_id: &str) -> Result<(), St
     let empty_overrides: Vec<crate::policy::overrides::OverrideRecord> = Vec::new();
     let empty_waivers: Vec<crate::policy::waivers::Waiver> = Vec::new();
     let config_digest = commands::load_snapshot(root).digest;
-    let verified_post_command_digest = digest_paths_until(&empty_sources, None)
-        .unwrap_or_else(|| UNCERTAIN_TOUCHED_FILES_DIGEST.to_string());
+    let verified_post_command_digest = digest_paths_until(&empty_sources, None);
     append_task_evidence(
         EvidenceMeta {
             adapter: &adapter,
@@ -1912,8 +2122,8 @@ pub fn write_pi_settled_evidence(root: &Path, session_id: &str) -> Result<(), St
             session_id: Some(session_id),
             profile: "pi",
             paths: &empty_sources,
-            reuse_uncertain: false,
-            verified_post_command_digest: Some(&verified_post_command_digest),
+            reuse_uncertain: verified_post_command_digest.is_none(),
+            verified_post_command_digest: verified_post_command_digest.as_deref(),
             config_digest: &config_digest,
             started_at_ms: now,
             finished_at_ms: now,
@@ -1951,9 +2161,8 @@ fn append_task_evidence(
             reason: state.reason,
         }
     });
-    // The command-bound digest is the state that the checks actually
-    // authorized. Re-read once immediately before persistence and make any
-    // failed or changed read permanently non-reusable for this record.
+    // Evidence is reusable only if the final bounded read still matches the
+    // checkpoint verified after repository commands.
     let persistence_digest_uncertain = !metadata.reuse_uncertain
         && !matches!(
             (
@@ -1970,9 +2179,6 @@ fn append_task_evidence(
             str::to_string,
         )
     };
-    // Persistence can discover uncertainty after command provenance was bound.
-    // Clone the records for this durable snapshot so the nested digest cannot
-    // disagree with the top-level digest, while preserving every other field.
     let mut record_commands = commands.to_vec();
     for command in &mut record_commands {
         command.touched_files_digest = Some(touched_files_digest.clone());
@@ -2041,12 +2247,8 @@ fn digest_paths(paths: &[String]) -> String {
 }
 
 fn digest_paths_until(paths: &[String], deadline: Option<Instant>) -> Option<String> {
-    use sha2::{Digest, Sha256};
-
-    // Hash each bounded file as it is read instead of assembling all touched
-    // file contents into one aggregate allocation. Production callers already
-    // cap paths at MAX_TOUCHED_PATHS; retain that bound here as a defense for
-    // future callers too.
+    // This independent digest bound disables reuse; repository scanning keeps
+    // its separate entry/depth limits and never truncates at this path count.
     if paths.len() > MAX_TOUCHED_PATHS {
         return None;
     }
@@ -2057,12 +2259,7 @@ fn digest_paths_until(paths: &[String], deadline: Option<Instant>) -> Option<Str
         }
         let contents =
             crate::fsutil::read_required_bounded(Path::new(path), MAX_DIGEST_FILE_BYTES)?;
-        if contents.as_bytes().contains(&0) {
-            // The legacy path\0content\0 framing is not injective for NUL
-            // content, so this file cannot be used for digest reuse.
-            return None;
-        }
-        if deadline_expired(deadline) {
+        if contents.as_bytes().contains(&0) || deadline_expired(deadline) {
             return None;
         }
         hasher.update(path.as_bytes());
@@ -2690,8 +2887,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn full_check_marks_supported_symlink_uncertain_without_scanning_it() {
-        use std::os::unix::fs::symlink;
-
         let fixture = TestTempDir::new("check-path-symlink-uncertain");
         let source = fixture.path.join("src/ordinary.rs");
         let target = fixture.path.join("vendor/ignored.json");
@@ -2699,109 +2894,18 @@ mod tests {
         std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
         std::fs::create_dir_all(target.parent().expect("ignored parent"))
             .expect("ignored directory");
-        std::fs::write(&source, "fn value() -> u8 { 1 }\n").expect("ordinary source");
-        std::fs::write(&target, "{\"state\":\"initial\"}\n").expect("ignored target");
-        symlink("../vendor/ignored.json", &link).expect("supported-extension symlink");
+        std::fs::write(&source, "fn value() -> u8 { 1 }\\n").expect("ordinary source");
+        std::fs::write(&target, "{}\\n").expect("ignored target");
+        std::os::unix::fs::symlink("../vendor/ignored.json", &link)
+            .expect("supported-extension symlink");
 
-        let (paths, path_scan_incomplete, reuse_uncertain) =
+        let (paths, status, reuse_uncertain) =
             check_paths_with_deadline(&fixture.path, None).expect("check paths");
-        let source = source.to_string_lossy().into_owned();
-        let link = link.to_string_lossy().into_owned();
-        let target = target.to_string_lossy().into_owned();
-        assert!(!path_scan_incomplete, "the bounded scan completed");
-        assert!(
-            reuse_uncertain,
-            "the supported symlink makes reuse uncertain"
-        );
-        assert!(paths.iter().any(|path| path == &source));
-        assert!(!paths.iter().any(|path| path == &link));
-        assert!(!paths.iter().any(|path| path == &target));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn full_check_marks_extensionless_directory_symlink_uncertain_without_traversing_it() {
-        use std::os::unix::fs::symlink;
-
-        let fixture = TestTempDir::new("check-path-directory-symlink-uncertain");
-        let source = fixture.path.join("src/ordinary.rs");
-        let hidden = fixture.path.join("src/hidden");
-        let descendant = fixture.path.join("vendor/hidden/descendant.rs");
-        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
-        std::fs::create_dir_all(descendant.parent().expect("hidden target parent"))
-            .expect("hidden target directory");
-        std::fs::write(&source, "fn value() -> u8 { 1 }\n").expect("ordinary source");
-        std::fs::write(&descendant, "fn hidden() -> u8 { 1 }\n").expect("hidden source");
-        symlink("../vendor/hidden", &hidden).expect("extensionless directory symlink");
-
-        let (paths, path_scan_incomplete, reuse_uncertain) =
-            check_paths_with_deadline(&fixture.path, None).expect("check paths");
-        let source = source.to_string_lossy().into_owned();
-        let hidden = hidden.to_string_lossy().into_owned();
-        let descendant = descendant.to_string_lossy().into_owned();
-        assert!(!path_scan_incomplete, "the bounded scan completed");
-        assert!(
-            reuse_uncertain,
-            "an extensionless directory symlink makes reuse uncertain"
-        );
-        assert!(paths.iter().any(|path| path == &source));
-        assert!(!paths.iter().any(|path| path == &hidden));
-        assert!(
-            !paths.iter().any(|path| path == &descendant),
-            "a supported descendant hidden behind the symlink must not be scanned"
-        );
-    }
-
-    #[test]
-    fn full_check_marks_overdepth_descendant_uncertain_without_scanning_it() {
-        let boundary_fixture = TestTempDir::new("check-path-depth-boundary");
-        let mut boundary_directory = boundary_fixture.path.clone();
-        for index in 0..8 {
-            boundary_directory.push(format!("depth-{index}"));
-        }
-        std::fs::create_dir_all(&boundary_directory).expect("depth-boundary directories");
-        let boundary_source = boundary_directory.join("boundary.rs");
-        std::fs::write(&boundary_source, "fn boundary() -> u8 { 1 }\n")
-            .expect("depth-boundary source");
-        let (boundary_paths, boundary_incomplete, boundary_uncertain) =
-            check_paths_with_deadline(&boundary_fixture.path, None).expect("boundary check paths");
-        let boundary_source = boundary_source.to_string_lossy().into_owned();
-        assert!(
-            !boundary_incomplete,
-            "a supported file at the depth boundary remains fully scannable"
-        );
-        assert!(
-            !boundary_uncertain,
-            "a supported file at the depth boundary does not make reuse uncertain"
-        );
-        assert!(
-            boundary_paths.iter().any(|path| path == &boundary_source),
-            "the supported depth-boundary file is scanned"
-        );
-
-        let over_fixture = TestTempDir::new("check-path-overdepth");
-        let mut over_directory = over_fixture.path.clone();
-        for index in 0..9 {
-            over_directory.push(format!("depth-{index}"));
-        }
-        std::fs::create_dir_all(&over_directory).expect("over-depth directories");
-        let over_source = over_directory.join("over.rs");
-        std::fs::write(&over_source, "fn over() -> u8 { 1 }\n").expect("over-depth source");
-        let (over_paths, over_incomplete, over_uncertain) =
-            check_paths_with_deadline(&over_fixture.path, None).expect("over-depth check paths");
-        let over_source = over_source.to_string_lossy().into_owned();
-        assert!(
-            over_incomplete,
-            "a descendant beyond the scanner depth makes the scan incomplete"
-        );
-        assert!(
-            over_uncertain,
-            "a descendant beyond the scanner depth disables evidence reuse"
-        );
-        assert!(
-            !over_paths.iter().any(|path| path == &over_source),
-            "a supported descendant beyond the depth boundary is not scanned"
-        );
+        assert_eq!(status, CheckPathScanStatus::Complete);
+        assert!(reuse_uncertain, "the symlink makes reuse uncertain");
+        assert!(paths.iter().any(|path| Path::new(path) == source));
+        assert!(!paths.iter().any(|path| Path::new(path) == link));
+        assert!(!paths.iter().any(|path| Path::new(path) == target));
     }
 
     #[test]
@@ -2810,45 +2914,36 @@ mod tests {
         let source = fixture.path.join("src/ordinary.rs");
         let non_regular = fixture.path.join("src/generated.rs");
         std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
-        std::fs::write(&source, "fn value() -> u8 { 1 }\n").expect("ordinary source");
+        std::fs::write(&source, "fn value() -> u8 { 1 }\\n").expect("ordinary source");
         std::fs::create_dir(&non_regular).expect("supported-extension directory");
 
-        let (paths, path_scan_incomplete, reuse_uncertain) =
+        let (paths, status, reuse_uncertain) =
             check_paths_with_deadline(&fixture.path, None).expect("check paths");
-        let source = source.to_string_lossy().into_owned();
-        let non_regular = non_regular.to_string_lossy().into_owned();
-        assert!(!path_scan_incomplete, "the bounded scan completed");
+        assert_eq!(status, CheckPathScanStatus::Complete);
         assert!(
             reuse_uncertain,
-            "the supported non-regular path makes reuse uncertain"
+            "the non-regular candidate makes reuse uncertain"
         );
-        assert!(paths.iter().any(|path| path == &source));
-        assert!(!paths.iter().any(|path| path == &non_regular));
+        assert!(paths.iter().any(|path| Path::new(path) == source));
+        assert!(!paths.iter().any(|path| Path::new(path) == non_regular));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn full_check_marks_supported_unix_socket_uncertain_without_scanning_it() {
-        use std::os::unix::net::UnixListener;
+    fn full_check_marks_overdepth_descendant_uncertain_without_scanning_it() {
+        let fixture = TestTempDir::new("check-path-overdepth");
+        let mut directory = fixture.path.clone();
+        for index in 0..=MAX_CHECK_PATH_DEPTH {
+            directory.push(format!("depth-{index}"));
+        }
+        std::fs::create_dir_all(&directory).expect("over-depth directories");
+        let source = directory.join("over.rs");
+        std::fs::write(&source, "fn over() -> u8 { 1 }\\n").expect("over-depth source");
 
-        let fixture = TestTempDir::new("sock");
-        let source = fixture.path.join("src/ordinary.rs");
-        let socket = fixture.path.join("a.rs");
-        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
-        std::fs::write(&source, "fn value() -> u8 { 1 }\n").expect("ordinary source");
-        let _listener = UnixListener::bind(&socket).expect("supported-extension socket");
-
-        let (paths, path_scan_incomplete, reuse_uncertain) =
+        let (paths, status, reuse_uncertain) =
             check_paths_with_deadline(&fixture.path, None).expect("check paths");
-        let source = source.to_string_lossy().into_owned();
-        let socket = socket.to_string_lossy().into_owned();
-        assert!(!path_scan_incomplete, "the bounded scan completed");
-        assert!(
-            reuse_uncertain,
-            "the supported socket makes reuse uncertain"
-        );
-        assert!(paths.iter().any(|path| path == &source));
-        assert!(!paths.iter().any(|path| path == &socket));
+        assert_eq!(status, CheckPathScanStatus::DepthLimit);
+        assert!(reuse_uncertain, "an incomplete scan cannot authorize reuse");
+        assert!(!paths.iter().any(|path| Path::new(path) == source));
     }
 
     #[cfg(target_os = "linux")]
@@ -2858,124 +2953,142 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
 
         let fixture = TestTempDir::new("check-path-non-utf8");
-        let source = fixture.path.join("src/ordinary.rs");
-        let source_directory = source.parent().expect("source parent");
-        std::fs::create_dir_all(source_directory).expect("source directory");
-        std::fs::write(&source, "fn value() -> u8 { 1 }\n").expect("ordinary source");
+        let source_directory = fixture.path.join("src");
+        std::fs::create_dir_all(&source_directory).expect("source directory");
+        std::fs::write(source_directory.join("ordinary.rs"), "fn ordinary() {}\\n")
+            .expect("ordinary source");
+        let non_utf8 = source_directory.join(OsString::from_vec(b"tracked-\xff.rs".to_vec()));
+        std::fs::write(&non_utf8, "fn tracked() {}\\n").expect("non-UTF-8 source");
+        let lossy_path = non_utf8.to_string_lossy().into_owned();
 
-        let first = source_directory.join(OsString::from_vec(b"collision-\xff.rs".to_vec()));
-        let second = source_directory.join(OsString::from_vec(b"collision-\xfe.rs".to_vec()));
-        std::fs::write(&first, "fn first() -> u8 { 1 }\n").expect("first non-UTF-8 source");
-        std::fs::write(&second, "fn second() -> u8 { 1 }\n").expect("second non-UTF-8 source");
-        let first_lossy = first.to_string_lossy().into_owned();
-        let second_lossy = second.to_string_lossy().into_owned();
-        assert_eq!(
-            first_lossy, second_lossy,
-            "the fixture must exercise a lossy path collision"
-        );
-
-        let (paths, path_scan_incomplete, reuse_uncertain) =
+        let (paths, status, reuse_uncertain) =
             check_paths_with_deadline(&fixture.path, None).expect("check paths");
-        let source = source.to_string_lossy().into_owned();
-        assert!(!path_scan_incomplete, "the bounded scan completed");
-        assert!(
-            reuse_uncertain,
-            "non-UTF-8 supported paths make reuse uncertain"
-        );
-        assert!(paths.iter().any(|path| path == &source));
-        assert!(
-            !paths.iter().any(|path| path == &first_lossy),
-            "a lossy non-UTF-8 path must stay out of scanner and digest paths"
-        );
+        assert_eq!(status, CheckPathScanStatus::Complete);
+        assert!(reuse_uncertain, "non-UTF-8 source names prevent reuse");
+        assert!(!paths.iter().any(|path| path == &lossy_path));
+        assert!(paths.iter().any(|path| path.ends_with("ordinary.rs")));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn uncertain_candidate_does_not_select_an_unrelated_workspace_command() {
-        let fixture = TestTempDir::new("uncertain-workspace-selection");
-        let first_workspace = fixture.path.join("workspace-a");
-        let second_workspace = fixture.path.join("workspace-b");
-        let anchor = first_workspace.join("tests/anchor.rs");
-        std::fs::create_dir_all(anchor.parent().expect("anchor parent"))
-            .expect("first workspace directory");
-        std::fs::create_dir_all(&second_workspace).expect("second workspace directory");
-        std::fs::write(&anchor, "fn anchor() -> u8 { 1 }\n").expect("anchor source");
-
-        let bin = fixture.path.join("bin");
-        std::fs::create_dir_all(&bin).expect("command directory");
-        let first_command = bin.join("first-check");
-        let second_command = bin.join("second-check");
-        for command in [&first_command, &second_command] {
-            std::fs::write(command, "#!/bin/sh\nexit 0\n").expect("workspace command");
-            std::fs::set_permissions(command, std::fs::Permissions::from_mode(0o700))
-                .expect("workspace command executable");
+    fn runtime_subtrees_are_excluded_without_excluding_legitimate_pi_files() {
+        let fixture = TestTempDir::new("check-path-runtime-subtrees");
+        for directory in [
+            ".pi/orca-recovery",
+            ".pi/subagents",
+            ".pi/subagent-output",
+            ".pi/npm",
+            ".killer-whale",
+        ] {
+            let directory = fixture.path.join(directory);
+            std::fs::create_dir_all(&directory).expect("runtime directory");
+            for index in 0..128 {
+                std::fs::write(directory.join(format!("{index}.json")), "{}\n")
+                    .expect("runtime artifact");
+            }
+        }
+        for (relative, contents) in [
+            (".pi/extensions/lgtm.ts", "export default {};\n"),
+            (".pi/settings.json", "{}\n"),
+            (".pi/pi-lsp.json", "{}\n"),
+            (".pi/subagents-copy/keep.json", "{}\n"),
+            (".killer-whale-extra/keep.json", "{}\n"),
+        ] {
+            let path = fixture.path.join(relative);
+            std::fs::create_dir_all(path.parent().expect("fixture parent"))
+                .expect("fixture parent directory");
+            std::fs::write(path, contents).expect("legitimate fixture");
         }
 
-        let session_id = "uncertain-workspace-selection-session";
-        let record = serde_json::json!({
-            "session_id": session_id,
-            "edited_file": "workspace-a/tests/anchor.rs",
-            "result": {
-                "rule_id": "no-committed-secrets",
-                "status": "passed",
-                "severity": "error",
-                "message": "clean",
-                "locations": [{"file": "workspace-a/src/missing.rs", "line": 1}],
-                "evidence": {
-                    "check": "gitleaks.detect",
-                    "tool_version": null,
-                    "finding_descriptions": []
-                }
-            }
-        });
-        write_ledger(&fixture.path, format!("{record}\n").as_bytes());
-        let touched = touched_paths(&fixture.path, Some(session_id)).expect("ledger parses");
-        assert!(touched.reuse_uncertain, "the missing location is uncertain");
-        assert_eq!(touched.files, vec![anchor.to_string_lossy().into_owned()]);
-
-        let settings = commands::Settings {
-            commands: Vec::new(),
-            structured: vec![
-                commands::StructuredCommand {
-                    argv: vec![first_command.to_string_lossy().into_owned()],
-                    workspace_root: "workspace-a".into(),
-                    cwd: "workspace-a".into(),
-                    workspace_id: "workspace-a".to_string(),
-                    tier: "full".to_string(),
-                    timeout: Duration::from_secs(30),
-                },
-                commands::StructuredCommand {
-                    argv: vec![second_command.to_string_lossy().into_owned()],
-                    workspace_root: "workspace-b".into(),
-                    cwd: "workspace-b".into(),
-                    workspace_id: "workspace-b".to_string(),
-                    tier: "full".to_string(),
-                    timeout: Duration::from_secs(30),
-                },
-            ],
-            timeout: Duration::from_secs(30),
-            coverage: Vec::new(),
-            workspace_ids: vec!["workspace-a".to_string(), "workspace-b".to_string()],
-        };
-        let mut budget = commands::ExecutionBudget::new(Duration::from_secs(1));
-        let (run, coverage) = run_repository_commands(
+        let (paths, status, _) = check_paths_with_deadline(
             &fixture.path,
-            Ok(&settings),
-            None,
-            Some("full"),
-            &touched.files,
-            &mut budget,
+            Instant::now().checked_add(Duration::from_secs(30)),
+        )
+        .expect("check paths");
+
+        assert_eq!(status, CheckPathScanStatus::Complete);
+        for relative in [
+            ".pi/extensions/lgtm.ts",
+            ".pi/settings.json",
+            ".pi/pi-lsp.json",
+            ".pi/subagents-copy/keep.json",
+            ".killer-whale-extra/keep.json",
+        ] {
+            assert!(
+                paths.iter().any(|path| Path::new(path).ends_with(relative)),
+                "legitimate path was not collected: {relative}"
+            );
+        }
+        for relative in [
+            ".pi/orca-recovery",
+            ".pi/subagents",
+            ".pi/subagent-output",
+            ".pi/npm",
+            ".killer-whale",
+        ] {
+            assert!(
+                !paths
+                    .iter()
+                    .any(|path| Path::new(path).starts_with(relative)),
+                "runtime subtree was collected: {relative}"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_scan_includes_all_source_files_beyond_512() {
+        let fixture = TestTempDir::new("check-path-real-source-limit");
+        let source_directory = fixture.path.join("src");
+        std::fs::create_dir_all(&source_directory).expect("source directory");
+        for index in 0..1024 {
+            std::fs::write(
+                source_directory.join(format!("source-{index}.rs")),
+                "pub fn value() -> u8 { 1 }\n",
+            )
+            .expect("source fixture");
+        }
+
+        let (paths, status, reuse_uncertain) = check_paths_with_deadline(
+            &fixture.path,
+            Instant::now().checked_add(Duration::from_secs(30)),
+        )
+        .expect("check paths");
+        assert_eq!(paths.len(), 1024);
+        assert_eq!(status, CheckPathScanStatus::Complete);
+        assert!(!reuse_uncertain, "the repository source scan is complete");
+        assert!(
+            digest_paths_until(&paths, None).is_none(),
+            "the independent digest bound disables reuse without truncating source scans"
         );
-        assert_eq!(
-            run.evidence.len(),
-            1,
-            "only the touched workspace is selected"
+        assert!(check_path_scan_result(status, true).is_none());
+    }
+
+    #[test]
+    fn expired_check_path_deadline_is_not_classified_as_path_limit() {
+        let fixture = TestTempDir::new("check-path-expired-deadline");
+        let (_, status, reuse_uncertain) =
+            check_paths_with_deadline(&fixture.path, Some(Instant::now()))
+                .expect("expired scan is classified");
+
+        assert_eq!(status, CheckPathScanStatus::Deadline);
+        assert!(
+            reuse_uncertain,
+            "an expired scan cannot authorize digest reuse"
         );
-        assert_eq!(run.evidence[0].workspace_id.as_deref(), Some("workspace-a"));
-        assert_eq!(run.results.len(), 1);
-        assert_eq!(run.results[0].status, Status::Passed);
-        assert_eq!(coverage.len(), 1);
-        assert_eq!(coverage[0].status, "not_applicable");
+        assert!(check_path_scan_result(status, true).is_none());
+        let result = run_pre_commit_gate_with_limits(
+            &fixture.path,
+            Some("expired-check-path-deadline"),
+            Duration::from_secs(1),
+            Some(Instant::now()),
+        )
+        .expect("expired gate returns a decision");
+        assert!(result.is_some(), "expired gate must deny");
+        assert!(
+            result
+                .as_deref()
+                .is_some_and(|reason| reason.contains("aggregate execution budget expired")),
+            "expired deadline must remain an aggregate timeout: {result:?}"
+        );
     }
 
     #[test]
@@ -3314,35 +3427,6 @@ mod tests {
             .expect("evidence directory");
         std::os::unix::fs::symlink(&target, &ledger).expect("ledger symlink");
         assert_stop_reports_unverified(&fixture.path, "symlink-session");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn current_task_ledger_candidate_through_symlinked_ancestor_is_uncertain() {
-        use std::os::unix::fs::symlink;
-
-        let fixture = TestTempDir::new("ledger-symlink-ancestor");
-        let target = fixture.path.join("real/target.py");
-        let alias = fixture.path.join("alias");
-        std::fs::create_dir_all(target.parent().expect("target parent")).expect("target directory");
-        std::fs::write(&target, "value = 1\n").expect("target source");
-        symlink("real", &alias).expect("symlinked ancestor");
-        write_ledger(
-            &fixture.path,
-            valid_ledger_line("symlink-ancestor-session", "alias/target.py", "passed").as_bytes(),
-        );
-
-        let touched =
-            touched_paths(&fixture.path, Some("symlink-ancestor-session")).expect("ledger parses");
-        assert!(touched.had_edits);
-        assert!(
-            touched.reuse_uncertain,
-            "a ledger candidate through a symlinked ancestor is not reusable"
-        );
-        assert!(
-            touched.files.is_empty(),
-            "symlinked ledger candidates must stay out of scanner paths"
-        );
     }
 
     #[cfg(unix)]
@@ -3901,54 +3985,30 @@ mod tests {
         let touched = touched_paths(&fixture.path, Some("session")).expect("valid ledger parses");
         assert!(touched.had_edits);
         assert!(touched.ledger_issue.is_none());
+        assert!(!touched.reuse_uncertain);
         assert_eq!(touched.files, vec![source.to_string_lossy().into_owned()]);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn same_record_resolved_edit_and_result_location_remain_reusable() {
-        let fixture = TestTempDir::new("same-record-resolved");
-        let edited = fixture.path.join("src/app.py");
-        let located = fixture.path.join("src/location.py");
-        std::fs::create_dir_all(edited.parent().expect("source parent")).expect("source directory");
-        std::fs::write(&edited, "value = 1\n").expect("edited source");
-        std::fs::write(&located, "value = 2\n").expect("located source");
-        let result = serde_json::json!({
-            "rule_id": "no-committed-secrets",
-            "status": "passed",
-            "severity": "error",
-            "message": "clean",
-            "locations": [{"file": "src/location.py", "line": 1}],
-            "evidence": {
-                "check": "gitleaks.detect",
-                "tool_version": null,
-                "finding_descriptions": []
-            }
-        });
+    fn current_task_ledger_candidate_through_symlinked_ancestor_is_uncertain() {
+        let fixture = TestTempDir::new("ledger-symlink-ancestor");
+        let target = fixture.path.join("real/target.py");
+        let alias = fixture.path.join("alias");
+        std::fs::create_dir_all(target.parent().expect("target parent")).expect("target directory");
+        std::fs::write(&target, "value = 1\\n").expect("target source");
+        std::os::unix::fs::symlink("real", &alias).expect("symlinked ancestor");
         write_ledger(
             &fixture.path,
-            serde_json::json!({
-                "session_id": "same-record-resolved-session",
-                "edited_file": "src/app.py",
-                "result": result
-            })
-            .to_string()
-            .as_bytes(),
+            valid_ledger_line("symlink-ancestor-session", "alias/target.py", "passed").as_bytes(),
         );
 
-        let touched = touched_paths(&fixture.path, Some("same-record-resolved-session"))
-            .expect("same-record resolved ledger parses");
-        assert!(touched.had_edits);
+        let touched =
+            touched_paths(&fixture.path, Some("symlink-ancestor-session")).expect("ledger parses");
+        assert!(touched.reuse_uncertain);
         assert!(
-            !touched.reuse_uncertain,
-            "a resolved edited_file and resolved result location are reusable"
-        );
-        assert!(touched.ledger_issue.is_none());
-        assert_eq!(
-            touched.files,
-            vec![
-                edited.to_string_lossy().into_owned(),
-                located.to_string_lossy().into_owned()
-            ]
+            touched.files.is_empty(),
+            "symlinked path must not be scanned"
         );
     }
 
@@ -4197,63 +4257,60 @@ mod tests {
         std::fs::create_dir_all(path.parent().expect("source parent")).expect("source directory");
         let paths = vec![path.to_string_lossy().into_owned()];
 
-        // The exact bounded size remains reusable when the contents are valid
-        // UTF-8; only one byte beyond it becomes uncertain.
-        let exact = vec![b'x'; 256 * 1024];
+        let exact = vec![b'x'; MAX_DIGEST_FILE_BYTES as usize];
         std::fs::write(&path, &exact).expect("exact-size source");
-        assert!(
-            digest_paths_until(&paths, None).is_some(),
-            "an exact-size regular UTF-8 file has a reusable digest"
-        );
+        assert!(digest_paths_until(&paths, None).is_some());
 
-        // The smallest regression mutation is to make the touched file one
-        // byte larger than the bounded digest read.
         let mut oversized = exact;
         oversized.push(b'x');
         std::fs::write(&path, &oversized).expect("oversized source");
-        assert!(
-            digest_paths_until(&paths, None).is_none(),
-            "an oversized file must disable reuse rather than hash as empty"
-        );
-        assert_eq!(
-            digest_paths(&paths),
-            UNCERTAIN_TOUCHED_FILES_DIGEST,
-            "an oversized file persists the non-reusable sentinel"
-        );
-        *oversized.last_mut().expect("oversized byte") = b'y';
-        std::fs::write(&path, &oversized).expect("mutated oversized source");
-        assert!(
-            digest_paths_until(&paths, None).is_none(),
-            "a changed oversized file must remain non-reusable"
-        );
+        assert!(digest_paths_until(&paths, None).is_none());
+        assert_eq!(digest_paths(&paths), UNCERTAIN_TOUCHED_FILES_DIGEST);
 
         std::fs::write(&path, [0xff_u8, 0xfe]).expect("invalid UTF-8 source");
-        assert!(
-            digest_paths_until(&paths, None).is_none(),
-            "invalid UTF-8 must disable reuse"
-        );
+        assert!(digest_paths_until(&paths, None).is_none());
         std::fs::remove_file(&path).expect("source removal");
-        assert!(
-            digest_paths_until(&paths, None).is_none(),
-            "an absent touched file must disable reuse"
-        );
+        assert!(digest_paths_until(&paths, None).is_none());
         std::fs::create_dir(&path).expect("non-regular source fixture");
-        assert!(
-            digest_paths_until(&paths, None).is_none(),
-            "a non-regular touched path must disable reuse"
-        );
+        assert!(digest_paths_until(&paths, None).is_none());
 
         #[cfg(unix)]
         {
             std::fs::remove_dir(&path).expect("non-regular source removal");
             let target = fixture.path.join("src/target.rs");
-            std::fs::write(&target, "fn target() {}\n").expect("symlink target source");
-            std::os::unix::fs::symlink(&target, &path).expect("final-component symlink fixture");
-            assert!(
-                digest_paths_until(&paths, None).is_none(),
-                "a final-component symlink must disable reuse"
-            );
+            std::fs::write(&target, "fn target() {}\\n").expect("symlink target");
+            std::os::unix::fs::symlink(&target, &path).expect("final-component symlink");
+            assert!(digest_paths_until(&paths, None).is_none());
         }
+    }
+
+    #[test]
+    fn digest_binds_reusable_content_and_path_with_explicit_framing() {
+        use sha2::{Digest, Sha256};
+
+        let fixture = TestTempDir::new("digest-framing");
+        let source = fixture.path.join("src/app.rs");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        let contents = "fn value() -> u8 { 1 }\\n";
+        std::fs::write(&source, contents).expect("source fixture");
+        let path = source.to_string_lossy().into_owned();
+        let paths = vec![path.clone()];
+
+        let mut expected_hasher = Sha256::new();
+        expected_hasher.update(path.as_bytes());
+        expected_hasher.update(b"\0");
+        expected_hasher.update(contents.as_bytes());
+        expected_hasher.update(b"\0");
+        let expected = format!("{:x}", expected_hasher.finalize());
+        assert_eq!(digest_paths_until(&paths, None), Some(expected.clone()));
+
+        std::fs::write(&source, "fn value() -> u8 { 2 }\\n").expect("changed source");
+        assert_ne!(digest_paths_until(&paths, None), Some(expected.clone()));
+
+        let second_source = fixture.path.join("src/other.rs");
+        std::fs::write(&second_source, contents).expect("second source");
+        let second_path = second_source.to_string_lossy().into_owned();
+        assert_ne!(digest_paths_until(&[second_path], None), Some(expected));
     }
 
     #[test]
@@ -4264,15 +4321,8 @@ mod tests {
         std::fs::write(&path, b"prefix\0suffix").expect("NUL-containing source");
         let paths = vec![path.to_string_lossy().into_owned()];
 
-        assert!(
-            digest_paths_until(&paths, None).is_none(),
-            "NUL-containing content must disable digest reuse"
-        );
-        assert_eq!(
-            digest_paths(&paths),
-            UNCERTAIN_TOUCHED_FILES_DIGEST,
-            "NUL-containing content persists the non-reusable sentinel"
-        );
+        assert!(digest_paths_until(&paths, None).is_none());
+        assert_eq!(digest_paths(&paths), UNCERTAIN_TOUCHED_FILES_DIGEST);
     }
 
     #[test]
@@ -4318,10 +4368,10 @@ mod tests {
     #[test]
     fn persistence_mismatch_stores_the_non_reusable_sentinel() {
         let fixture = TestTempDir::new("persistence-digest-mismatch");
-        let path = fixture.path.join("src/app.rs");
-        std::fs::create_dir_all(path.parent().expect("source parent")).expect("source directory");
-        std::fs::write(&path, "value = 1\n").expect("source fixture");
-        let path = path.to_string_lossy().into_owned();
+        let source = fixture.path.join("src/app.rs");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        std::fs::write(&source, "value = 1\\n").expect("source fixture");
+        let path = source.to_string_lossy().into_owned();
         let config_digest = digest_bytes("");
         let verified_digest = digest_bytes("different-final-content");
         let command_evidence = commands::CommandEvidence {
@@ -4339,148 +4389,45 @@ mod tests {
             started_at_ms: Some(1),
             finished_at_ms: Some(2),
         };
-        let uncertain = append_task_evidence(
-            EvidenceMeta {
-                adapter: &ClaudeAdapter,
-                root: &fixture.path,
-                deadline: None,
-                session_id: Some("persistence-digest-mismatch"),
-                profile: "default",
-                paths: std::slice::from_ref(&path),
-                reuse_uncertain: false,
-                verified_post_command_digest: Some(&verified_digest),
-                config_digest: &config_digest,
-                started_at_ms: 1,
-                finished_at_ms: 2,
-                tier: "full",
-            },
-            &[],
-            std::slice::from_ref(&command_evidence),
-            &[],
-            &[],
-            &[],
-            &[],
-        )
-        .expect("mismatched persistence digest stores evidence");
-        assert!(uncertain, "a final digest mismatch must latch uncertainty");
+
+        assert!(
+            append_task_evidence(
+                EvidenceMeta {
+                    adapter: &ClaudeAdapter,
+                    root: &fixture.path,
+                    deadline: None,
+                    session_id: Some("persistence-digest-mismatch"),
+                    profile: "default",
+                    paths: std::slice::from_ref(&path),
+                    reuse_uncertain: false,
+                    verified_post_command_digest: Some(&verified_digest),
+                    config_digest: &config_digest,
+                    started_at_ms: 1,
+                    finished_at_ms: 2,
+                    tier: "full",
+                },
+                &[],
+                std::slice::from_ref(&command_evidence),
+                &[],
+                &[],
+                &[],
+                &[],
+            )
+            .expect("mismatched persistence digest stores evidence")
+        );
+
         let evidence = std::fs::read_to_string(fixture.path.join(".lgtm/evidence/evidence.jsonl"))
             .expect("persisted evidence");
         let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("record");
-        let sentinel = serde_json::json!(UNCERTAIN_TOUCHED_FILES_DIGEST);
-        assert_eq!(record["touched_files_digest"], sentinel);
-        assert_eq!(record["commands"][0]["touched_files_digest"], sentinel);
-        assert_eq!(record["commands"][0]["exit_code"], serde_json::json!(0));
+        assert_eq!(
+            record["touched_files_digest"],
+            UNCERTAIN_TOUCHED_FILES_DIGEST
+        );
+        assert_eq!(
+            record["commands"][0]["touched_files_digest"],
+            UNCERTAIN_TOUCHED_FILES_DIGEST
+        );
         assert_eq!(record["commands"][0]["argv"], serde_json::json!(["check"]));
-        assert_eq!(record["commands"][0]["cwd"], serde_json::json!("."));
-        assert_eq!(
-            record["commands"][0]["cwd_identity"],
-            serde_json::json!("identity")
-        );
-        assert_eq!(
-            record["commands"][0]["workspace_id"],
-            serde_json::json!("verify")
-        );
-        assert_eq!(
-            record["commands"][0]["config_digest"],
-            serde_json::json!(config_digest)
-        );
-        assert_eq!(
-            record["commands"][0]["policy_version"],
-            serde_json::json!(crate::policy::POLICY_BUNDLE_VERSION)
-        );
-        assert_eq!(
-            record["commands"][0]["binary_version"],
-            serde_json::json!(env!("CARGO_PKG_VERSION"))
-        );
-    }
-
-    #[test]
-    fn digest_binds_reusable_content_and_path_with_explicit_framing() {
-        use sha2::{Digest, Sha256};
-
-        let fixture = TestTempDir::new("digest-framing");
-        let first_path = fixture.path.join("src/first.rs");
-        let second_path = fixture.path.join("src/second.rs");
-        std::fs::create_dir_all(first_path.parent().expect("source parent"))
-            .expect("source directory");
-        let original_content = "fn value() -> u8 { 1 }\n";
-        std::fs::write(&first_path, original_content).expect("first source");
-        let first = first_path.to_string_lossy().into_owned();
-        let paths = vec![first.clone()];
-
-        // Assert the persisted framing independently of digest_paths_until so
-        // a framing mutation cannot make this test agree with itself.
-        let mut expected_hasher = Sha256::new();
-        expected_hasher.update(first.as_bytes());
-        expected_hasher.update(b"\0");
-        expected_hasher.update(original_content.as_bytes());
-        expected_hasher.update(b"\0");
-        let expected = format!("{:x}", expected_hasher.finalize());
-        assert_eq!(digest_paths_until(&paths, None), Some(expected.clone()));
-
-        std::fs::write(&first_path, "fn value() -> u8 { 2 }\n").expect("changed source");
-        let content_changed = digest_paths_until(&paths, None).expect("changed source digest");
-        assert_ne!(
-            content_changed, expected,
-            "file content must affect the digest"
-        );
-
-        std::fs::write(&second_path, original_content).expect("second source");
-        let second = second_path.to_string_lossy().into_owned();
-        let path_changed = digest_paths_until(&[second], None).expect("changed path digest");
-        assert_ne!(
-            path_changed, expected,
-            "touched path must affect the digest"
-        );
-    }
-
-    #[test]
-    fn digest_preserves_legacy_framing_for_multiple_ordered_paths() {
-        use sha2::{Digest, Sha256};
-
-        let fixture = TestTempDir::new("digest-multiple-framing");
-        let first_path = fixture.path.join("src/first.rs");
-        let second_path = fixture.path.join("src/second.rs");
-        std::fs::create_dir_all(first_path.parent().expect("source parent"))
-            .expect("source directory");
-        let first_content = "fn first() -> u8 { 1 }\n";
-        let second_content = "fn second() -> u8 { 2 }\n";
-        std::fs::write(&first_path, first_content).expect("first source");
-        std::fs::write(&second_path, second_content).expect("second source");
-        let first = first_path.to_string_lossy().into_owned();
-        let second = second_path.to_string_lossy().into_owned();
-        let paths = vec![first.clone(), second.clone()];
-
-        let mut expected_hasher = Sha256::new();
-        expected_hasher.update(first.as_bytes());
-        expected_hasher.update(b"\0");
-        expected_hasher.update(first_content.as_bytes());
-        expected_hasher.update(b"\0");
-        expected_hasher.update(second.as_bytes());
-        expected_hasher.update(b"\0");
-        expected_hasher.update(second_content.as_bytes());
-        expected_hasher.update(b"\0");
-        let expected = format!("{:x}", expected_hasher.finalize());
-        assert_eq!(
-            digest_paths_until(&paths, None),
-            Some(expected.clone()),
-            "two paths retain the legacy path-NUL-content-NUL framing"
-        );
-
-        std::fs::write(&second_path, "fn second() -> u8 { 3 }\n").expect("changed second source");
-        let second_changed = digest_paths_until(&paths, None).expect("changed digest");
-        assert_ne!(
-            second_changed, expected,
-            "changing the second path's content changes the aggregate digest"
-        );
-
-        std::fs::write(&second_path, second_content).expect("restore second source");
-        let reversed = vec![second, first];
-        let reversed_digest = digest_paths_until(&reversed, None).expect("reversed digest");
-        assert_ne!(
-            reversed_digest, expected,
-            "reordering the same paths changes the aggregate digest"
-        );
     }
 
     #[test]
@@ -4497,6 +4444,16 @@ mod tests {
         assert!(summary.contains("lgtm: action required"));
         assert!(summary.contains("UNVERIFIED"));
         assert!(!summary.contains("lgtm: passed"));
+    }
+
+    #[test]
+    fn pi_precommit_budget_is_fixed_and_exceeds_legacy_timeout() {
+        assert_eq!(pre_commit_gate_budget("pi"), Duration::from_secs(300));
+        assert!(pre_commit_gate_budget("pi") > Duration::from_secs(30));
+        assert_eq!(
+            pre_commit_gate_budget("claude"),
+            commands::STOP_COMMAND_BUDGET
+        );
     }
 
     #[test]
@@ -4670,58 +4627,6 @@ mod tests {
     }
 
     #[test]
-    fn uncertain_full_evidence_is_not_reused_by_matching_guard() {
-        let fixture = TestTempDir::new("uncertain-matcher");
-        let evidence_path = fixture.path.join(".lgtm/evidence/evidence.jsonl");
-        std::fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
-            .expect("evidence directory");
-        let session_id = "uncertain-matcher-session";
-        let paths: Vec<String> = Vec::new();
-        let record = serde_json::json!({
-            "task_id": session_id,
-            "rules": {
-                "passed": 0,
-                "failed": 0,
-                "warning": 0,
-                "skipped": 0,
-                "not_applicable": 0,
-                "unverified": 0,
-                "overridden": 0,
-                "waived": 0
-            },
-            "results": [],
-            "commands": [],
-            "coverage": [{
-                "workspace_id": "repository",
-                "status": "not_applicable",
-                "tool": null,
-                "scope": null,
-                "line_percent": null,
-                "branch_percent": null,
-                "measured_at_ms": null
-            }],
-            "policy_version": crate::policy::POLICY_BUNDLE_VERSION,
-            "binary_version": env!("CARGO_PKG_VERSION"),
-            "platform": commands::platform_id(),
-            "containment_version": commands::CONTAINMENT_VERSION,
-            "touched_files_digest": digest_paths(&paths),
-            "config_digest": digest_bytes(""),
-            "tier": "full"
-        });
-        std::fs::write(&evidence_path, format!("{record}\n")).expect("reusable evidence record");
-
-        assert!(
-            matching_full_evidence(&fixture.path, Some(session_id), &paths, false).is_some(),
-            "the complete full evidence record should be reusable when paths are certain"
-        );
-        assert!(
-            matching_full_evidence(&fixture.path, Some(session_id), &paths, true).is_none(),
-            "an uncertain candidate set must not be reusable even when the record matches"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn full_evidence_reuse_requires_matching_command_provenance() {
         let fixture = TestTempDir::new("command-provenance-matcher");
         let config_path = fixture.path.join(".lgtm/config.json");
@@ -4754,7 +4659,7 @@ mod tests {
         )
         .expect("config fixture");
         let snapshot = commands::load_snapshot(&fixture.path);
-        assert!(snapshot.settings.is_ok(), "config fixture parses");
+        assert!(snapshot.settings.is_ok());
         let capability =
             crate::fsutil::open_directory_capability(&fixture.path, Path::new("."), Path::new("."))
                 .expect("command cwd capability");
@@ -4817,9 +4722,22 @@ mod tests {
             .expect("evidence directory");
         std::fs::write(&evidence_path, format!("{record}\n")).expect("evidence fixture");
 
+        assert!(matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_some());
+        assert!(matching_full_evidence(&fixture.path, Some(session_id), &[], true).is_none());
+        assert_eq!(
+            run_pre_commit_gate_with_budget(&fixture.path, Some(session_id), Duration::ZERO)
+                .expect("certain evidence can skip the exhausted command budget"),
+            None
+        );
+        let mut sentinel_record = record.clone();
+        sentinel_record["touched_files_digest"] = serde_json::json!(UNCERTAIN_TOUCHED_FILES_DIGEST);
+        std::fs::write(&evidence_path, format!("{sentinel_record}\n"))
+            .expect("sentinel evidence fixture");
+        assert!(matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_none());
         assert!(
-            matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_some(),
-            "complete command provenance should permit reuse"
+            run_pre_commit_gate_with_budget(&fixture.path, Some(session_id), Duration::ZERO)
+                .expect("uncertain evidence must run the exhausted command budget")
+                .is_some()
         );
         for (field, value) in [
             (
@@ -4837,7 +4755,7 @@ mod tests {
                 .expect("invalid evidence fixture");
             assert!(
                 matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_none(),
-                "nested {field} mismatch must prevent authorization reuse"
+                "nested {field} mismatch must prevent reuse"
             );
         }
         for field in [
@@ -4855,7 +4773,7 @@ mod tests {
                 .expect("omitted provenance fixture");
             assert!(
                 matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_none(),
-                "omitted nested {field} must prevent authorization reuse"
+                "omitted nested {field} must prevent reuse"
             );
 
             let mut null = record.clone();
@@ -4863,7 +4781,7 @@ mod tests {
             std::fs::write(&evidence_path, format!("{null}\n")).expect("null provenance fixture");
             assert!(
                 matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_none(),
-                "null nested {field} must prevent authorization reuse"
+                "null nested {field} must prevent reuse"
             );
         }
     }
@@ -4910,7 +4828,7 @@ mod tests {
         });
         std::fs::write(&evidence_path, format!("{record}\n")).expect("passing evidence record");
         assert!(
-            matching_full_evidence(&root, Some("deadline-reuse-session"), &[], false,).is_some(),
+            matching_full_evidence(&root, Some("deadline-reuse-session"), &[], false).is_some(),
             "fixture must be reusable without the deadline-bound gate"
         );
 
@@ -5381,7 +5299,7 @@ mod tests {
             &mut output,
             &ClaudeAdapter,
             crate::adapter::HookEvent::Stop,
-            Duration::from_millis(500),
+            Duration::from_millis(100),
         )
         .expect("Stop runs");
 
@@ -5422,5 +5340,46 @@ mod tests {
         }));
 
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn pi_approval_challenge_redacts_secret_fingerprint_and_binds_identity() {
+        let challenge = build_pi_approval_challenge(
+            &"a".repeat(64),
+            &[gitleaks::commit::CommitFinding {
+                rule_id: "generic-api-key".to_string(),
+                file: "src/app.rs".to_string(),
+                start_line: 4,
+                start_column: 2,
+                end_line: 4,
+                end_column: 9,
+                fingerprint: "raw-secret-fingerprint".to_string(),
+                blob_identity: "b".repeat(40),
+            }],
+        )
+        .expect("eligible finding is representable");
+        assert_eq!(challenge.identity, "a".repeat(64));
+        assert_eq!(challenge.findings.len(), 1);
+        assert_eq!(challenge.findings[0].path, "src/app.rs");
+        assert!(!challenge.findings[0].candidate_id.contains("raw-secret"));
+        assert_eq!(challenge.findings[0].candidate_id.len(), 64);
+    }
+
+    #[test]
+    fn pi_approval_challenge_rejects_ineligible_or_unbounded_findings() {
+        let mut finding = gitleaks::commit::CommitFinding {
+            rule_id: "aws-access-token".to_string(),
+            file: "src/app.rs".to_string(),
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 2,
+            fingerprint: "fingerprint".to_string(),
+            blob_identity: "b".repeat(40),
+        };
+        assert!(build_pi_approval_challenge(&"a".repeat(64), &[finding.clone()]).is_err());
+        finding.rule_id = "generic-api-key".to_string();
+        finding.file = "x".repeat(MAX_PI_APPROVAL_TEXT_BYTES + 1);
+        assert!(build_pi_approval_challenge(&"a".repeat(64), &[finding]).is_err());
     }
 }

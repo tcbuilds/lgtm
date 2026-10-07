@@ -333,6 +333,43 @@ fn stage_write_copies_target_mode_onto_temp_before_commit() {
 
 #[cfg(unix)]
 #[test]
+fn stage_private_write_keeps_backup_owner_only_before_and_after_commit() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::AtomicU32;
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "lgtm-stage-private-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir creatable");
+    let target = dir.join("rule.md.backup");
+
+    let staged = super::fs::stage_private_write(&target, b"private rule\n")
+        .expect("private stage must succeed");
+    assert_eq!(
+        std::fs::metadata(&staged.temp_path)
+            .expect("temp metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    commit_write(staged).expect("private commit must succeed");
+    assert_eq!(
+        std::fs::metadata(&target)
+            .expect("committed metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
 fn stage_write_creates_temp_at_0600_then_committed_new_file_is_0644() {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::AtomicU32;

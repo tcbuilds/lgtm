@@ -78,7 +78,7 @@ fn record(repo: &TempRepo, trusted: bool, tools_verified: bool) -> PathBuf {
 }
 
 #[test]
-fn state_precedence_distinguishes_presence_trust_tools_and_freshness() {
+fn state_precedence_distinguishes_presence_trust_and_tools() {
     let absent = TempRepo::new();
     assert_eq!(
         assess_at(absent.path(), None, now_ms()).state,
@@ -117,12 +117,41 @@ fn state_precedence_distinguishes_presence_trust_tools_and_freshness() {
         assess_at(unverified_tools.path(), None, now_ms()).state,
         PiEnforcementState::ToolContractUnverified
     );
+}
 
-    let stale = TempRepo::new();
-    init_project(&stale);
-    record(&stale, true, true);
+#[test]
+fn valid_runtime_attestation_remains_active_after_hours_and_days() {
+    let repo = TempRepo::new();
+    init_project(&repo);
+    record(&repo, true, true);
+    let attestation: lgtm::pi_state::PiAttestation =
+        serde_json::from_str(&repo.read(".lgtm/evidence/pi-attestation.json"))
+            .expect("recorded attestation");
+    for elapsed_ms in [
+        0,
+        10 * 60 * 1000 + 1,
+        6 * 60 * 60 * 1000,
+        7 * 24 * 60 * 60 * 1000,
+    ] {
+        let report = assess_at(repo.path(), None, attestation.recorded_at_ms + elapsed_ms);
+        assert_eq!(
+            report.state,
+            PiEnforcementState::Active,
+            "{elapsed_ms} ms: {report:?}"
+        );
+    }
+}
+
+#[test]
+fn future_runtime_attestation_remains_unverified() {
+    let repo = TempRepo::new();
+    init_project(&repo);
+    record(&repo, true, true);
+    let attestation: lgtm::pi_state::PiAttestation =
+        serde_json::from_str(&repo.read(".lgtm/evidence/pi-attestation.json"))
+            .expect("recorded attestation");
     assert_eq!(
-        assess_at(stale.path(), None, now_ms() + 10 * 60 * 1000 + 1).state,
+        assess_at(repo.path(), None, attestation.recorded_at_ms - 1).state,
         PiEnforcementState::StaleUnverified
     );
 }
@@ -369,6 +398,11 @@ fn global_scope_is_reported_without_project_extension() {
 fn edited_owned_extension_is_not_runtime_valid() {
     let repo = TempRepo::new();
     init_project(&repo);
+    record(&repo, true, true);
+    assert_eq!(
+        assess_at(repo.path(), None, now_ms()).state,
+        PiEnforcementState::Active
+    );
     let path = repo.path().join(".pi/extensions/lgtm.ts");
     let edited = repo.read(".pi/extensions/lgtm.ts").replace(
         "findInitializedRoot(cwd)",

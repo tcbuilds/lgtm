@@ -23,6 +23,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Revalidate an exact Claude confirmation request before executing Git.
+    GuardedCommit {
+        #[arg(long)]
+        request: String,
+    },
     /// Register hooks and scaffold config in the current repository.
     Init {
         /// Preview detected workspaces and planned files without writing.
@@ -117,6 +122,9 @@ enum Command {
         #[arg(long)]
         tier: Option<CheckTier>,
     },
+    /// Refresh all tracked LGTM-managed files after a binary replacement.
+    #[command(alias = "refresh-pi")]
+    Refresh,
     #[command(name = "__command-supervisor", hide = true)]
     InternalSupervisor,
 }
@@ -291,6 +299,7 @@ fn run(command: Command) -> ExitCode {
             }
         }
         Command::Hook { event, adapter } => run_hook(event, adapter),
+        Command::GuardedCommit { request } => lgtm::guarded_commit::run(&request),
         Command::Doctor => run_doctor(),
         Command::Compile { validate } => run_compile(validate),
         Command::Report { evidence, task } => run_report(evidence, task),
@@ -305,6 +314,16 @@ fn run(command: Command) -> ExitCode {
         Command::Policy { command } => run_policy(command),
         Command::Config { command } => run_config(command),
         Command::Check { workspace, tier } => run_check(workspace.as_deref(), tier),
+        Command::Refresh => match lgtm::init::pi_installations::refresh() {
+            Ok(message) => {
+                println!("{message}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("LGTM managed-file refresh failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Command::InternalSupervisor => lgtm::checks::commands::run_command_supervisor(),
     }
 }
@@ -956,6 +975,12 @@ fn run_init_rules_only(agent: InitAgentKind) -> ExitCode {
     };
     match result {
         Ok(summary) => {
+            if let Err(error) =
+                init::pi_installations::register_rules(Path::new("."), init_agent(agent))
+            {
+                eprintln!("init failed: register rules ({error})");
+                return ExitCode::FAILURE;
+            }
             report_rules_only_summary(agent, &summary);
             ExitCode::SUCCESS
         }
@@ -1295,6 +1320,9 @@ fn normalize_pi_payload(raw: &str, request: &lgtm::adapter::HookRequest) -> Resu
         "tool_name".to_string(),
         serde_json::json!(canonical_pi_tool_name(tool_name)),
     );
+    if let Some(capability) = request.approval_capability {
+        object.insert("approval_capability".to_string(), capability.as_value());
+    }
     let mut normalized = serde_json::Map::new();
     match tool_name {
         "Bash" => {
@@ -1607,6 +1635,30 @@ mod tests {
         assert!(normalized.contains("secret.txt"));
         assert!(!normalized.contains("oldText"));
         assert!(!normalized.contains("newText"));
+    }
+
+    #[test]
+    fn generated_pi_capability_is_preserved_only_when_exactly_supported() {
+        use lgtm::adapter::{ApprovalCapability, HookAdapter, HookEvent, PiAdapter};
+
+        let raw = r#"{"type":"tool_call","toolName":"bash","input":{"command":"git commit -m test","__lgtmPolicyInput":"lgtm-pi-policy-input-v1"},"cwd":"/repo","sessionId":"session","approvalCapability":{"name":"lgtm-pi-finding-approval","version":1}}"#;
+        let request = PiAdapter
+            .parse_request(HookEvent::PreToolUse, raw)
+            .expect("capability payload parses");
+        assert_eq!(
+            request.approval_capability,
+            Some(ApprovalCapability::PiFindingApprovalV1)
+        );
+        let normalized = normalize_pi_payload(raw, &request).expect("payload normalizes");
+        assert!(normalized.contains("approval_capability"));
+        assert!(normalized.contains("lgtm-pi-finding-approval"));
+
+        let unknown = raw.replace("\"version\":1", "\"version\":2");
+        let request = PiAdapter
+            .parse_request(HookEvent::PreToolUse, &unknown)
+            .expect("unknown capability remains parseable");
+        let normalized = normalize_pi_payload(&unknown, &request).expect("payload normalizes");
+        assert!(!normalized.contains("approval_capability"));
     }
 
     #[test]

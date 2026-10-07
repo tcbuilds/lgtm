@@ -538,7 +538,12 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn required_bounded_reader_rejects_read_error_from_regular_proc_path() {
-        let path = Path::new("/proc/self/mem");
+        let path_text = format!("/proc/{}/mem", std::process::id());
+        let path = Path::new(&path_text);
+        assert!(
+            !path_contains_symlink(path),
+            "the read path must be accepted"
+        );
         let metadata = std::fs::symlink_metadata(path).expect("proc memory metadata");
         assert!(
             metadata.file_type().is_file(),

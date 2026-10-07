@@ -1,4 +1,16 @@
 {
+  "enabledPlugins": {
+    "clangd-lsp@claude-plugins-official": true,
+    "gopls-lsp@claude-plugins-official": true,
+    "jdtls-lsp@claude-plugins-official": true,
+    "kotlin-lsp@claude-plugins-official": true,
+    "lua-lsp@claude-plugins-official": true,
+    "php-lsp@claude-plugins-official": true,
+    "pyright-lsp@claude-plugins-official": true,
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "swift-lsp@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": true
+  },
   "hooks": {
     "PostToolUse": [
       {
@@ -51,6 +63,18 @@
           }
         ]
       }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Edit(**/*.lock)",
+      "Edit(**/*.tfstate.backup)",
+      "Edit(**/package-lock.json)",
+      "Edit(**/settings.local.json)",
+      "Write(**/*.lock)",
+      "Write(**/*.tfstate.backup)",
+      "Write(**/package-lock.json)",
+      "Write(**/settings.local.json)"
     ]
   }
 }
