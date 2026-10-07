@@ -25,6 +25,12 @@ const MAX_LEDGER_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_LEDGER_RECORDS: usize = 16 * 1024;
 const MAX_TOUCHED_PATHS: usize = 512;
 const MAX_TASK_EVIDENCE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_DIGEST_FILE_BYTES: u64 = 256 * 1024;
+// Keep uncertainty schema-valid while ensuring it can never authorize reuse.
+const UNCERTAIN_TOUCHED_FILES_DIGEST: &str = concat!(
+    "00000000000000000000000000000000",
+    "00000000000000000000000000000000",
+);
 const MAX_SUMMARY_MESSAGE_CHARS: usize = 512;
 const EVIDENCE_SCHEMA_JSON: &str = include_str!("../../schemas/evidence.schema.json");
 const CURRENT_TASK_RETENTION_MESSAGE: &str =
@@ -78,6 +84,7 @@ struct TouchedPaths {
     files: Vec<String>,
     had_edits: bool,
     ledger_issue: Option<String>,
+    reuse_uncertain: bool,
 }
 
 enum CurrentTaskLedger {
@@ -140,7 +147,7 @@ struct TaskEvidence<'a> {
 
 struct GateLimits {
     total_deadline: Option<Instant>,
-    precomputed_check_paths: Option<(Vec<String>, CheckPathScanStatus)>,
+    precomputed_check_paths: Option<(Vec<String>, CheckPathScanStatus, bool)>,
     commit_scope: bool,
 }
 
@@ -151,6 +158,8 @@ struct EvidenceMeta<'a> {
     session_id: Option<&'a str>,
     profile: &'a str,
     paths: &'a [String],
+    reuse_uncertain: bool,
+    verified_post_command_digest: Option<&'a str>,
     config_digest: &'a str,
     started_at_ms: u128,
     finished_at_ms: u128,
@@ -392,13 +401,15 @@ fn run_pre_commit_gate_with_scope(
     total_deadline: Option<Instant>,
     commit_scope: bool,
 ) -> Result<Option<String>, String> {
-    let (paths, path_scan_status) = check_paths_with_deadline(root, total_deadline)?;
-    // Deadline-bound Pi gates must rerun rather than authorize from a record
-    // that may have crossed the deadline while it was being persisted.
+    let (paths, path_scan_status, reuse_uncertain) =
+        check_paths_with_deadline(root, total_deadline)?;
+    // Deadline-bound Pi gates and uncertain candidate sets must rerun rather
+    // than authorize from evidence that omits paths or crossed the deadline.
     if !commit_scope
         && total_deadline.is_none()
         && path_scan_status.is_complete()
-        && matching_full_evidence(root, session_id, &paths).is_some()
+        && !reuse_uncertain
+        && matching_full_evidence(root, session_id, &paths, reuse_uncertain).is_some()
     {
         return Ok(None);
     }
@@ -419,7 +430,7 @@ fn run_pre_commit_gate_with_scope(
         true,
         GateLimits {
             total_deadline,
-            precomputed_check_paths: Some((paths, path_scan_status)),
+            precomputed_check_paths: Some((paths, path_scan_status, reuse_uncertain)),
             commit_scope,
         },
     )?;
@@ -525,25 +536,41 @@ fn run_inner_with_options(
             .validate_workspace(hook_input.workspace.as_deref())
             .err()
     });
-    let (paths, had_edits, ledger_issue, path_scan_status) = if hook_input.check {
-        let (paths, status) = match precomputed_check_paths {
-            Some(paths) => paths,
-            None => check_paths_with_deadline(&root, total_deadline)?,
+    let (paths, had_edits, ledger_issue, path_scan_status, mut reuse_uncertain) =
+        if hook_input.check {
+            let (paths, status, reuse_uncertain) = match precomputed_check_paths {
+                Some(paths) => paths,
+                None => check_paths_with_deadline(&root, total_deadline)?,
+            };
+            (paths, false, None, status, reuse_uncertain)
+        } else {
+            let touched = touched_paths(&root, hook_input.session_id.as_deref())?;
+            (
+                touched.files,
+                touched.had_edits,
+                touched.ledger_issue,
+                CheckPathScanStatus::Complete,
+                touched.reuse_uncertain,
+            )
         };
-        (paths, false, None, status)
-    } else {
-        let touched = touched_paths(&root, hook_input.session_id.as_deref())?;
-        (
-            touched.files,
-            touched.had_edits,
-            touched.ledger_issue,
-            CheckPathScanStatus::Complete,
-        )
-    };
     let total_deadline = if path_scan_status.is_deadline() && total_deadline.is_some() {
         Some(Instant::now())
     } else {
         total_deadline
+    };
+    reuse_uncertain |= !path_scan_status.is_complete();
+    // Retain the original candidate state so later successful reads cannot
+    // clear uncertainty discovered by a scanner or command.
+    let pre_scan_digest = if reuse_uncertain {
+        None
+    } else {
+        match digest_paths_until(&paths, total_deadline) {
+            Some(digest) => Some(digest),
+            None => {
+                reuse_uncertain = true;
+                None
+            }
+        }
     };
     let configured = configured_executables(config_snapshot.settings.as_ref().ok());
     let claims_only = !hook_input.check
@@ -600,6 +627,16 @@ fn run_inner_with_options(
             results.extend(crate::checks::auth::scan(&paths));
         }
     }
+    // A scanner may leave a valid but changed file; compare with the state it saw.
+    if !reuse_uncertain {
+        match (
+            pre_scan_digest.as_deref(),
+            digest_paths_until(&paths, total_deadline),
+        ) {
+            (Some(pre_scan), Some(post_scan)) if post_scan == pre_scan => {}
+            _ => reuse_uncertain = true,
+        }
+    }
     let tier = effective_tier(hook_input.tier.as_deref());
     let command_budget = total_deadline.map_or(command_budget, |deadline| {
         std::cmp::min(
@@ -641,7 +678,15 @@ fn run_inner_with_options(
             .results
             .push(commands::config_mutation_unverified());
     }
-    bind_command_provenance(&config_snapshot.digest, &paths, &mut command_run.evidence);
+    let (verified_post_command_digest, command_digest_uncertain) = bind_command_provenance(
+        &config_snapshot.digest,
+        &paths,
+        total_deadline,
+        reuse_uncertain,
+        pre_scan_digest.as_deref(),
+        &mut command_run.evidence,
+    );
+    reuse_uncertain |= command_digest_uncertain;
     let mut post_policy_command_gate_results =
         take_post_policy_command_gate_results(&mut command_run.results, pre_commit);
     if pre_commit {
@@ -657,8 +702,13 @@ fn run_inner_with_options(
     if !hook_input.check {
         let mut claim_evidence = command_run.evidence.clone();
         claim_evidence.extend(
-            matching_full_evidence(&root, hook_input.session_id.as_deref(), &paths)
-                .unwrap_or_default(),
+            matching_full_evidence(
+                &root,
+                hook_input.session_id.as_deref(),
+                &paths,
+                reuse_uncertain,
+            )
+            .unwrap_or_default(),
         );
         results.push(crate::checks::claims::evaluate(
             hook_input.transcript_path.as_deref().map(Path::new),
@@ -699,7 +749,7 @@ fn run_inner_with_options(
         }
         results.push(timeout);
     }
-    append_task_evidence(
+    reuse_uncertain |= append_task_evidence(
         EvidenceMeta {
             adapter,
             root: &root,
@@ -707,6 +757,8 @@ fn run_inner_with_options(
             session_id: hook_input.session_id.as_deref(),
             profile: &profile,
             paths: &paths,
+            reuse_uncertain,
+            verified_post_command_digest: verified_post_command_digest.as_deref(),
             config_digest: &config_snapshot.digest,
             started_at_ms,
             finished_at_ms: unix_ms(),
@@ -729,7 +781,7 @@ fn run_inner_with_options(
             timeout.severity = Severity::Error;
         }
         results.push(timeout);
-        append_task_evidence(
+        reuse_uncertain |= append_task_evidence(
             EvidenceMeta {
                 adapter,
                 root: &root,
@@ -737,6 +789,8 @@ fn run_inner_with_options(
                 session_id: hook_input.session_id.as_deref(),
                 profile: &profile,
                 paths: &paths,
+                reuse_uncertain,
+                verified_post_command_digest: verified_post_command_digest.as_deref(),
                 config_digest: &config_snapshot.digest,
                 started_at_ms,
                 finished_at_ms: unix_ms(),
@@ -761,7 +815,7 @@ fn run_inner_with_options(
             mutation.severity = Severity::Error;
         }
         results.push(mutation);
-        append_task_evidence(
+        let _ = append_task_evidence(
             EvidenceMeta {
                 adapter,
                 root: &root,
@@ -769,6 +823,8 @@ fn run_inner_with_options(
                 session_id: hook_input.session_id.as_deref(),
                 profile: &profile,
                 paths: &paths,
+                reuse_uncertain,
+                verified_post_command_digest: verified_post_command_digest.as_deref(),
                 config_digest: &config_snapshot.digest,
                 started_at_ms,
                 finished_at_ms: unix_ms(),
@@ -943,7 +999,7 @@ fn workspace_touched(root: &Path, workspace_root: &Path, touched_paths: &[String
         return true;
     };
     let configured_workspace = root.join(workspace_root);
-    if path_contains_symlink(&configured_workspace) {
+    if crate::fsutil::path_contains_symlink(&configured_workspace) {
         return true;
     }
     // Re-open the pathname and compare both identity and opened path. This
@@ -972,37 +1028,40 @@ fn workspace_touched(root: &Path, workspace_root: &Path, touched_paths: &[String
         .any(|path| Path::new(path).starts_with(&workspace))
 }
 
-fn path_contains_symlink(path: &Path) -> bool {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        if std::fs::symlink_metadata(&current)
-            .is_ok_and(|metadata| metadata.file_type().is_symlink())
-        {
-            return true;
-        }
-    }
-    false
-}
-
+// Command results are reusable only if their post-command digest still matches
+// the state originally presented to the scanners.
 fn bind_command_provenance(
     config_digest: &str,
     paths: &[String],
+    deadline: Option<Instant>,
+    reuse_uncertain: bool,
+    pre_scan_digest: Option<&str>,
     evidence: &mut [commands::CommandEvidence],
-) {
-    let touched_files_digest = digest_paths(paths);
+) -> (Option<String>, bool) {
+    let (touched_files_digest, verified_digest, digest_uncertain) = if reuse_uncertain {
+        (UNCERTAIN_TOUCHED_FILES_DIGEST.to_string(), None, false)
+    } else {
+        match (pre_scan_digest, digest_paths_until(paths, deadline)) {
+            (Some(pre_scan), Some(post_command)) if post_command == pre_scan => {
+                (post_command.clone(), Some(post_command), false)
+            }
+            _ => (UNCERTAIN_TOUCHED_FILES_DIGEST.to_string(), None, true),
+        }
+    };
     for item in evidence {
         item.config_digest = Some(config_digest.to_string());
         item.touched_files_digest = Some(touched_files_digest.clone());
         item.policy_version = Some(crate::policy::POLICY_BUNDLE_VERSION.to_string());
         item.binary_version = Some(env!("CARGO_PKG_VERSION").to_string());
     }
+    (verified_digest, digest_uncertain)
 }
 
 fn matching_full_evidence(
     root: &Path,
     session_id: Option<&str>,
     paths: &[String],
+    reuse_uncertain: bool,
 ) -> Option<Vec<commands::CommandEvidence>> {
     let session_id = session_id?;
     // Reuse is authorization, not just a digest lookup: revalidate that the
@@ -1049,7 +1108,10 @@ fn matching_full_evidence(
             crate::fsutil::directory_identity(&capability).ok()
         })
         .collect::<Option<Vec<_>>>()?;
-    let expected_files = digest_paths(paths);
+    if reuse_uncertain {
+        return None;
+    }
+    let expected_files = digest_paths_until(paths, None)?;
     let raw = crate::fsutil::read_optional_bounded(
         &root.join(".lgtm/evidence/evidence.jsonl"),
         MAX_TASK_EVIDENCE_BYTES,
@@ -1064,7 +1126,10 @@ fn matching_full_evidence(
             && record.containment_version.as_deref() == Some(commands::CONTAINMENT_VERSION))
         .then_some(record)
     })?;
-    if record.config_digest != snapshot.digest || record.touched_files_digest != expected_files {
+    if record.touched_files_digest == UNCERTAIN_TOUCHED_FILES_DIGEST
+        || record.config_digest != snapshot.digest
+        || record.touched_files_digest != expected_files
+    {
         return None;
     }
 
@@ -1106,6 +1171,17 @@ fn full_record_passed(
         .count();
     if passed_required_results != selected_commands.len()
         || record.commands.len() != selected_commands.len()
+    {
+        return false;
+    }
+    if record.touched_files_digest == UNCERTAIN_TOUCHED_FILES_DIGEST
+        || !record.commands.iter().all(|evidence| {
+            evidence.touched_files_digest.as_deref() == Some(record.touched_files_digest.as_str())
+                && evidence.touched_files_digest.as_deref() != Some(UNCERTAIN_TOUCHED_FILES_DIGEST)
+                && evidence.config_digest.as_deref() == Some(record.config_digest.as_str())
+                && evidence.policy_version.as_deref() == Some(record.policy_version.as_str())
+                && evidence.binary_version.as_deref() == Some(record.binary_version.as_str())
+        })
     {
         return false;
     }
@@ -1365,9 +1441,9 @@ fn resolve_touched_candidate(
     raw: &str,
     candidates: &mut BTreeSet<String>,
     resolved: &mut BTreeMap<String, Option<String>>,
-) -> Result<Option<String>, ()> {
+) -> Result<(Option<String>, bool), ()> {
     if let Some(path) = resolved.get(raw) {
-        return Ok(path.clone());
+        return Ok((path.clone(), path.is_none()));
     }
     if candidates.len() >= MAX_TOUCHED_PATHS {
         return Err(());
@@ -1376,8 +1452,9 @@ fn resolve_touched_candidate(
     #[cfg(test)]
     TOUCHED_PATH_RESOLUTION_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
     let path = canonical_contained_file(root, raw);
+    let reuse_uncertain = path.is_none();
     resolved.insert(raw.to_string(), path.clone());
-    Ok(path)
+    Ok((path, reuse_uncertain))
 }
 
 fn marker_shape(record: &EditRecord) -> bool {
@@ -1593,6 +1670,7 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
     let mut raw_candidates = BTreeSet::new();
     let mut resolved_candidates = BTreeMap::new();
     let mut had_edits = false;
+    let mut reuse_uncertain = false;
     let mut structural_issue = None;
     let mut truncation_issue = None;
     let raw = match read_current_task_ledger(&ledger) {
@@ -1603,6 +1681,7 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
                 files: Vec::new(),
                 had_edits: true,
                 ledger_issue: Some(reason),
+                reuse_uncertain: true,
             });
         }
     };
@@ -1643,13 +1722,13 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
         }
         had_edits = true;
         if let Some(file) = record.edited_file.as_deref() {
-            let resolved = match resolve_touched_candidate(
+            let (resolved, candidate_uncertain) = match resolve_touched_candidate(
                 root,
                 file,
                 &mut raw_candidates,
                 &mut resolved_candidates,
             ) {
-                Ok(path) => path,
+                Ok(candidate) => candidate,
                 Err(()) => {
                     retain_structural_issue(
                         &mut structural_issue,
@@ -1658,6 +1737,7 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
                     break 'records;
                 }
             };
+            reuse_uncertain |= candidate_uncertain;
             if let Some(path) = resolved {
                 if paths.len() < MAX_TOUCHED_PATHS || paths.contains(&path) {
                     paths.insert(path);
@@ -1667,20 +1747,19 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
                         "current-task evidence contains too many edited paths",
                     );
                 }
-                continue;
             }
         }
         if record.result.rule_id != "no-committed-secrets" {
             continue;
         }
         for location in record.result.locations {
-            let resolved = match resolve_touched_candidate(
+            let (resolved, candidate_uncertain) = match resolve_touched_candidate(
                 root,
                 &location.file,
                 &mut raw_candidates,
                 &mut resolved_candidates,
             ) {
-                Ok(path) => path,
+                Ok(candidate) => candidate,
                 Err(()) => {
                     retain_structural_issue(
                         &mut structural_issue,
@@ -1689,6 +1768,7 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
                     break 'records;
                 }
             };
+            reuse_uncertain |= candidate_uncertain;
             if let Some(path) = resolved {
                 if paths.len() < MAX_TOUCHED_PATHS || paths.contains(&path) {
                     paths.insert(path);
@@ -1702,11 +1782,14 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
             }
         }
     }
+    let reuse_uncertain =
+        reuse_uncertain || structural_issue.is_some() || truncation_issue.is_some();
     Ok(TouchedPaths {
         files: paths.into_iter().collect(),
         had_edits,
         ledger_issue: structural_issue
             .or_else(|| truncation_issue.map(|(_, reason)| reason.to_string())),
+        reuse_uncertain,
     })
 }
 
@@ -1735,7 +1818,7 @@ const CHECK_PATH_SCAN_CHECK: &str = "repository.source_scan";
 
 #[cfg(test)]
 fn check_paths(root: &Path) -> Result<Vec<String>, String> {
-    check_paths_with_deadline(root, None).map(|(paths, _)| paths)
+    check_paths_with_deadline(root, None).map(|(paths, _, _)| paths)
 }
 
 const EXCLUDED_CHECK_SUBTREES: [&str; 5] = [
@@ -1791,10 +1874,13 @@ fn check_path_scan_result(
 fn check_paths_with_deadline(
     root: &Path,
     deadline: Option<Instant>,
-) -> Result<(Vec<String>, CheckPathScanStatus), String> {
+) -> Result<(Vec<String>, CheckPathScanStatus, bool), String> {
     let mut paths = Vec::new();
     let mut entries_seen = 0;
-    let mut status = CheckPathScanStatus::Complete;
+    let mut scan = CheckPathScan {
+        status: CheckPathScanStatus::Complete,
+        reuse_uncertain: false,
+    };
     collect_check_paths(
         root,
         root,
@@ -1802,14 +1888,15 @@ fn check_paths_with_deadline(
         &mut paths,
         deadline,
         &mut entries_seen,
-        &mut status,
+        &mut scan,
     )?;
     paths.sort();
     paths.dedup();
-    if status.is_complete() && deadline_expired(deadline) {
-        status = CheckPathScanStatus::Deadline;
+    if scan.status.is_complete() && deadline_expired(deadline) {
+        scan.status = CheckPathScanStatus::Deadline;
     }
-    Ok((paths, status))
+    scan.reuse_uncertain |= !scan.status.is_complete();
+    Ok((paths, scan.status, scan.reuse_uncertain))
 }
 
 fn is_excluded_check_subtree(root: &Path, current: &Path) -> bool {
@@ -1822,6 +1909,32 @@ fn is_excluded_check_subtree(root: &Path, current: &Path) -> bool {
     })
 }
 
+fn is_supported_check_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension,
+                "py" | "rs"
+                    | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "go"
+                    | "sh"
+                    | "tf"
+                    | "yaml"
+                    | "yml"
+                    | "json"
+            )
+        })
+}
+
+struct CheckPathScan {
+    status: CheckPathScanStatus,
+    reuse_uncertain: bool,
+}
+
 fn collect_check_paths(
     root: &Path,
     current: &Path,
@@ -1829,29 +1942,34 @@ fn collect_check_paths(
     paths: &mut Vec<String>,
     deadline: Option<Instant>,
     entries_seen: &mut usize,
-    status: &mut CheckPathScanStatus,
+    scan: &mut CheckPathScan,
 ) -> Result<(), String> {
     if deadline_expired(deadline) {
-        *status = CheckPathScanStatus::Deadline;
+        scan.status = CheckPathScanStatus::Deadline;
+        scan.reuse_uncertain = true;
         return Ok(());
     }
     if depth > MAX_CHECK_PATH_DEPTH {
-        *status = CheckPathScanStatus::DepthLimit;
+        scan.status = CheckPathScanStatus::DepthLimit;
+        scan.reuse_uncertain = true;
         return Ok(());
     }
     if *entries_seen >= MAX_CHECK_PATH_ENTRIES {
-        *status = CheckPathScanStatus::EntryLimit;
+        scan.status = CheckPathScanStatus::EntryLimit;
+        scan.reuse_uncertain = true;
         return Ok(());
     }
     let entries =
         std::fs::read_dir(current).map_err(|error| format!("scan check paths ({error})"))?;
     for entry in entries {
         if deadline_expired(deadline) {
-            *status = CheckPathScanStatus::Deadline;
+            scan.status = CheckPathScanStatus::Deadline;
+            scan.reuse_uncertain = true;
             break;
         }
         if *entries_seen >= MAX_CHECK_PATH_ENTRIES {
-            *status = CheckPathScanStatus::EntryLimit;
+            scan.status = CheckPathScanStatus::EntryLimit;
+            scan.reuse_uncertain = true;
             break;
         }
         *entries_seen += 1;
@@ -1860,7 +1978,12 @@ fn collect_check_paths(
         let metadata = std::fs::symlink_metadata(&path)
             .map_err(|error| format!("inspect check path ({error})"))?;
         if metadata.file_type().is_symlink() {
+            scan.reuse_uncertain = true;
             continue;
+        }
+        let supported = path.strip_prefix(root).is_ok() && is_supported_check_path(&path);
+        if supported && !metadata.file_type().is_file() {
+            scan.reuse_uncertain = true;
         }
         if metadata.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -1882,41 +2005,16 @@ fn collect_check_paths(
                         | "venv"
                 )
             {
-                collect_check_paths(
-                    root,
-                    &path,
-                    depth + 1,
-                    paths,
-                    deadline,
-                    entries_seen,
-                    status,
-                )?;
+                collect_check_paths(root, &path, depth + 1, paths, deadline, entries_seen, scan)?;
             }
-        } else if metadata.is_file()
-            && path
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|extension| {
-                    matches!(
-                        extension,
-                        "py" | "rs"
-                            | "ts"
-                            | "tsx"
-                            | "js"
-                            | "jsx"
-                            | "go"
-                            | "sh"
-                            | "tf"
-                            | "yaml"
-                            | "yml"
-                            | "json"
-                    )
-                })
-            && path.strip_prefix(root).is_ok()
-        {
-            paths.push(path.to_string_lossy().into_owned());
+        } else if metadata.is_file() && supported {
+            let Some(path) = path.to_str() else {
+                scan.reuse_uncertain = true;
+                continue;
+            };
+            paths.push(path.to_owned());
         }
-        if !status.is_complete() {
+        if !scan.status.is_complete() {
             break;
         }
     }
@@ -1930,15 +2028,19 @@ fn canonical_contained_file(root: &Path, file: &str) -> Option<String> {
     } else {
         root.join(path)
     };
+    if crate::fsutil::path_contains_symlink(&candidate) {
+        return None;
+    }
     let metadata = std::fs::symlink_metadata(&candidate).ok()?;
     if !metadata.is_file() {
         return None;
     }
     let canonical_root = std::fs::canonicalize(root).ok()?;
     let canonical = std::fs::canonicalize(candidate).ok()?;
-    canonical
-        .starts_with(canonical_root)
-        .then(|| canonical.to_string_lossy().into_owned())
+    if !canonical.starts_with(&canonical_root) {
+        return None;
+    }
+    canonical.to_str().map(str::to_owned)
 }
 
 fn rerun_checks(paths: &[String], deadline: Option<Instant>) -> Vec<EnforcementResult> {
@@ -2011,6 +2113,7 @@ pub fn write_pi_settled_evidence(root: &Path, session_id: &str) -> Result<(), St
     let empty_overrides: Vec<crate::policy::overrides::OverrideRecord> = Vec::new();
     let empty_waivers: Vec<crate::policy::waivers::Waiver> = Vec::new();
     let config_digest = commands::load_snapshot(root).digest;
+    let verified_post_command_digest = digest_paths_until(&empty_sources, None);
     append_task_evidence(
         EvidenceMeta {
             adapter: &adapter,
@@ -2019,6 +2122,8 @@ pub fn write_pi_settled_evidence(root: &Path, session_id: &str) -> Result<(), St
             session_id: Some(session_id),
             profile: "pi",
             paths: &empty_sources,
+            reuse_uncertain: verified_post_command_digest.is_none(),
+            verified_post_command_digest: verified_post_command_digest.as_deref(),
             config_digest: &config_digest,
             started_at_ms: now,
             finished_at_ms: now,
@@ -2031,6 +2136,7 @@ pub fn write_pi_settled_evidence(root: &Path, session_id: &str) -> Result<(), St
         &empty_overrides,
         &empty_waivers,
     )
+    .map(|_| ())
 }
 
 fn append_task_evidence(
@@ -2041,7 +2147,7 @@ fn append_task_evidence(
     policy_sources: &[String],
     overrides: &[crate::policy::overrides::OverrideRecord],
     waivers: &[crate::policy::waivers::Waiver],
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let root = metadata.root;
     let task_id = metadata.session_id.unwrap_or("unknown-session");
     let enforcement = (metadata.adapter.harness_name() == "pi").then(|| {
@@ -2055,6 +2161,28 @@ fn append_task_evidence(
             reason: state.reason,
         }
     });
+    // Evidence is reusable only if the final bounded read still matches the
+    // checkpoint verified after repository commands.
+    let persistence_digest_uncertain = !metadata.reuse_uncertain
+        && !matches!(
+            (
+                metadata.verified_post_command_digest,
+                digest_paths_until(metadata.paths, metadata.deadline),
+            ),
+            (Some(verified), Some(final_digest)) if final_digest == verified
+        );
+    let touched_files_digest = if metadata.reuse_uncertain || persistence_digest_uncertain {
+        UNCERTAIN_TOUCHED_FILES_DIGEST.to_string()
+    } else {
+        metadata.verified_post_command_digest.map_or_else(
+            || UNCERTAIN_TOUCHED_FILES_DIGEST.to_string(),
+            str::to_string,
+        )
+    };
+    let mut record_commands = commands.to_vec();
+    for command in &mut record_commands {
+        command.touched_files_digest = Some(touched_files_digest.clone());
+    }
     let record = TaskEvidence {
         task_id,
         agent: "claude-code",
@@ -2064,7 +2192,7 @@ fn append_task_evidence(
         commit: None,
         rules: count_results(results),
         results,
-        commands,
+        commands: &record_commands,
         overrides,
         waivers,
         coverage: coverage.to_vec(),
@@ -2076,7 +2204,7 @@ fn append_task_evidence(
         containment_version: commands::CONTAINMENT_VERSION,
         started_at_ms: metadata.started_at_ms,
         finished_at_ms: metadata.finished_at_ms,
-        touched_files_digest: digest_paths_until(metadata.paths, metadata.deadline),
+        touched_files_digest,
         config_digest: metadata.config_digest.to_string(),
         tier: metadata.tier,
     };
@@ -2102,9 +2230,9 @@ fn append_task_evidence(
             .deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
     {
-        return Ok(());
+        return Ok(persistence_digest_uncertain);
     }
-    persistence
+    persistence.map(|_| persistence_digest_uncertain)
 }
 
 fn unix_ms() -> u128 {
@@ -2113,27 +2241,36 @@ fn unix_ms() -> u128 {
         .map_or(0, |duration| duration.as_millis())
 }
 
+#[cfg(test)]
 fn digest_paths(paths: &[String]) -> String {
-    digest_paths_until(paths, None)
+    digest_paths_until(paths, None).unwrap_or_else(|| UNCERTAIN_TOUCHED_FILES_DIGEST.to_string())
 }
 
-fn digest_paths_until(paths: &[String], deadline: Option<Instant>) -> String {
-    let mut material = String::new();
+fn digest_paths_until(paths: &[String], deadline: Option<Instant>) -> Option<String> {
+    // This independent digest bound disables reuse; repository scanning keeps
+    // its separate entry/depth limits and never truncates at this path count.
+    if paths.len() > MAX_TOUCHED_PATHS {
+        return None;
+    }
+    let mut hasher = Sha256::new();
     for path in paths {
         if deadline_expired(deadline) {
-            break;
+            return None;
         }
-        material.push_str(path);
-        material.push('\0');
-        material.push_str(&crate::fsutil::read_optional_bounded(
-            Path::new(path),
-            256 * 1024,
-        ));
-        material.push('\0');
+        let contents =
+            crate::fsutil::read_required_bounded(Path::new(path), MAX_DIGEST_FILE_BYTES)?;
+        if contents.as_bytes().contains(&0) || deadline_expired(deadline) {
+            return None;
+        }
+        hasher.update(path.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(contents.as_bytes());
+        hasher.update(b"\0");
     }
-    digest_bytes(&material)
+    Some(format!("{:x}", hasher.finalize()))
 }
 
+#[cfg(test)]
 fn digest_bytes(value: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -2747,6 +2884,91 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn full_check_marks_supported_symlink_uncertain_without_scanning_it() {
+        let fixture = TestTempDir::new("check-path-symlink-uncertain");
+        let source = fixture.path.join("src/ordinary.rs");
+        let target = fixture.path.join("vendor/ignored.json");
+        let link = fixture.path.join("src/tracked.json");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        std::fs::create_dir_all(target.parent().expect("ignored parent"))
+            .expect("ignored directory");
+        std::fs::write(&source, "fn value() -> u8 { 1 }\\n").expect("ordinary source");
+        std::fs::write(&target, "{}\\n").expect("ignored target");
+        std::os::unix::fs::symlink("../vendor/ignored.json", &link)
+            .expect("supported-extension symlink");
+
+        let (paths, status, reuse_uncertain) =
+            check_paths_with_deadline(&fixture.path, None).expect("check paths");
+        assert_eq!(status, CheckPathScanStatus::Complete);
+        assert!(reuse_uncertain, "the symlink makes reuse uncertain");
+        assert!(paths.iter().any(|path| Path::new(path) == source));
+        assert!(!paths.iter().any(|path| Path::new(path) == link));
+        assert!(!paths.iter().any(|path| Path::new(path) == target));
+    }
+
+    #[test]
+    fn full_check_marks_supported_non_regular_uncertain_without_scanning_it() {
+        let fixture = TestTempDir::new("check-path-non-regular-uncertain");
+        let source = fixture.path.join("src/ordinary.rs");
+        let non_regular = fixture.path.join("src/generated.rs");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        std::fs::write(&source, "fn value() -> u8 { 1 }\\n").expect("ordinary source");
+        std::fs::create_dir(&non_regular).expect("supported-extension directory");
+
+        let (paths, status, reuse_uncertain) =
+            check_paths_with_deadline(&fixture.path, None).expect("check paths");
+        assert_eq!(status, CheckPathScanStatus::Complete);
+        assert!(
+            reuse_uncertain,
+            "the non-regular candidate makes reuse uncertain"
+        );
+        assert!(paths.iter().any(|path| Path::new(path) == source));
+        assert!(!paths.iter().any(|path| Path::new(path) == non_regular));
+    }
+
+    #[test]
+    fn full_check_marks_overdepth_descendant_uncertain_without_scanning_it() {
+        let fixture = TestTempDir::new("check-path-overdepth");
+        let mut directory = fixture.path.clone();
+        for index in 0..=MAX_CHECK_PATH_DEPTH {
+            directory.push(format!("depth-{index}"));
+        }
+        std::fs::create_dir_all(&directory).expect("over-depth directories");
+        let source = directory.join("over.rs");
+        std::fs::write(&source, "fn over() -> u8 { 1 }\\n").expect("over-depth source");
+
+        let (paths, status, reuse_uncertain) =
+            check_paths_with_deadline(&fixture.path, None).expect("check paths");
+        assert_eq!(status, CheckPathScanStatus::DepthLimit);
+        assert!(reuse_uncertain, "an incomplete scan cannot authorize reuse");
+        assert!(!paths.iter().any(|path| Path::new(path) == source));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn full_check_omits_non_utf8_supported_paths_without_lossy_digest_entries() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let fixture = TestTempDir::new("check-path-non-utf8");
+        let source_directory = fixture.path.join("src");
+        std::fs::create_dir_all(&source_directory).expect("source directory");
+        std::fs::write(source_directory.join("ordinary.rs"), "fn ordinary() {}\\n")
+            .expect("ordinary source");
+        let non_utf8 = source_directory.join(OsString::from_vec(b"tracked-\xff.rs".to_vec()));
+        std::fs::write(&non_utf8, "fn tracked() {}\\n").expect("non-UTF-8 source");
+        let lossy_path = non_utf8.to_string_lossy().into_owned();
+
+        let (paths, status, reuse_uncertain) =
+            check_paths_with_deadline(&fixture.path, None).expect("check paths");
+        assert_eq!(status, CheckPathScanStatus::Complete);
+        assert!(reuse_uncertain, "non-UTF-8 source names prevent reuse");
+        assert!(!paths.iter().any(|path| path == &lossy_path));
+        assert!(paths.iter().any(|path| path.ends_with("ordinary.rs")));
+    }
+
     #[test]
     fn runtime_subtrees_are_excluded_without_excluding_legitimate_pi_files() {
         let fixture = TestTempDir::new("check-path-runtime-subtrees");
@@ -2777,7 +2999,7 @@ mod tests {
             std::fs::write(path, contents).expect("legitimate fixture");
         }
 
-        let (paths, status) = check_paths_with_deadline(
+        let (paths, status, _) = check_paths_with_deadline(
             &fixture.path,
             Instant::now().checked_add(Duration::from_secs(30)),
         )
@@ -2825,23 +3047,33 @@ mod tests {
             .expect("source fixture");
         }
 
-        let (paths, status) = check_paths_with_deadline(
+        let (paths, status, reuse_uncertain) = check_paths_with_deadline(
             &fixture.path,
             Instant::now().checked_add(Duration::from_secs(30)),
         )
         .expect("check paths");
         assert_eq!(paths.len(), 1024);
         assert_eq!(status, CheckPathScanStatus::Complete);
+        assert!(!reuse_uncertain, "the repository source scan is complete");
+        assert!(
+            digest_paths_until(&paths, None).is_none(),
+            "the independent digest bound disables reuse without truncating source scans"
+        );
         assert!(check_path_scan_result(status, true).is_none());
     }
 
     #[test]
     fn expired_check_path_deadline_is_not_classified_as_path_limit() {
         let fixture = TestTempDir::new("check-path-expired-deadline");
-        let (_, status) = check_paths_with_deadline(&fixture.path, Some(Instant::now()))
-            .expect("expired scan is classified");
+        let (_, status, reuse_uncertain) =
+            check_paths_with_deadline(&fixture.path, Some(Instant::now()))
+                .expect("expired scan is classified");
 
         assert_eq!(status, CheckPathScanStatus::Deadline);
+        assert!(
+            reuse_uncertain,
+            "an expired scan cannot authorize digest reuse"
+        );
         assert!(check_path_scan_result(status, true).is_none());
         let result = run_pre_commit_gate_with_limits(
             &fixture.path,
@@ -3753,7 +3985,47 @@ mod tests {
         let touched = touched_paths(&fixture.path, Some("session")).expect("valid ledger parses");
         assert!(touched.had_edits);
         assert!(touched.ledger_issue.is_none());
+        assert!(!touched.reuse_uncertain);
         assert_eq!(touched.files, vec![source.to_string_lossy().into_owned()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_task_ledger_candidate_through_symlinked_ancestor_is_uncertain() {
+        let fixture = TestTempDir::new("ledger-symlink-ancestor");
+        let target = fixture.path.join("real/target.py");
+        let alias = fixture.path.join("alias");
+        std::fs::create_dir_all(target.parent().expect("target parent")).expect("target directory");
+        std::fs::write(&target, "value = 1\\n").expect("target source");
+        std::os::unix::fs::symlink("real", &alias).expect("symlinked ancestor");
+        write_ledger(
+            &fixture.path,
+            valid_ledger_line("symlink-ancestor-session", "alias/target.py", "passed").as_bytes(),
+        );
+
+        let touched =
+            touched_paths(&fixture.path, Some("symlink-ancestor-session")).expect("ledger parses");
+        assert!(touched.reuse_uncertain);
+        assert!(
+            touched.files.is_empty(),
+            "symlinked path must not be scanned"
+        );
+    }
+
+    #[test]
+    fn unresolved_ledger_candidate_marks_reuse_uncertain() {
+        let fixture = TestTempDir::new("unresolved-ledger-candidate");
+        write_ledger(
+            &fixture.path,
+            valid_ledger_line("unresolved-session", "src/missing.rs", "failed").as_bytes(),
+        );
+
+        let touched = touched_paths(&fixture.path, Some("unresolved-session"))
+            .expect("unresolved ledger candidate parses");
+        assert!(touched.had_edits);
+        assert!(touched.files.is_empty());
+        assert!(touched.ledger_issue.is_none());
+        assert!(touched.reuse_uncertain);
     }
 
     #[test]
@@ -3979,6 +4251,186 @@ mod tests {
     }
 
     #[test]
+    fn oversized_or_uncertain_touched_file_disables_digest_reuse() {
+        let fixture = TestTempDir::new("digest-uncertain");
+        let path = fixture.path.join("src/app.rs");
+        std::fs::create_dir_all(path.parent().expect("source parent")).expect("source directory");
+        let paths = vec![path.to_string_lossy().into_owned()];
+
+        let exact = vec![b'x'; MAX_DIGEST_FILE_BYTES as usize];
+        std::fs::write(&path, &exact).expect("exact-size source");
+        assert!(digest_paths_until(&paths, None).is_some());
+
+        let mut oversized = exact;
+        oversized.push(b'x');
+        std::fs::write(&path, &oversized).expect("oversized source");
+        assert!(digest_paths_until(&paths, None).is_none());
+        assert_eq!(digest_paths(&paths), UNCERTAIN_TOUCHED_FILES_DIGEST);
+
+        std::fs::write(&path, [0xff_u8, 0xfe]).expect("invalid UTF-8 source");
+        assert!(digest_paths_until(&paths, None).is_none());
+        std::fs::remove_file(&path).expect("source removal");
+        assert!(digest_paths_until(&paths, None).is_none());
+        std::fs::create_dir(&path).expect("non-regular source fixture");
+        assert!(digest_paths_until(&paths, None).is_none());
+
+        #[cfg(unix)]
+        {
+            std::fs::remove_dir(&path).expect("non-regular source removal");
+            let target = fixture.path.join("src/target.rs");
+            std::fs::write(&target, "fn target() {}\\n").expect("symlink target");
+            std::os::unix::fs::symlink(&target, &path).expect("final-component symlink");
+            assert!(digest_paths_until(&paths, None).is_none());
+        }
+    }
+
+    #[test]
+    fn digest_binds_reusable_content_and_path_with_explicit_framing() {
+        use sha2::{Digest, Sha256};
+
+        let fixture = TestTempDir::new("digest-framing");
+        let source = fixture.path.join("src/app.rs");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        let contents = "fn value() -> u8 { 1 }\\n";
+        std::fs::write(&source, contents).expect("source fixture");
+        let path = source.to_string_lossy().into_owned();
+        let paths = vec![path.clone()];
+
+        let mut expected_hasher = Sha256::new();
+        expected_hasher.update(path.as_bytes());
+        expected_hasher.update(b"\0");
+        expected_hasher.update(contents.as_bytes());
+        expected_hasher.update(b"\0");
+        let expected = format!("{:x}", expected_hasher.finalize());
+        assert_eq!(digest_paths_until(&paths, None), Some(expected.clone()));
+
+        std::fs::write(&source, "fn value() -> u8 { 2 }\\n").expect("changed source");
+        assert_ne!(digest_paths_until(&paths, None), Some(expected.clone()));
+
+        let second_source = fixture.path.join("src/other.rs");
+        std::fs::write(&second_source, contents).expect("second source");
+        let second_path = second_source.to_string_lossy().into_owned();
+        assert_ne!(digest_paths_until(&[second_path], None), Some(expected));
+    }
+
+    #[test]
+    fn nul_containing_touched_file_disables_digest_reuse() {
+        let fixture = TestTempDir::new("digest-nul-content");
+        let path = fixture.path.join("src/app.rs");
+        std::fs::create_dir_all(path.parent().expect("source parent")).expect("source directory");
+        std::fs::write(&path, b"prefix\0suffix").expect("NUL-containing source");
+        let paths = vec![path.to_string_lossy().into_owned()];
+
+        assert!(digest_paths_until(&paths, None).is_none());
+        assert_eq!(digest_paths(&paths), UNCERTAIN_TOUCHED_FILES_DIGEST);
+    }
+
+    #[test]
+    fn bind_command_provenance_latches_uncertain_digest() {
+        let fixture = TestTempDir::new("bind-provenance-uncertain");
+        let path = fixture.path.join("src/app.rs");
+        std::fs::create_dir_all(path.parent().expect("source parent")).expect("source directory");
+        std::fs::write(&path, vec![b'x'; MAX_DIGEST_FILE_BYTES as usize + 1])
+            .expect("oversized source");
+        let paths = vec![path.to_string_lossy().into_owned()];
+        let mut evidence = vec![commands::CommandEvidence {
+            command: "check".to_string(),
+            exit_code: Some(0),
+            duration_ms: 1,
+            argv: Vec::new(),
+            cwd: None,
+            cwd_identity: None,
+            workspace_id: None,
+            config_digest: None,
+            touched_files_digest: None,
+            policy_version: None,
+            binary_version: None,
+            started_at_ms: Some(1),
+            finished_at_ms: Some(2),
+        }];
+
+        let (_, digest_uncertain) = bind_command_provenance(
+            "config",
+            &paths,
+            None,
+            false,
+            Some("pre-scan-digest"),
+            &mut evidence,
+        );
+        assert!(digest_uncertain);
+        assert_eq!(
+            evidence[0].touched_files_digest.as_deref(),
+            Some(UNCERTAIN_TOUCHED_FILES_DIGEST)
+        );
+        assert_eq!(evidence[0].config_digest.as_deref(), Some("config"));
+    }
+
+    #[test]
+    fn persistence_mismatch_stores_the_non_reusable_sentinel() {
+        let fixture = TestTempDir::new("persistence-digest-mismatch");
+        let source = fixture.path.join("src/app.rs");
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        std::fs::write(&source, "value = 1\\n").expect("source fixture");
+        let path = source.to_string_lossy().into_owned();
+        let config_digest = digest_bytes("");
+        let verified_digest = digest_bytes("different-final-content");
+        let command_evidence = commands::CommandEvidence {
+            command: "check".to_string(),
+            exit_code: Some(0),
+            duration_ms: 1,
+            argv: vec!["check".to_string()],
+            cwd: Some(".".to_string()),
+            cwd_identity: Some("identity".to_string()),
+            workspace_id: Some("verify".to_string()),
+            config_digest: Some(config_digest.clone()),
+            touched_files_digest: Some(verified_digest.clone()),
+            policy_version: Some(crate::policy::POLICY_BUNDLE_VERSION.to_string()),
+            binary_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            started_at_ms: Some(1),
+            finished_at_ms: Some(2),
+        };
+
+        assert!(
+            append_task_evidence(
+                EvidenceMeta {
+                    adapter: &ClaudeAdapter,
+                    root: &fixture.path,
+                    deadline: None,
+                    session_id: Some("persistence-digest-mismatch"),
+                    profile: "default",
+                    paths: std::slice::from_ref(&path),
+                    reuse_uncertain: false,
+                    verified_post_command_digest: Some(&verified_digest),
+                    config_digest: &config_digest,
+                    started_at_ms: 1,
+                    finished_at_ms: 2,
+                    tier: "full",
+                },
+                &[],
+                std::slice::from_ref(&command_evidence),
+                &[],
+                &[],
+                &[],
+                &[],
+            )
+            .expect("mismatched persistence digest stores evidence")
+        );
+
+        let evidence = std::fs::read_to_string(fixture.path.join(".lgtm/evidence/evidence.jsonl"))
+            .expect("persisted evidence");
+        let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("record");
+        assert_eq!(
+            record["touched_files_digest"],
+            UNCERTAIN_TOUCHED_FILES_DIGEST
+        );
+        assert_eq!(
+            record["commands"][0]["touched_files_digest"],
+            UNCERTAIN_TOUCHED_FILES_DIGEST
+        );
+        assert_eq!(record["commands"][0]["argv"], serde_json::json!(["check"]));
+    }
+
+    #[test]
     fn aggregate_budget_unverified_result_cannot_report_passed() {
         let mut output = Vec::new();
         write_summary(
@@ -4150,7 +4602,7 @@ mod tests {
             std::fs::write(&evidence_path, format!("{}\n", record(results)))
                 .expect("evidence record");
             assert_eq!(
-                matching_full_evidence(&root, Some("aggregate-budget"), &[]).is_some(),
+                matching_full_evidence(&root, Some("aggregate-budget"), &[], false).is_some(),
                 reusable,
                 "cutoff-specific evidence reuse decision"
             );
@@ -4166,12 +4618,172 @@ mod tests {
             std::fs::write(&evidence_path, format!("{mismatched}\n"))
                 .expect("mismatched evidence record");
             assert!(
-                matching_full_evidence(&root, Some("aggregate-budget"), &[]).is_none(),
+                matching_full_evidence(&root, Some("aggregate-budget"), &[], false).is_none(),
                 "{field} mismatch must prevent authorization reuse"
             );
         }
 
         std::fs::remove_dir_all(root).expect("temporary evidence directory removal");
+    }
+
+    #[test]
+    fn full_evidence_reuse_requires_matching_command_provenance() {
+        let fixture = TestTempDir::new("command-provenance-matcher");
+        let config_path = fixture.path.join(".lgtm/config.json");
+        std::fs::create_dir_all(config_path.parent().expect("config parent"))
+            .expect("config directory");
+        std::fs::write(
+            &config_path,
+            serde_json::json!({
+                "version": "2",
+                "profile": "default",
+                "workspaces": [{
+                    "id": "verify",
+                    "language": "shell",
+                    "root": ".",
+                    "commands": [{
+                        "argv": ["true"],
+                        "cwd": ".",
+                        "timeout_seconds": 30,
+                        "tier": "full",
+                        "purpose": "verify",
+                        "source": "test",
+                        "confidence": "high"
+                    }],
+                    "coverage": []
+                }],
+                "disabled_rules": [],
+                "severity_overrides": {}
+            })
+            .to_string(),
+        )
+        .expect("config fixture");
+        let snapshot = commands::load_snapshot(&fixture.path);
+        assert!(snapshot.settings.is_ok());
+        let capability =
+            crate::fsutil::open_directory_capability(&fixture.path, Path::new("."), Path::new("."))
+                .expect("command cwd capability");
+        let cwd_identity =
+            crate::fsutil::directory_identity(&capability).expect("command cwd identity");
+        let config_digest = snapshot.digest;
+        let touched_files_digest = digest_paths(&[]);
+        let session_id = "command-provenance-session";
+        let record = serde_json::json!({
+            "task_id": session_id,
+            "results": [{
+                "rule_id": "required-repository-commands",
+                "status": "passed",
+                "severity": "error",
+                "message": "command passed",
+                "locations": [],
+                "remediation": null,
+                "evidence": {
+                    "check": "command.required",
+                    "tool_version": null,
+                    "finding_descriptions": []
+                }
+            }],
+            "commands": [{
+                "command": "true",
+                "exit_code": 0,
+                "duration_ms": 1,
+                "argv": ["true"],
+                "cwd": ".",
+                "cwd_identity": cwd_identity,
+                "workspace_id": "verify",
+                "config_digest": config_digest.clone(),
+                "touched_files_digest": touched_files_digest.clone(),
+                "policy_version": crate::policy::POLICY_BUNDLE_VERSION,
+                "binary_version": env!("CARGO_PKG_VERSION"),
+                "started_at_ms": 1,
+                "finished_at_ms": 2
+            }],
+            "coverage": [{
+                "workspace_id": "repository",
+                "status": "not_applicable",
+                "cwd": null,
+                "cwd_identity": null,
+                "tool": null,
+                "scope": null,
+                "line_percent": null,
+                "branch_percent": null,
+                "measured_at_ms": null
+            }],
+            "policy_version": crate::policy::POLICY_BUNDLE_VERSION,
+            "binary_version": env!("CARGO_PKG_VERSION"),
+            "platform": commands::platform_id(),
+            "containment_version": commands::CONTAINMENT_VERSION,
+            "touched_files_digest": touched_files_digest,
+            "config_digest": config_digest,
+            "tier": "full"
+        });
+        let evidence_path = fixture.path.join(".lgtm/evidence/evidence.jsonl");
+        std::fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
+            .expect("evidence directory");
+        std::fs::write(&evidence_path, format!("{record}\n")).expect("evidence fixture");
+
+        assert!(matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_some());
+        assert!(matching_full_evidence(&fixture.path, Some(session_id), &[], true).is_none());
+        assert_eq!(
+            run_pre_commit_gate_with_budget(&fixture.path, Some(session_id), Duration::ZERO)
+                .expect("certain evidence can skip the exhausted command budget"),
+            None
+        );
+        let mut sentinel_record = record.clone();
+        sentinel_record["touched_files_digest"] = serde_json::json!(UNCERTAIN_TOUCHED_FILES_DIGEST);
+        std::fs::write(&evidence_path, format!("{sentinel_record}\n"))
+            .expect("sentinel evidence fixture");
+        assert!(matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_none());
+        assert!(
+            run_pre_commit_gate_with_budget(&fixture.path, Some(session_id), Duration::ZERO)
+                .expect("uncertain evidence must run the exhausted command budget")
+                .is_some()
+        );
+        for (field, value) in [
+            (
+                "touched_files_digest",
+                serde_json::json!(UNCERTAIN_TOUCHED_FILES_DIGEST),
+            ),
+            ("touched_files_digest", serde_json::json!("different-files")),
+            ("config_digest", serde_json::json!("different-config")),
+            ("policy_version", serde_json::json!("different-policy")),
+            ("binary_version", serde_json::json!("different-binary")),
+        ] {
+            let mut invalid = record.clone();
+            invalid["commands"][0][field] = value;
+            std::fs::write(&evidence_path, format!("{invalid}\n"))
+                .expect("invalid evidence fixture");
+            assert!(
+                matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_none(),
+                "nested {field} mismatch must prevent reuse"
+            );
+        }
+        for field in [
+            "touched_files_digest",
+            "config_digest",
+            "policy_version",
+            "binary_version",
+        ] {
+            let mut omitted = record.clone();
+            let _ = omitted["commands"][0]
+                .as_object_mut()
+                .expect("command evidence object")
+                .remove(field);
+            std::fs::write(&evidence_path, format!("{omitted}\n"))
+                .expect("omitted provenance fixture");
+            assert!(
+                matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_none(),
+                "omitted nested {field} must prevent reuse"
+            );
+
+            let mut null = record.clone();
+            null["commands"][0][field] = serde_json::Value::Null;
+            std::fs::write(&evidence_path, format!("{null}\n")).expect("null provenance fixture");
+            assert!(
+                matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_none(),
+                "null nested {field} must prevent reuse"
+            );
+        }
     }
 
     #[test]
@@ -4216,7 +4828,7 @@ mod tests {
         });
         std::fs::write(&evidence_path, format!("{record}\n")).expect("passing evidence record");
         assert!(
-            matching_full_evidence(&root, Some("deadline-reuse-session"), &[]).is_some(),
+            matching_full_evidence(&root, Some("deadline-reuse-session"), &[], false).is_some(),
             "fixture must be reusable without the deadline-bound gate"
         );
 
@@ -4522,7 +5134,7 @@ mod tests {
                 result["status"] == "failed" && result["evidence"]["check"] == "command.config"
             })
         }));
-        assert!(matching_full_evidence(&root, Some("config-replacement"), &[]).is_none());
+        assert!(matching_full_evidence(&root, Some("config-replacement"), &[], false).is_none());
 
         std::fs::remove_dir_all(root).expect("temporary fixture removal");
     }
@@ -4585,7 +5197,9 @@ mod tests {
             std::fs::read_to_string(root.join(".lgtm/config.json")).expect("config remains"),
             original
         );
-        assert!(matching_full_evidence(&root, Some("delayed-config-replacement"), &[]).is_none());
+        assert!(
+            matching_full_evidence(&root, Some("delayed-config-replacement"), &[], false).is_none()
+        );
 
         std::fs::remove_dir_all(root).expect("temporary fixture removal");
     }
