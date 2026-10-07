@@ -652,7 +652,7 @@ fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
             record["platform"],
             format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
         );
-        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v4");
+        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v5");
         assert!(record["results"].as_array().is_some_and(|results| {
             results.iter().any(|result| {
                 result["status"] == "failed"
@@ -725,7 +725,7 @@ fn adopted_zombie_before_first_proc_scan_denies_and_is_not_reused() {
 
         let record = latest_evidence(&repo);
         assert_eq!(record["commands"][0]["exit_code"], Value::Null);
-        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v4");
+        assert_eq!(record["containment_version"], "linux-isolated-subreaper-v5");
         assert!(record["results"].as_array().is_some_and(|results| {
             results.iter().any(|result| {
                 result["status"] == "failed"
