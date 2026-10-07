@@ -123,6 +123,23 @@ fn merge_permission_denies(settings: &mut Map<String, Value>) {
     }
 }
 
+pub(super) fn refresh_existing_hooks(existing: &Map<String, Value>) -> Map<String, Value> {
+    let mut refreshed = existing.clone();
+    if let Some(hooks) = refreshed.get_mut("hooks").and_then(Value::as_object_mut) {
+        for wiring in &HOOK_EVENTS {
+            if let Some(entries) = hooks.get_mut(wiring.event).and_then(Value::as_array_mut) {
+                for entry in entries
+                    .iter_mut()
+                    .filter(|entry| entry_runs_command(entry, wiring.command))
+                {
+                    reconcile_matcher(entry, wiring);
+                }
+            }
+        }
+    }
+    refreshed
+}
+
 /// Add each lgtm hook entry to the hooks map, reconciling any existing lgtm
 /// entry for the same event: if one is found with the wrong matcher, its matcher
 /// is corrected; if found and already correct, it is left exactly as authored

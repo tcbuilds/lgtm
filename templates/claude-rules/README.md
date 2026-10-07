@@ -55,6 +55,41 @@ and core patterns; editing `store_test.rs` also loads the testing rules.
 Confirm what loaded with `/context` in a session; the files appear under
 **Memory files**.
 
+## Mobile design guidance
+
+`mobile-ui.md` carries shared accessibility, layout, feedback, and state guidance.
+`ios-ui.md` adds Apple HIG conventions; `android-ui.md` adds Android/Material
+conventions. These are prose-only guidance, not new enforcement checks or a claim
+of HIG, Material, or accessibility compliance.
+
+The defaults deliberately use mobile path hints, not language detection:
+
+| Source location | Mobile guidance loaded |
+| --- | --- |
+| UI source under `ios/` or `iosApp/`, or `*.ios.{js,jsx,ts,tsx}` | Shared + iOS |
+| UI source under `android/`, or `*.android.{js,jsx,ts,tsx}` | Shared + Android |
+| JS/TS/Dart under `mobile/` or `react-native/`, or `*.native.{js,jsx,ts,tsx}` | Shared only |
+| Arbitrary `.swift`, `.kt`, `.dart`, or `.tsx` elsewhere | None |
+
+Paths match at the repository root and inside monorepos; exact extension lists
+are in each template's `paths:` frontmatter. A matching path is only a hint: apply
+these rules to actual phone/tablet UI, never unrelated server, web, or desktop
+code in the same directory. Shared Flutter/React Native code does not reveal the
+active target; check each target's conventions explicitly rather than assuming
+both platform rule files loaded.
+
+For other layouts (such as root `app/src/`, Expo `app/`, or Flutter `lib/`), narrow
+installed Claude rules to the project's actual mobile UI paths. Re-running init
+preserves these local edits. Pi's LGTM adapter uses the embedded catalog, not the
+installed Claude copies: editing their frontmatter does not change Pi injection.
+For unmatched Pi paths, supply the target guidance through agent-supported
+project instructions. Codex receives all three bodies in `AGENTS.md`; their
+explicit platform conditions still apply without lazy loading.
+
+Run `cargo test --test mobile_guidance` to verify scope and installation behavior.
+To remove the Claude guidance, delete these three installed files; a later init
+will reinstall missing templates. Pi's bundled guidance changes with the binary.
+
 ## Codex
 
 Codex reads `AGENTS.md` rather than `CLAUDE.md`, and has no equivalent of

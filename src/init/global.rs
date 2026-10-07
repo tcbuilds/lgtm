@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use super::fs::stage_private_write;
 use super::*;
 
 const MANAGED_START: &str = "<!-- lgtm-global-guidance:start -->";
@@ -46,6 +47,11 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
         pi_backup.clone(),
     ];
     targets.extend(rules::target_paths(home, InitAgent::Claude));
+    targets.extend(
+        guidance_plan
+            .iter()
+            .filter_map(|write| write.backup.as_ref().map(|backup| backup.path.clone())),
+    );
     let target_refs: Vec<&Path> = targets.iter().map(PathBuf::as_path).collect();
     preflight_targets(home, &target_refs)?;
     preflight_file_targets(&target_refs)?;
@@ -58,38 +64,60 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
     )?;
 
     let mut planned = vec![
-        (
-            claude_settings,
-            ".claude/settings.json".to_string(),
-            claude_render,
-        ),
-        (codex_hooks, ".codex/hooks.json".to_string(), codex_render),
-        (codex_agents, ".codex/AGENTS.md".to_string(), agents_render),
+        PlannedGlobalWrite {
+            path: claude_settings,
+            label: ".claude/settings.json".to_string(),
+            render: claude_render,
+            private: false,
+        },
+        PlannedGlobalWrite {
+            path: codex_hooks,
+            label: ".codex/hooks.json".to_string(),
+            render: codex_render,
+            private: false,
+        },
+        PlannedGlobalWrite {
+            path: codex_agents,
+            label: ".codex/AGENTS.md".to_string(),
+            render: agents_render,
+            private: false,
+        },
     ];
     if let Some(contents) = pi_plan.backup_contents.as_ref() {
-        planned.push((
-            pi_plan.backup.clone(),
-            ".pi/agent/extensions/lgtm.ts.bak".to_string(),
-            Some(contents.clone()),
-        ));
+        planned.push(PlannedGlobalWrite {
+            path: pi_plan.backup.clone(),
+            label: ".pi/agent/extensions/lgtm.ts.bak".to_string(),
+            render: Some(contents.clone()),
+            private: false,
+        });
     }
-    planned.push((
-        pi_plan.target.clone(),
-        ".pi/agent/extensions/lgtm.ts".to_string(),
-        pi_plan.target_contents.clone(),
-    ));
-    planned.extend(guidance_plan.iter().map(|write| {
-        (
-            write.path.clone(),
-            format!(".claude/rules/{}", write.label),
-            Some(write.contents.clone()),
-        )
-    }));
+    planned.push(PlannedGlobalWrite {
+        path: pi_plan.target.clone(),
+        label: ".pi/agent/extensions/lgtm.ts".to_string(),
+        render: pi_plan.target_contents.clone(),
+        private: false,
+    });
+    for write in &guidance_plan {
+        if let Some(backup) = write.backup.as_ref() {
+            planned.push(PlannedGlobalWrite {
+                path: backup.path.clone(),
+                label: format!(".claude/rules/{}", backup.label),
+                render: Some(backup.contents.clone()),
+                private: true,
+            });
+        }
+        planned.push(PlannedGlobalWrite {
+            path: write.path.clone(),
+            label: format!(".claude/rules/{}", write.label),
+            render: Some(write.contents.clone()),
+            private: false,
+        });
+    }
 
     let files_written: Vec<String> = planned
         .iter()
-        .filter(|(_, _, render)| render.is_some())
-        .map(|(_, label, _)| label.clone())
+        .filter(|write| write.render.is_some())
+        .map(|write| write.label.clone())
         .collect();
     let mut notes = vec![
         "global install targets $HOME; no repository .lgtm config was written".to_string(),
@@ -118,28 +146,49 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
         });
     }
 
-    for (path, _, render) in &planned {
-        if render.is_some()
-            && let Some(parent) = path.parent()
+    for write in &planned {
+        if write.render.is_some()
+            && let Some(parent) = write.path.parent()
         {
             create_dir_all(parent)?;
         }
     }
     let mut staged = Vec::new();
-    for (path, label, render) in planned {
-        if let Some(bytes) = render {
-            staged.push((stage_write(&path, &bytes)?, label));
+    for write in planned {
+        if let Some(bytes) = write.render {
+            let handle = if write.private {
+                stage_private_write(&write.path, &bytes)?
+            } else {
+                stage_write(&write.path, &bytes)?
+            };
+            staged.push((handle, write.label));
         }
     }
     for (handle, _) in staged {
         commit_write(handle)?;
     }
+    super::pi_installations::register(
+        home,
+        &pi_extension,
+        &pi::hook_binary()?,
+        pi::ExtensionScope::Global,
+    )?;
+    notes.push(
+        "LGTM-managed global files registered for automatic refresh by lgtm update".to_string(),
+    );
 
     Ok(GlobalInitSummary {
         files_written,
         notes,
         rules,
     })
+}
+
+struct PlannedGlobalWrite {
+    path: PathBuf,
+    label: String,
+    render: Option<Vec<u8>>,
+    private: bool,
 }
 
 fn render_claude_hooks(validated: config::ValidatedSettings, binary: &str) -> Option<Vec<u8>> {
@@ -154,7 +203,7 @@ fn render_claude_hooks(validated: config::ValidatedSettings, binary: &str) -> Op
     Some(serialized.into_bytes())
 }
 
-fn render_agents(path: &Path) -> Result<Option<Vec<u8>>, InitError> {
+pub(super) fn render_agents(path: &Path) -> Result<Option<Vec<u8>>, InitError> {
     let existing = read_if_exists(path)?.unwrap_or_default();
     let managed = format!(
         "{MANAGED_START}\n{}\n{MANAGED_END}\n",

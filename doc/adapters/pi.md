@@ -95,11 +95,80 @@ a fallback when no initialized config exists. The global extension is inert when
 no marker exists and skips a root-start session when the current cwd contains the
 owned project extension.
 
+## Automatic upgrade refresh
+
+Project/global init, rules-only init, and verified Pi session starts register
+managed installations in `$HOME/.local/state/lgtm/pi-installations/` (the registry
+retains its original directory name). Registration is outside repository tracking.
+LGTM does not search the disk for repositories.
+
+`lgtm update` invokes the newly installed executable to refresh all tracked managed
+files: rules, guidance, installed hooks, generated Codex execpolicy, Pi extensions,
+and installed Pi package/LSP configuration. An already-current update also refreshes
+them. Only canonical Pi extensions pointing to that executable are changed;
+customized, repointed, missing, or disabled extensions are preserved. Existing
+hook events are reconciled without re-adding removed events. Repo policy and
+command configuration, owner settings, and custom files remain untouched. Edited
+shipped rules are backed up using the existing init backup behavior.
+
+Existing backup collisions fail visibly without overwriting owner content. If
+refresh fails after binary installation, repair the reported problem and run
+`lgtm refresh`; the updater reports that the binary was already installed.
+
+**One-time migration:** versions through v0.12.1 have no installation registry or
+post-update refresh. After upgrading from those versions, run
+`lgtm init --agent pi` once in existing project installations (or `lgtm init -g`
+for global setup). Future updates refresh registered extensions automatically.
+A verified session start in the new version also registers its Pi installation.
+
+**Running sessions still need `/reload` or a restart.** Updating a file on disk
+cannot replace an extension already loaded in Pi. Automatic refresh does not
+claim native UI approval verification or re-enable disabled integrations. If you
+replace the binary outside `lgtm update`, run `lgtm refresh` afterward.
+`refresh-pi` remains a compatibility alias.
+
 Pi lifecycle hooks use a 10-second transport deadline. Bash pre-tool calls use a
-40-second transport deadline because they may run the Pi-specific pre-commit gate;
-that gate has a 30-second total budget, including bounded checks and evidence
+310-second transport deadline because they may run the Pi-specific pre-commit gate;
+that gate has a fixed 300-second total budget, including bounded checks and evidence
 persistence, and denies on aggregate exhaustion. Claude and Codex keep their
 existing full-gate budget.
+
+## Finding approval capability
+
+The canonical extension advertises the strictly versioned
+`lgtm-pi-finding-approval` capability on Bash tool calls. Rust preserves that
+capability only when its exact `{name, version: 1}` object is present; missing,
+malformed, unknown, or old callers receive the ordinary `{block, reason}` denial.
+Only a direct staged `git commit` whose complete fresh gitleaks assessment contains
+eligible built-in `generic-api-key` findings can produce the redacted approval
+challenge. Provider credentials, private keys, custom rules, mixed findings, and
+scanner or repository errors remain hard denials.
+
+The challenge binds the canonical repository and Git state, session and adapter,
+normalized commit argv, scanner/config/ignore/waiver and policy identities, scanner
+and Git executable identities, and the complete finding set. The extension may ask
+for native confirmation only in Pi `tui` mode with verified current runtime
+attestation and UI availability. Approval authority is local to one invocation,
+never persisted, and invalidated by session generations and shutdown. Before a new
+direct commit attempt, the live extension revalidates its executable, template,
+project trust, and all built-in tool contracts, then records fresh runtime evidence.
+This lets a repaired hook failure recover in the same session without deleting
+failure history or restoring an earlier approval. Failed re-attestation denies.
+The extension rechecks the canonical template and trusted executable after confirmation, performs
+one bounded fresh reassessment, and allows only an identical pending assessment or
+a clean pass. Cancellation, timeout, UI absence, changed findings/configuration,
+stale attestation, executable/template mutation, malformed responses, and failed
+reassessment deny. Finding display is redacted to rule, path/location, and a
+non-secret candidate identifier; no secret value or scanner description is shown.
+These checks narrow, but cannot eliminate, same-user TOCTOU mutation between
+revalidation and child execution; Pi extensions are not an operating-system
+security boundary.
+
+The bounded full-repository source scan preserves `.pi/extensions/`,
+`.pi/settings.json`, and `.pi/pi-lsp.json`. It excludes only the known runtime
+subtrees `.pi/orca-recovery/`, `.pi/subagents/`, `.pi/subagent-output/`,
+`.pi/npm/`, and the root `.killer-whale/`. A real source-path limit remains a
+source-scan failure; it is not reported as aggregate-budget expiry.
 
 ## Path-scoped guidance
 

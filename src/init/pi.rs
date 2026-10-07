@@ -20,6 +20,10 @@ const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
     "ed0ff523f79e64c395184b3b3253a90b3643e088863ef683c60baa45699b1df3",
     "9214f126c80ebe905f7c9b3441c36c4cd5dbeed8a4cf2d64359f002dff44826c",
     "fe98f5b39be7610f8b2ba9286d9637cb45a25205de018b915ccfbcc1ac284a71",
+    "fdbd8826b5446203b0b749524a8905cbd50999a6b64f2fdc692e28b05e027512",
+    "ec19a05c2caef1c3f0a18c149642c0df1617b0645782f905de87ec007320384b",
+    "f479f973d8a69973cc1fe77a304c24d871d6b1497f6ff82c3b16a5e13bf4a4cc",
+    "79c6df8037cb89d0df8992204df8d34de9d547952a14a528b0954fc054b66473",
 ];
 const EXTENSION_TEMPLATE: &str = r#"// lgtm-pi-extension: v1
 // lgtm-pi-scope: __LGTM_SCOPE__
@@ -38,9 +42,19 @@ const BINARY_DIGEST = "__LGTM_BINARY_DIGEST__";
 const MAX_INPUT_BYTES = 1024 * 1024;
 const TOOL_INPUT_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
+const MAX_BINARY_BYTES = 128 * 1024 * 1024;
 const NORMAL_TIMEOUT_MS = 10_000;
-const PRE_TOOL_TIMEOUT_MS = 40_000;
+const PRE_TOOL_TIMEOUT_MS = 310_000;
 const POLICY_INPUT_MARKER = "lgtm-pi-policy-input-v1";
+const APPROVAL_CAPABILITY = Object.freeze({
+  name: "lgtm-pi-finding-approval",
+  version: 1,
+});
+const APPROVAL_PROTOCOL = "lgtm-pi-finding-approval";
+const APPROVAL_CONFIRM_TIMEOUT_MS = 30_000;
+const MAX_APPROVAL_FINDINGS = 32;
+const MAX_APPROVAL_TEXT_BYTES = 512;
+const MAX_APPROVAL_COORDINATE = 1_000_000_000;
 const FAILURE_ENTRY = "lgtm";
 const TOOL_CONTRACTS = {
   read: { required: ["path"], properties: { path: "string", offset: "number", limit: "number" } },
@@ -129,7 +143,7 @@ const PROJECT_SCOPE_LOADED = Symbol.for("lgtm.project-extension-loaded");
 
 function projectBinaryIsRunnable() {
   try {
-    const metadata = statSync(LGTM_BINARY);
+    const metadata = lstatSync(LGTM_BINARY);
     if (!metadata.isFile()) return false;
     return process.platform === "win32" || (metadata.mode & 0o111) !== 0;
   } catch {
@@ -139,11 +153,29 @@ function projectBinaryIsRunnable() {
 
 function projectTemplateIsCanonical() {
   try {
-    return canonicalTemplateDigest(readFileSync(new URL(import.meta.url), "utf8"))
-      === TEMPLATE_DIGEST;
+    const extensionUrl = new URL(import.meta.url);
+    const metadata = lstatSync(extensionUrl);
+    if (!metadata.isFile()) return false;
+    return canonicalTemplateDigest(readFileSync(extensionUrl, "utf8")) === TEMPLATE_DIGEST;
   } catch {
     return false;
   }
+}
+
+function currentBinaryDigest() {
+  try {
+    const metadata = lstatSync(LGTM_BINARY);
+    if (!metadata.isFile() || metadata.size > MAX_BINARY_BYTES) return undefined;
+    return createHash("sha256").update(readFileSync(LGTM_BINARY)).digest("hex");
+  } catch {
+    return undefined;
+  }
+}
+
+function trustedRuntimeVersion() {
+  return projectTemplateIsCanonical()
+    && projectBinaryIsRunnable()
+    && currentBinaryDigest() === BINARY_DIGEST;
 }
 
 function projectScopeLoaded() {
@@ -372,6 +404,7 @@ function buildPayload(eventType, event, ctx, pi) {
   } else if (eventType === "tool_call") {
     payload.toolName = event.toolName;
     payload.input = policyToolInput(event.toolName, event.input);
+    payload.approvalCapability = APPROVAL_CAPABILITY;
   } else if (eventType === "tool_result") {
     payload.toolName = event.toolName;
     payload.input = policyToolInput(event.toolName, event.input);
@@ -408,8 +441,12 @@ function killChild(child) {
   try { child.kill("SIGKILL"); } catch {}
 }
 
-function invoke(binary, root, eventType, payload) {
+function invoke(binary, root, eventType, payload, signal) {
   return new Promise((resolveResult) => {
+    if (signal?.aborted) {
+      resolveResult({ failure: "aborted" });
+      return;
+    }
     const maxInputBytes = eventType === "tool_call" || eventType === "tool_result"
       ? TOOL_INPUT_BYTES
       : MAX_INPUT_BYTES;
@@ -438,25 +475,23 @@ function invoke(binary, root, eventType, payload) {
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let settled = false;
-    let timedOut = false;
+    let terminationReason;
     let reapTimer;
     const timeoutMs = eventType === "tool_call" && payload.toolName === "bash"
       ? PRE_TOOL_TIMEOUT_MS
       : NORMAL_TIMEOUT_MS;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      timedOut = true;
-      killChild(child);
-      reapTimer = setTimeout(() => finish({ failure: "timeout" }), 1_000);
-    }, timeoutMs);
+    const timer = setTimeout(() => terminate("timeout"), timeoutMs);
 
     function finish(result) {
       if (settled) return;
       settled = true;
+      if (terminationReason) result = { failure: terminationReason };
+      signal?.removeEventListener("abort", abort);
+      process.removeListener("exit", killOnExit);
       clearTimeout(timer);
       if (reapTimer) clearTimeout(reapTimer);
       if (!result.failure && stderrBytes > 0) result.diagnostics = true;
-      if (result.failure === "timeout") {
+      if (result.failure === "timeout" || result.failure === "aborted") {
         for (const stream of [child.stdin, child.stdout, child.stderr]) {
           try { stream?.destroy(); } catch {}
         }
@@ -466,11 +501,23 @@ function invoke(binary, root, eventType, payload) {
       resolveResult(result);
     }
 
+    function killOnExit() { killChild(child); }
+    function terminate(reason) {
+      if (settled || terminationReason) return;
+      terminationReason = reason;
+      killChild(child);
+      reapTimer = setTimeout(() => finish({ failure: reason }), 1_000);
+    }
+    function abort() { terminate("aborted"); }
+    process.once("exit", killOnExit);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+
     child.stdout.on("data", (chunk) => {
       stdoutBytes += chunk.length;
       if (stdoutBytes > MAX_OUTPUT_BYTES) {
         killChild(child);
-        finish({ failure: timedOut ? "timeout" : "output_too_large" });
+        finish({ failure: terminationReason ?? "output_too_large" });
         return;
       }
       stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -481,13 +528,13 @@ function invoke(binary, root, eventType, payload) {
     });
     child.stdin.on("error", () => {
       killChild(child);
-      finish({ failure: timedOut ? "timeout" : "stdin" });
+      finish({ failure: terminationReason ?? "stdin" });
     });
-    child.on("error", () => finish({ failure: timedOut ? "timeout" : "spawn" }));
+    child.on("error", () => finish({ failure: terminationReason ?? "spawn" }));
     child.on("close", (code, signal) => {
       if (settled) return;
-      if (timedOut) {
-        finish({ failure: "timeout" });
+      if (terminationReason) {
+        finish({ failure: terminationReason });
         return;
       }
       if (code !== 0 || signal) {
@@ -525,6 +572,9 @@ function validateResponse(eventType, response) {
     return "response_not_object";
   }
   if (eventType === "tool_call") {
+    if (Object.prototype.hasOwnProperty.call(response, "approval")) {
+      return validApprovalResponse(response) ? undefined : "invalid_approval_response";
+    }
     if (responseKeys(response) !== "block\u0000reason"
         || response.block !== true || typeof response.reason !== "string"
         || !withinJsonBudget(response, 4096)) return "invalid_tool_call_response";
@@ -541,6 +591,78 @@ function validateResponse(eventType, response) {
     return undefined;
   }
   return "unexpected_response";
+}
+
+function validApprovalResponse(response) {
+  if (responseKeys(response) !== "approval\u0000block\u0000reason"
+      || response.block !== true
+      || typeof response.reason !== "string"
+      || boundedReason(response.reason) !== response.reason
+      || !withinJsonBudget(response, 64 * 1024)) return false;
+  const approval = response.approval;
+  if (!approval || typeof approval !== "object" || Array.isArray(approval)
+      || responseKeys(approval) !== "findings\u0000identity\u0000protocol\u0000version"
+      || approval.protocol !== APPROVAL_PROTOCOL || approval.version !== 1
+      || typeof approval.identity !== "string"
+      || !/^[0-9a-f]{64}$/.test(approval.identity)
+      || !Array.isArray(approval.findings)
+      || approval.findings.length < 1
+      || approval.findings.length > MAX_APPROVAL_FINDINGS) return false;
+  return approval.findings.every((finding) => {
+    if (!finding || typeof finding !== "object" || Array.isArray(finding)
+        || responseKeys(finding) !== "candidateId\u0000endColumn\u0000endLine\u0000path\u0000ruleId\u0000startColumn\u0000startLine"
+        || finding.ruleId !== "generic-api-key"
+        || typeof finding.path !== "string"
+        || finding.path.length === 0
+        || Buffer.byteLength(finding.path, "utf8") > MAX_APPROVAL_TEXT_BYTES
+        || /[\u0000-\u001f\u007f]/.test(finding.path)
+        || typeof finding.candidateId !== "string"
+        || !/^[0-9a-f]{64}$/.test(finding.candidateId)) return false;
+    return [finding.startLine, finding.startColumn, finding.endLine, finding.endColumn]
+      .every((coordinate) => Number.isSafeInteger(coordinate)
+        && coordinate >= 0 && coordinate <= MAX_APPROVAL_COORDINATE);
+  });
+}
+
+function approvalChallenge(response) {
+  return response && typeof response === "object" && !Array.isArray(response)
+    && response.block === true && response.approval && validApprovalResponse(response)
+    ? response.approval
+    : undefined;
+}
+
+function sameApprovalChallenge(left, right) {
+  if (!left || !right || left.identity !== right.identity
+      || left.findings.length !== right.findings.length) return false;
+  return left.findings.every((finding, index) => {
+    const other = right.findings[index];
+    return finding.ruleId === other.ruleId
+      && finding.path === other.path
+      && finding.startLine === other.startLine
+      && finding.startColumn === other.startColumn
+      && finding.endLine === other.endLine
+      && finding.endColumn === other.endColumn
+      && finding.candidateId === other.candidateId;
+  });
+}
+
+function approvalPromptMessage(challenge) {
+  const lines = challenge.findings.map((finding) =>
+    `- ${finding.ruleId} at ${finding.path}:${finding.startLine}:${finding.startColumn} (candidate ${finding.candidateId.slice(0, 16)})`);
+  return [
+    "LGTM found redacted heuristic findings in the staged commit.",
+    "Approve only these exact candidates?",
+    ...lines,
+  ].join("\n");
+}
+
+function isDirectCommitCandidate(event) {
+  const command = event?.toolName === "bash" ? event.input?.command : undefined;
+  return typeof command === "string" && /(^|\s)git\s+commit(?:\s|$)/.test(command);
+}
+
+function blocked(reason) {
+  return { block: true, reason: boundedReason(reason) };
 }
 
 function validToolResultContentItem(item) {
@@ -575,8 +697,112 @@ function mergeToolResult(event, response) {
   };
 }
 
-async function handle(pi, eventType, event, ctx) {
+async function refreshCommitRuntime(pi, root, ctx, signal) {
+  if (!trustedRuntimeVersion() || !verifiedAllToolContracts(pi)) {
+    return blocked("Pi commit runtime is unverified; commit denied");
+  }
+  const payload = buildPayload("session_start", {}, ctx, pi);
+  if (payload.trusted !== true || payload.toolContractsVerified !== true) {
+    return blocked("Pi commit runtime evidence is unavailable; commit denied");
+  }
+  const result = await invoke(LGTM_BINARY, root, "session_start", payload, signal);
+  if (result.failure || result.diagnostics || !trustedRuntimeVersion()) {
+    return blocked("Pi commit runtime could not be refreshed; commit denied");
+  }
+  return undefined;
+}
+
+function signalWasAborted(ctx) {
   try {
+    return ctx.signal?.aborted === true;
+  } catch {
+    return true;
+  }
+}
+
+function approvalContextIsCurrent(ctx, approvalState, authority) {
+  return !signalWasAborted(ctx)
+    && ctx.mode === "tui"
+    && ctx.hasUI === true
+    && approvalState.generation === authority.generation
+    && approvalState.sessionId === authority.sessionId
+    && sessionId(ctx) === authority.sessionId;
+}
+
+async function confirmAndRevalidateApproval(
+  root,
+  event,
+  ctx,
+  payload,
+  challenge,
+  approvalState,
+  signal,
+) {
+  if (ctx.mode !== "tui" || ctx.hasUI !== true || typeof ctx.ui?.confirm !== "function") {
+    return blocked("Pi native confirmation is unavailable; staged commit denied");
+  }
+  const confirmedSessionId = sessionId(ctx);
+  if (typeof confirmedSessionId !== "string" || confirmedSessionId.length === 0) {
+    return blocked("Pi session attestation is unavailable; staged commit denied");
+  }
+  const authority = {
+    sessionId: confirmedSessionId,
+    generation: approvalState.generation,
+    challenge,
+  };
+  if (!approvalContextIsCurrent(ctx, approvalState, authority) || !trustedRuntimeVersion()) {
+    return blocked("Pi approval attestation changed; staged commit denied");
+  }
+  let confirmed = false;
+  try {
+    confirmed = await ctx.ui.confirm(
+      "LGTM staged commit confirmation",
+      approvalPromptMessage(challenge),
+      { timeout: APPROVAL_CONFIRM_TIMEOUT_MS, signal },
+    );
+  } catch {
+    return blocked("Pi native confirmation failed; staged commit denied");
+  }
+  if (confirmed !== true || !approvalContextIsCurrent(ctx, approvalState, authority)) {
+    return blocked("staged commit heuristic findings were not confirmed");
+  }
+  if (!trustedRuntimeVersion()) {
+    return blocked("Pi approval executable or template changed; staged commit denied");
+  }
+
+  let retry;
+  try {
+    retry = await invoke(LGTM_BINARY, root, "tool_call", payload, signal);
+  } catch {
+    return blocked("Pi approval revalidation failed; staged commit denied");
+  }
+  if (!approvalContextIsCurrent(ctx, approvalState, authority)
+      || !trustedRuntimeVersion() || retry.failure || retry.diagnostics) {
+    return blocked("staged commit approval could not be revalidated; commit denied");
+  }
+  if (retry.response === undefined) return undefined;
+  const retryChallenge = approvalChallenge(retry.response);
+  if (retryChallenge && sameApprovalChallenge(challenge, retryChallenge)) return undefined;
+  if (retryChallenge) {
+    return blocked("staged commit findings changed during confirmation; commit denied");
+  }
+  return retry.response;
+}
+
+async function handle(pi, eventType, event, ctx, approvalState) {
+  try {
+    const currentSessionId = sessionId(ctx);
+    if (eventType === "session_start"
+        || (approvalState.sessionId && approvalState.sessionId !== currentSessionId)) {
+      approvalState.generation += 1;
+      approvalState.controller.abort();
+      approvalState.controller = new AbortController();
+    }
+    approvalState.sessionId = currentSessionId;
+    const hasOperationSignal = ctx.signal instanceof AbortSignal;
+    const signal = hasOperationSignal
+      ? AbortSignal.any([ctx.signal, approvalState.controller.signal])
+      : approvalState.controller.signal;
     const root = resolveScopeRoot(ctx.cwd);
     if (!root) return undefined;
     const policyEvent = eventType === "tool_call" || eventType === "tool_result";
@@ -611,12 +837,57 @@ async function handle(pi, eventType, event, ctx) {
       appendFailure(pi, ctx, eventType, "tool_provenance_unverified");
       return undefined;
     }
-    const result = await invoke(LGTM_BINARY, root, eventType, buildPayload(eventType, event, ctx, pi));
+    if (eventType === "tool_call" && isDirectCommitCandidate(event)) {
+      if (!hasOperationSignal) {
+        return blocked("Pi operation cancellation is unavailable; update Pi before running the commit gate");
+      }
+      try {
+        const refreshFailure = await refreshCommitRuntime(pi, root, ctx, signal);
+        if (refreshFailure) return refreshFailure;
+      } catch {
+        return blocked("Pi commit runtime refresh failed; commit denied");
+      }
+    }
+    const payload = buildPayload(eventType, event, ctx, pi);
+    const result = await invoke(LGTM_BINARY, root, eventType, payload, signal);
     if (result.failure) {
       appendFailure(pi, ctx, eventType, result.failure);
+      if (result.failure === "aborted" && eventType === "tool_call") {
+        return blocked("LGTM check was cancelled; tool execution denied");
+      }
+      if (result.failure === "invalid_approval_response") {
+        return blocked("Pi approval response was malformed; staged commit denied");
+      }
+      if (eventType === "tool_call" && isDirectCommitCandidate(event)) {
+        return blocked("LGTM could not verify the staged commit; commit denied");
+      }
       return undefined;
     }
-    if (result.diagnostics) appendFailure(pi, ctx, eventType, "child_diagnostics");
+    if (result.diagnostics) {
+      appendFailure(pi, ctx, eventType, "child_diagnostics");
+      if (eventType === "tool_call"
+          && (isDirectCommitCandidate(event) || approvalChallenge(result.response))) {
+        return blocked("LGTM diagnostics made staged commit approval unverified; commit denied");
+      }
+    }
+    if (eventType === "tool_call") {
+      const challenge = approvalChallenge(result.response);
+      if (challenge) {
+        try {
+          return await confirmAndRevalidateApproval(
+            root,
+            event,
+            ctx,
+            payload,
+            challenge,
+            approvalState,
+            signal,
+          );
+        } catch {
+          return blocked("Pi native confirmation failed; staged commit denied");
+        }
+      }
+    }
     return eventType === "tool_result" ? mergeToolResult(event, result.response) : result.response;
   } catch {
     appendFailure(pi, ctx, eventType, "handler");
@@ -628,10 +899,20 @@ export default function lgtm(pi) {
   if (SCOPE === "project" && projectBinaryIsRunnable() && projectTemplateIsCanonical()) {
     globalThis[PROJECT_SCOPE_LOADED] = true;
   }
-  pi.on("session_start", (event, ctx) => handle(pi, "session_start", event, ctx));
-  pi.on("tool_call", (event, ctx) => handle(pi, "tool_call", event, ctx));
-  pi.on("tool_result", (event, ctx) => handle(pi, "tool_result", event, ctx));
-  pi.on("agent_settled", (event, ctx) => handle(pi, "agent_settled", event, ctx));
+  const approvalState = { sessionId: undefined, generation: 0, controller: new AbortController() };
+  pi.on("session_start", (event, ctx) =>
+    handle(pi, "session_start", event, ctx, approvalState));
+  pi.on("session_shutdown", () => {
+    approvalState.controller.abort();
+    approvalState.generation += 1;
+    approvalState.sessionId = undefined;
+  });
+  pi.on("tool_call", (event, ctx) =>
+    handle(pi, "tool_call", event, ctx, approvalState));
+  pi.on("tool_result", (event, ctx) =>
+    handle(pi, "tool_result", event, ctx, approvalState));
+  pi.on("agent_settled", (event, ctx) =>
+    handle(pi, "agent_settled", event, ctx, approvalState));
 }
 
 // lgtm-pi-extension: end
@@ -749,7 +1030,7 @@ pub(crate) fn plan(
     })
 }
 
-fn owned_template(contents: &str, generated: &[u8], scope: ExtensionScope) -> bool {
+pub(crate) fn owned_template(contents: &str, generated: &[u8], scope: ExtensionScope) -> bool {
     let Ok(generated) = std::str::from_utf8(generated) else {
         return false;
     };
@@ -854,16 +1135,34 @@ mod tests {
                 "ed0ff523f79e64c395184b3b3253a90b3643e088863ef683c60baa45699b1df3",
             ),
         ] {
-            let old = EXTENSION_TEMPLATE
+            let old = include_str!("../../tests/fixtures/pi-v0120-extension.txt")
                 .replace("__LGTM_SCOPE__", scope.as_str())
                 .replace(
                     "const PI_VERSION = \"0.84.3\";",
                     "const PI_VERSION = \"0.84.2\";",
                 )
+                .replace(
+                    "const PRE_TOOL_TIMEOUT_MS = 310_000;",
+                    "const PRE_TOOL_TIMEOUT_MS = 40_000;",
+                )
                 .replace(CURRENT_ARRAY_CHECK, V0101_ARRAY_CHECK)
                 .replace(CURRENT_MARKER_LOOKUP, V0110_MARKER_LOOKUP)
                 .replace(CURRENT_POLICY_ORDER, V0110_POLICY_ORDER);
             assert_eq!(digest(&normalize_template(&old)), expected_digest);
+            let current = render("/opt/lgtm", scope).expect("current template renders");
+            assert!(owned_template(&old, &current, scope));
+        }
+    }
+
+    #[test]
+    fn previous_pi_timeout_templates_remain_upgradeable() {
+        for scope in [ExtensionScope::Project, ExtensionScope::Global] {
+            let old = include_str!("../../tests/fixtures/pi-v0120-extension.txt")
+                .replace("__LGTM_SCOPE__", scope.as_str())
+                .replace(
+                    "const PRE_TOOL_TIMEOUT_MS = 310_000;",
+                    "const PRE_TOOL_TIMEOUT_MS = 40_000;",
+                );
             let current = render("/opt/lgtm", scope).expect("current template renders");
             assert!(owned_template(&old, &current, scope));
         }

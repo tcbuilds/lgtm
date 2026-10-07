@@ -47,6 +47,109 @@ fn deny_reason(command: &str) -> String {
 }
 
 #[test]
+fn direct_commit_parser_accepts_only_allowlisted_index_bound_forms() {
+    for command in [
+        "git commit",
+        "git commit -m message --signoff",
+        "git commit --message=message --no-verify",
+        "git commit -F message.txt --quiet",
+    ] {
+        let invocation = parse_commit_invocation(command)
+            .expect("commit syntax is classified")
+            .unwrap_or_else(|| panic!("{command} must be recognized"));
+        assert_eq!(invocation.argv().first().map(String::as_str), Some("git"));
+        assert_eq!(invocation.argv().get(1).map(String::as_str), Some("commit"));
+    }
+}
+
+#[test]
+fn commit_parser_rejects_content_selection_wrappers_and_compounds() {
+    for command in [
+        "git commit -a -m message",
+        "git commit --all",
+        "git commit --only file.txt",
+        "git commit --include file.txt",
+        "git commit file.txt",
+        "/usr/bin/git commit -F message.txt --quiet",
+        "git -C /tmp/repo commit",
+        "git --git-dir=/tmp/repo/.git commit",
+        "git --no-pager commit",
+        "git -c core.pager=cat commit",
+        "env GIT_DIR=/tmp/repo/.git git commit",
+        "sudo git commit",
+        "git add file.txt && git commit -m message",
+        "git commit -m message | tee result",
+    ] {
+        let error = parse_commit_invocation(command)
+            .expect_err("unsupported commit syntax must be rejected");
+        assert!(
+            error.contains("stage the intended files separately"),
+            "{command}: {error}"
+        );
+    }
+}
+
+#[test]
+fn commit_parser_distinguishes_literal_quoted_syntax_from_active_shell_syntax() {
+    for command in [
+        "git commit -m ';'",
+        "git commit -m \"&&\"",
+        "git commit -m '$(git add hidden.txt)'",
+        "git commit -m '`git add hidden.txt`'",
+        "git commit -m \"\\$(git add hidden.txt)\"",
+        "git commit -m \"\\\";\\\"\"",
+        "git commit -m \\;",
+    ] {
+        assert!(
+            parse_commit_invocation(command).is_ok_and(|invocation| invocation.is_some()),
+            "literal commit message syntax must be accepted: {command}"
+        );
+    }
+
+    for command in [
+        "git commit -m \"$(git add hidden.txt)\"",
+        "git commit -m `git add hidden.txt`",
+        "git commit -m $MESSAGE",
+        "git commit -m \"\\\\$MESSAGE\"",
+        "git commit -m *",
+        "git commit -m message&& echo done",
+        "git add x&&git commit -m message",
+        "git commit -m message\necho done",
+        "git add x\ngit commit -m message",
+        "git commit > commit.log",
+    ] {
+        assert!(
+            parse_commit_invocation(command).is_err(),
+            "active shell syntax must be rejected: {command}"
+        );
+    }
+}
+
+#[test]
+fn commit_parser_ignores_prose_but_rejects_nested_shell_commits() {
+    for command in ["echo 'git commit'", "printf '%s' git commit"] {
+        assert!(
+            parse_commit_invocation(command)
+                .expect("non-commit shell syntax is not an error")
+                .is_none(),
+            "{command} must not be guessed as a commit"
+        );
+    }
+    for command in [
+        "sh -c 'git commit -m nested'",
+        "bash -c 'git add x && git commit'",
+        "bash -lc 'git commit -m nested'",
+        "sudo bash -c 'git commit -m nested'",
+        "env FOO=1 bash -lc 'git commit -m nested'",
+    ] {
+        assert!(
+            parse_commit_invocation(command).is_err(),
+            "{command} must be rejected as an ambiguous nested commit"
+        );
+    }
+}
+
+#[test]
 fn wrapper_prefixes_do_not_bypass_the_policy() {
     for command in [
         "sudo rm -rf /tmp/x",

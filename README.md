@@ -41,6 +41,8 @@ It also writes `.lgtm/execpolicy.json`, a list of command prefixes that are refu
 
 Commit the generated `.lgtm/config.json`, `.lgtm/execpolicy.json`, `.claude/settings.json`, and `.gitignore` changes. Claude Code will run LGTM automatically during future sessions.
 
+Direct commits scan staged content. Eligible heuristic findings can request exact-candidate confirmation; known credentials remain blocked. See [Claude's guarded commit flow](doc/adapters/claude.md) and [Pi's approval contract](doc/adapters/pi.md) for supported modes, trust limits, and manual rollout checks. Verify the native confirmation UI before relying on interactive approval.
+
 For Pi, run:
 
 ```bash
@@ -51,7 +53,7 @@ Pi init writes the LGTM extension under `.pi/extensions/`, merges the pinned Pi 
 
 Pi packages and project extensions execute with the user's permissions. Review the generated files before trusting the project. Roll back by removing only LGTM's extension and generated package/server entries; do not delete either JSON file when it also contains user configuration.
 
-To take the standards as guidance with no hooks and nothing enforced, use `lgtm init --rules-only`. It writes `.claude/rules/` for Claude Code, or `AGENTS.md` with `--agent codex` or `--agent pi`.
+To take the standards as guidance with no hooks and nothing enforced, use `lgtm init --rules-only`. It writes `.claude/rules/` for Claude Code and Pi, or the concatenated `AGENTS.md` document with `--agent codex`. Shipped rule files are refreshed on init; changed files are saved once beside the rule as `<rule>.<sha256>.bak`, while custom filenames and Codex `AGENTS.md` content are preserved.
 
 ## Initialize All Harnesses Globally
 
@@ -239,12 +241,36 @@ git config core.hooksPath .githooks
 Keep the repository CI workflow enabled as the final authority; `git push
 --no-verify` can bypass local hooks.
 
+### Automatic upgrades
+
+From v0.12.2 onward, `lgtm update` refreshes **all tracked LGTM-managed output**,
+not just the binary: shipped rules, managed guidance, installed Claude/Codex hook
+wiring, generated Codex execpolicy, Pi extensions, and installed Pi package/LSP
+configuration. It covers registered project and global installations regardless
+of the directory where you run the update. Rules-only installs are tracked too.
+
+Repository policy and command configuration are not redetected or rewritten.
+Unrelated settings, custom files, customized Pi extensions, and edited Codex
+files are preserved. Edited shipped rule files are backed up before replacement.
+Removed files and hook events stay disabled; refresh does not add missing
+previously installed hooks. Reload or restart running agent sessions afterward.
+
+**One-time migration from v0.12.1 or earlier:** after upgrading, run your original
+init command once for each existing installation (`lgtm init`,
+`lgtm init --agent codex`, `lgtm init --agent pi`, or `lgtm init -g` for global).
+Those versions did not track installations. New init and verified Pi session
+starts register installations automatically. LGTM does not search your disk for
+unregistered repositories. Future upgrades need no per-repo reinitialization.
+
 ## Common Commands
 
 ```bash
 # Check for or install the latest LGTM release
 lgtm update --check
 lgtm update
+
+# Refresh all tracked managed files after replacing the binary manually
+lgtm refresh
 
 # Check that the bundled policy is valid
 lgtm compile --validate

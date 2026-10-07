@@ -13,6 +13,7 @@ pub mod detect;
 pub mod discovery;
 pub mod doctor;
 pub mod fsutil;
+pub mod guarded_commit;
 pub mod hooks;
 pub mod init;
 pub mod path_injection;
@@ -23,4 +24,6 @@ pub mod report;
 pub mod select;
 pub mod stats;
 pub mod structure;
+#[cfg(test)]
+mod test_support;
 pub mod update;

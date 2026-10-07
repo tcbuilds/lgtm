@@ -38,6 +38,24 @@
         "hookSpecificOutput": {
           "type": "object",
           "additionalProperties": false,
+          "required": ["hookEventName", "permissionDecision", "permissionDecisionReason", "updatedInput"],
+          "properties": {
+            "hookEventName": {"const": "PreToolUse"},
+            "permissionDecision": {"const": "ask"},
+            "permissionDecisionReason": {"type": "string", "minLength": 1},
+            "updatedInput": {"type": "object"}
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hookSpecificOutput"],
+      "properties": {
+        "hookSpecificOutput": {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["hookEventName", "additionalContext"],
           "properties": {
             "hookEventName": {"const": "UserPromptSubmit"},

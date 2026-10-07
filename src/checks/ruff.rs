@@ -43,25 +43,20 @@ pub fn scan_with_deadline(files: &[String], deadline: Instant) -> Vec<Enforcemen
 }
 
 pub fn installed_version() -> Option<String> {
-    version_with_binary("ruff")
+    version_with_binary("ruff").ok().flatten()
 }
 
-fn version_with_binary(binary: &str) -> Option<String> {
-    let mut command = Command::new(binary);
-    command.arg("--version");
-    let (status, stdout) = run_bounded(command).ok()?;
-    status
-        .is_some_and(|code| code == 0)
-        .then(|| String::from_utf8_lossy(&stdout).trim().to_string())
+fn version_with_binary(binary: &str) -> Result<Option<String>, String> {
+    version_with_binary_until(binary, deadline_after(TIMEOUT))
 }
 
-fn version_with_binary_until(binary: &str, deadline: Instant) -> Option<String> {
+fn version_with_binary_until(binary: &str, deadline: Instant) -> Result<Option<String>, String> {
     let mut command = Command::new(binary);
     command.arg("--version");
-    let (status, stdout) = run_bounded_until(command, deadline).ok()?;
-    status
+    let (status, stdout) = run_bounded_until(command, deadline)?;
+    Ok(status
         .is_some_and(|code| code == 0)
-        .then(|| String::from_utf8_lossy(&stdout).trim().to_string())
+        .then(|| String::from_utf8_lossy(&stdout).trim().to_string()))
 }
 
 fn deadline_after(duration: Duration) -> Instant {
@@ -102,7 +97,10 @@ fn scan_with_binary(binary: &str, files: &[String]) -> Vec<EnforcementResult> {
             return unverified_all(&format!("could not parse ruff output ({error})"), None);
         }
     };
-    normalize(findings, version_with_binary(binary))
+    match version_with_binary(binary) {
+        Ok(version) => normalize(findings, version),
+        Err(reason) => unverified_all(&reason, None),
+    }
 }
 
 fn scan_with_binary_until(
@@ -141,7 +139,10 @@ fn scan_with_binary_until(
             return unverified_all(&format!("could not parse ruff output ({error})"), None);
         }
     };
-    normalize(findings, version_with_binary_until(binary, deadline))
+    match version_with_binary_until(binary, deadline) {
+        Ok(version) => normalize(findings, version),
+        Err(reason) => unverified_all(&reason, None),
+    }
 }
 
 fn run_bounded(command: Command) -> Result<(Option<i32>, Vec<u8>), String> {
@@ -199,24 +200,23 @@ impl<R: Read + AsRawFd> TestCapture<R> {
             return true;
         };
         let mut buffer = [0_u8; 8 * 1024];
-        loop {
-            match stream.read(&mut buffer) {
-                Ok(0) => {
-                    self.stream = None;
-                    return true;
-                }
-                Ok(read) => {
-                    let remaining = MAX_OUTPUT_BYTES as usize - self.bytes.len();
-                    let accepted = read.min(remaining);
-                    self.bytes.extend_from_slice(&buffer[..accepted]);
-                    self.truncated |= accepted < read;
-                }
-                Err(error) if error.kind() == ErrorKind::WouldBlock => return true,
-                Err(_) => {
-                    self.failed = true;
-                    self.stream = None;
-                    return false;
-                }
+        match stream.read(&mut buffer) {
+            Ok(0) => {
+                self.stream = None;
+                true
+            }
+            Ok(read) => {
+                let remaining = MAX_OUTPUT_BYTES as usize - self.bytes.len();
+                let accepted = read.min(remaining);
+                self.bytes.extend_from_slice(&buffer[..accepted]);
+                self.truncated |= accepted < read;
+                true
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => true,
+            Err(_) => {
+                self.failed = true;
+                self.stream = None;
+                false
             }
         }
     }
@@ -518,6 +518,16 @@ mod fallback_tests {
             }
             let _ = std::fs::remove_file(&self.marker);
         }
+    }
+
+    #[test]
+    fn continuous_ruff_output_respects_test_deadline() {
+        let mut command = Command::new("/usr/bin/yes");
+        command.arg("ruff output");
+        let started = Instant::now();
+        let result = run_bounded_direct(command, started + Duration::from_millis(250));
+        assert!(result.is_err(), "continuous output must not be verified");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

@@ -8,9 +8,17 @@
 use std::process::Command;
 
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 mod common;
 use common::TempRepo;
+
+fn rust_rule_backup_path(contents: &str) -> String {
+    format!(
+        ".claude/rules/rust.md.{:x}.bak",
+        Sha256::digest(contents.as_bytes())
+    )
+}
 
 /// Run `lgtm init` with the temp directory as its working directory.
 fn run_init(repo: &TempRepo) -> std::process::Output {
@@ -1478,6 +1486,52 @@ fn claude_rules_only_still_writes_claude_rules_and_no_agents_md() {
         !repo.exists("AGENTS.md"),
         "the Claude path must not create an AGENTS.md"
     );
+}
+
+#[test]
+fn init_and_pi_refresh_shipped_rules_with_safe_backups_and_preserve_custom_files() {
+    for agent in ["claude", "pi"] {
+        let repo = TempRepo::new();
+        repo.write(
+            ".claude/rules/rust.md",
+            "---\ndescription: Local Rust rules\n---\n# Local\n",
+        );
+        repo.write(".claude/rules/custom.md", "# Custom rule\n");
+        if agent == "pi" {
+            repo.write("AGENTS.md", "# House rules\n");
+        }
+
+        let output = if agent == "claude" {
+            run_init(&repo)
+        } else {
+            run_init_pi(&repo)
+        };
+        assert!(output.status.success(), "{agent} init must succeed");
+        assert_eq!(
+            repo.read(".claude/rules/rust.md"),
+            include_str!("../templates/claude-rules/rules/rust.md")
+        );
+        assert_eq!(
+            repo.read(&rust_rule_backup_path(
+                "---\ndescription: Local Rust rules\n---\n# Local\n"
+            )),
+            "---\ndescription: Local Rust rules\n---\n# Local\n"
+        );
+        assert_eq!(repo.read(".claude/rules/custom.md"), "# Custom rule\n");
+
+        let second = if agent == "claude" {
+            run_init(&repo)
+        } else {
+            run_init_pi(&repo)
+        };
+        assert!(second.status.success(), "{agent} re-init must succeed");
+        assert_eq!(
+            repo.read(&rust_rule_backup_path(
+                "---\ndescription: Local Rust rules\n---\n# Local\n"
+            )),
+            "---\ndescription: Local Rust rules\n---\n# Local\n"
+        );
+    }
 }
 
 /// Rules-only mode registers no hooks for either agent.

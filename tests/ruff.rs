@@ -291,6 +291,82 @@ fn ruff_inherits_the_hook_environment_without_narrowing_it() {
 }
 
 #[cfg(target_os = "linux")]
+fn run_version_probe_fixture(repo: &TempRepo, script: &str) {
+    repo.write("src/app.py", "print('ok')\n");
+    repo.write("bin/ruff", script);
+    std::fs::set_permissions(
+        repo.path().join("bin/ruff"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .expect("fake Ruff executable");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["hook", "post-tool-use"])
+        .env("PATH", repo.path().join("bin"))
+        .env(
+            "LGTM_RUFF_VERSION_MARKER",
+            repo.path().join("ruff-version.pid"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("hook starts");
+    let payload = json!({
+        "session_id": "ruff-version-safety",
+        "cwd": repo.path(),
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "src/app.py"}
+    });
+    writeln!(child.stdin.take().expect("stdin"), "{payload}").expect("payload writes");
+    assert!(wait_for_hook(child).status.success());
+    let ledger = repo.read(".lgtm/evidence/current-task.results.jsonl");
+    let results: Vec<_> = ledger
+        .lines()
+        .filter(|line| line.contains("\"check\":\"ruff.check\""))
+        .collect();
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .all(|line| line.contains("\"status\":\"unverified\""))
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ruff_version_containment_failure_invalidates_clean_scan() {
+    let repo = TempRepo::new();
+    let marker = repo.path().join("ruff-version.pid");
+    let _cleanup = DescendantCleanup {
+        marker: marker.clone(),
+    };
+    run_version_probe_fixture(
+        &repo,
+        r#"#!/bin/sh
+if [ "$1" != --version ]; then printf '[]'; exit 0; fi
+/usr/bin/setsid /bin/sh -c 'echo $$ > "$1"; exec /bin/sleep 120' version "$LGTM_RUFF_VERSION_MARKER" &
+i=0
+while [ ! -s "$LGTM_RUFF_VERSION_MARKER" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); /bin/sleep 0.001; done
+printf 'ruff fixture\n'
+"#,
+    );
+    let pid = wait_for_file(&marker, Duration::from_secs(2))
+        .trim()
+        .parse()
+        .expect("descendant pid");
+    assert_process_gone(pid, Duration::from_secs(2));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn truncated_ruff_version_capture_invalidates_clean_scan() {
+    let repo = TempRepo::new();
+    run_version_probe_fixture(
+        &repo,
+        "#!/bin/sh\nif [ \"$1\" != --version ]; then printf '[]'; exit 0; fi\nprintf 'ruff fixture\\n'\n/usr/bin/head -c 1100000 /dev/zero | /usr/bin/tr '\\000' ' '\n",
+    );
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn truncated_ruff_capture_is_unverified_instead_of_parsed() {
     let repo = TempRepo::new();
