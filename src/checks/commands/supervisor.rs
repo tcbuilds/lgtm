@@ -1,11 +1,13 @@
 use std::ffi::{OsStr, OsString};
+#[cfg(any(target_os = "linux", all(unix, test)))]
+use std::io::ErrorKind;
 use std::io::Read;
-#[cfg(target_os = "linux")]
-use std::os::fd::AsRawFd;
+#[cfg(any(target_os = "linux", all(unix, test)))]
+use std::os::fd::{AsRawFd, RawFd};
 #[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", all(unix, test)))]
 use std::process::Stdio;
 use std::process::{Command, ExitCode};
 use std::thread;
@@ -15,28 +17,27 @@ use serde::{Deserialize, Serialize};
 
 const REQUEST_ENV: &str = "LGTM_INTERNAL_COMMAND_SUPERVISOR_REQUEST";
 const MAX_CAPTURE_BYTES: u64 = 256 * 1024;
-// Request paths and PATH/HOME/CI are hex-encoded so Unix byte strings remain
-// lossless without expanding each byte into a JSON array element. Keep every
-// field and the complete JSON envelope below Linux's per-environment-entry
-// limit, even when all fields are near their configured bounds.
+const MAX_CAPTURE_LIMIT_BYTES: u64 = 1024 * 1024;
+#[cfg(all(target_os = "linux", not(test)))]
+const MAX_RESPONSE_BYTES: usize = (MAX_CAPTURE_LIMIT_BYTES as usize * 4) + 16 * 1024;
+// Hex encoding preserves Unix byte strings while keeping the request below
+// Linux's per-environment-entry limit.
 const MAX_REQUEST_PATH_BYTES: usize = 8 * 1024;
 const MAX_REQUEST_ENV_BYTES: usize = 8 * 1024;
+const MAX_REQUEST_ENVIRONMENT_ENTRIES: usize = 256;
+const MAX_REQUEST_ENVIRONMENT_BYTES: usize = 64 * 1024;
 const MAX_REQUEST_ENVELOPE_BYTES: usize = 96 * 1024;
-#[cfg(not(test))]
-const MAX_RESPONSE_BYTES: usize = (MAX_CAPTURE_BYTES as usize * 4) + 16 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const QUIESCENCE: Duration = Duration::from_millis(20);
 const CLEANUP_RESERVE: Duration = Duration::from_millis(50);
 const REQUEST_TIMEOUT_RESERVE_MS: u64 = 50;
-#[cfg(not(test))]
-const PARENT_RESERVE: Duration = Duration::from_millis(REQUEST_TIMEOUT_RESERVE_MS);
 
 pub fn platform_id() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 #[cfg(target_os = "linux")]
-pub const CONTAINMENT_VERSION: &str = "linux-isolated-subreaper-v4";
+pub const CONTAINMENT_VERSION: &str = "linux-isolated-subreaper-v5";
 #[cfg(not(target_os = "linux"))]
 pub const CONTAINMENT_VERSION: &str = "unavailable-v1";
 
@@ -63,10 +64,26 @@ struct SupervisorRequest {
     repository_root: String,
     workspace_root: String,
     cwd: String,
-    timeout_ms: String,
+    #[serde(default)]
+    timeout_ms: Option<String>,
+    #[serde(default)]
+    deadline_ns: Option<String>,
+    #[serde(default)]
+    environment: Option<Vec<EncodedEnvironment>>,
+    #[serde(default = "default_capture_limit")]
+    capture_limit: u64,
+    #[serde(default)]
     path: Option<String>,
+    #[serde(default)]
     home: Option<String>,
+    #[serde(default)]
     ci: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct EncodedEnvironment {
+    name: String,
+    value: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -75,6 +92,10 @@ struct SupervisorResponse {
     code: Option<i32>,
     stdout_hex: String,
     stderr_hex: String,
+    #[serde(default)]
+    stdout_truncated: bool,
+    #[serde(default)]
+    stderr_truncated: bool,
     #[serde(default)]
     cwd_identity: Option<String>,
 }
@@ -96,52 +117,58 @@ pub(crate) fn run_with_deadline(
     cwd: &Path,
     deadline: Instant,
 ) -> Result<Captured, ContainedRunError> {
+    if argv.is_empty() || argv[0].is_empty() || argv.iter().any(|argument| argument.contains('\0'))
+    {
+        return Err(ContainedRunError::CouldNotRun);
+    }
     #[cfg(all(target_os = "linux", not(test)))]
     {
-        run_via_supervisor(argv, repository_root, workspace_root, cwd, deadline)
+        let mut command = Command::new(&argv[0]);
+        command.args(&argv[1..]);
+        let environment = ["PATH", "HOME", "CI"]
+            .into_iter()
+            .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(name), value)))
+            .collect();
+        run_command_with_deadline(
+            command,
+            environment,
+            repository_root,
+            workspace_root,
+            cwd,
+            deadline,
+            MAX_CAPTURE_BYTES,
+        )
     }
-    // Unit tests share one process and cannot exec the normal CLI entry point.
-    // The production boundary is covered by integration tests through the real
-    // binary; unit tests retain bounded process-group behavior only.
-    #[cfg(all(target_os = "linux", test))]
+    // Unit tests cannot exec the normal CLI entry point, so retain a bounded
+    // process-group-only path without claiming Linux subreaper containment.
+    #[cfg(all(unix, test))]
     {
         let command = configured_command(argv, &repository_root.join(cwd));
-        let captured =
-            crate::checks::gitleaks::runner::run_details_with_deadline(command, deadline)
-                .ok_or(ContainedRunError::CouldNotRun)?;
-        if captured.process_group_survived {
-            return Err(ContainedRunError::ContainmentViolation);
-        }
-        let cwd_capability =
-            crate::fsutil::open_directory_capability(repository_root, workspace_root, cwd)
+        let captured = run_test_command_with_deadline(command, deadline)?;
+        #[cfg(target_os = "linux")]
+        {
+            let cwd_capability =
+                crate::fsutil::open_directory_capability(repository_root, workspace_root, cwd)
+                    .map_err(|_| ContainedRunError::ContainmentUnproven)?;
+            let cwd_identity = crate::fsutil::directory_identity(&cwd_capability)
                 .map_err(|_| ContainedRunError::ContainmentUnproven)?;
-        let cwd_identity = crate::fsutil::directory_identity(&cwd_capability)
-            .map_err(|_| ContainedRunError::ContainmentUnproven)?;
-        Ok(Captured {
-            code: captured.code,
-            stdout: captured.stdout,
-            stderr: captured.stderr,
-            cwd_identity: Some(cwd_identity),
-        })
-    }
-    // Non-Linux production hooks fail closed because descendant containment is
-    // unavailable; unit tests still exercise command parsing and bounded
-    // execution through the direct runner without claiming containment.
-    #[cfg(all(not(target_os = "linux"), test))]
-    {
-        let command = configured_command(argv, &repository_root.join(cwd));
-        let captured =
-            crate::checks::gitleaks::runner::run_details_with_deadline(command, deadline)
-                .ok_or(ContainedRunError::CouldNotRun)?;
-        if captured.process_group_survived {
-            return Err(ContainedRunError::ContainmentViolation);
+            Ok(Captured {
+                code: captured.code,
+                stdout: captured.stdout,
+                stderr: captured.stderr,
+                cwd_identity: Some(cwd_identity),
+            })
         }
-        Ok(Captured {
-            code: captured.code,
-            stdout: captured.stdout,
-            stderr: captured.stderr,
-            cwd_identity: None,
-        })
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (repository_root, workspace_root, cwd);
+            Ok(captured)
+        }
+    }
+    #[cfg(all(not(unix), test))]
+    {
+        let _ = (argv, repository_root, workspace_root, cwd, deadline);
+        Err(ContainedRunError::ContainmentUnavailable)
     }
     #[cfg(all(not(target_os = "linux"), not(test)))]
     {
@@ -151,38 +178,85 @@ pub(crate) fn run_with_deadline(
 }
 
 #[cfg(all(target_os = "linux", not(test)))]
-fn run_via_supervisor(
-    argv: &[String],
+pub(crate) fn bounded_environment_snapshot() -> Result<Vec<(OsString, OsString)>, ()> {
+    let mut snapshot = Vec::new();
+    let mut total_bytes = 0_usize;
+    for (name, value) in std::env::vars_os() {
+        if snapshot.len() >= MAX_REQUEST_ENVIRONMENT_ENTRIES {
+            return Err(());
+        }
+        let encoded_name = encode_environment_value(name.as_os_str())?;
+        let encoded_value = encode_environment_value(value.as_os_str())?;
+        total_bytes = total_bytes
+            .checked_add(encoded_name.len())
+            .and_then(|bytes| bytes.checked_add(encoded_value.len()))
+            .ok_or(())?;
+        if total_bytes > MAX_REQUEST_ENVIRONMENT_BYTES {
+            return Err(());
+        }
+        snapshot.push((name, value));
+    }
+    Ok(snapshot)
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+pub(crate) fn run_command_with_deadline(
+    command: Command,
+    environment: Vec<(OsString, OsString)>,
     repository_root: &Path,
     workspace_root: &Path,
     cwd: &Path,
     deadline: Instant,
+    capture_limit: u64,
 ) -> Result<Captured, ContainedRunError> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let supervisor_budget = remaining
-        .checked_sub(PARENT_RESERVE)
-        .ok_or(ContainedRunError::CouldNotRun)?;
-    let timeout_ms = supervisor_budget.as_millis().min(u128::from(u64::MAX)) as u64;
-    if timeout_ms == 0 {
-        return Err(ContainedRunError::CouldNotRun);
-    }
-    let request = build_request(argv, repository_root, workspace_root, cwd, timeout_ms)
-        .map_err(|_| ContainedRunError::CouldNotRun)?;
+    run_via_supervisor(
+        command,
+        environment,
+        repository_root,
+        workspace_root,
+        cwd,
+        deadline,
+        capture_limit,
+    )
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn run_via_supervisor(
+    command: Command,
+    environment: Vec<(OsString, OsString)>,
+    repository_root: &Path,
+    workspace_root: &Path,
+    cwd: &Path,
+    deadline: Instant,
+    capture_limit: u64,
+) -> Result<Captured, ContainedRunError> {
+    valid_capture_limit(capture_limit).ok_or(ContainedRunError::CouldNotRun)?;
+    let deadline_ns = monotonic_deadline_ns(deadline).ok_or(ContainedRunError::CouldNotRun)?;
+    let argv = command_argv(&command).ok_or(ContainedRunError::CouldNotRun)?;
+    let request = build_request_with_deadline(
+        &argv,
+        &environment,
+        repository_root,
+        workspace_root,
+        cwd,
+        deadline_ns,
+        capture_limit,
+    )
+    .map_err(|_| ContainedRunError::CouldNotRun)?;
     let serialized = serialize_request(&request).map_err(|_| ContainedRunError::CouldNotRun)?;
     let executable = std::env::current_exe().map_err(|_| ContainedRunError::CouldNotRun)?;
-    let mut command = Command::new(executable);
-    command
+    let mut supervisor = Command::new(executable);
+    supervisor
         .arg("__command-supervisor")
         .env_clear()
         .env(REQUEST_ENV, serialized);
     let captured = crate::checks::gitleaks::runner::run_details_with_deadline_and_limit(
-        command,
+        supervisor,
         deadline,
-        MAX_RESPONSE_BYTES as u64,
+        (MAX_RESPONSE_BYTES as u64) + 1,
     )
     .ok_or(ContainedRunError::ContainmentUnproven)?;
-    let _supervisor_stderr_bytes = captured.stderr.len();
-    if captured.process_group_survived
+    if !supervisor_capture_is_bounded(&captured, MAX_RESPONSE_BYTES)
         || captured.code != Some(0)
         || captured.stdout.len() > MAX_RESPONSE_BYTES
     {
@@ -192,7 +266,11 @@ fn run_via_supervisor(
         .map_err(|_| ContainedRunError::ContainmentUnproven)?;
     let stdout = decode_hex(&response.stdout_hex).ok_or(ContainedRunError::ContainmentUnproven)?;
     let stderr = decode_hex(&response.stderr_hex).ok_or(ContainedRunError::ContainmentUnproven)?;
-    if stdout.len() > MAX_CAPTURE_BYTES as usize || stderr.len() > MAX_CAPTURE_BYTES as usize {
+    if response.stdout_truncated
+        || response.stderr_truncated
+        || stdout.len() > capture_limit as usize
+        || stderr.len() > capture_limit as usize
+    {
         return Err(ContainedRunError::ContainmentUnproven);
     }
     match response.outcome {
@@ -209,13 +287,35 @@ fn run_via_supervisor(
     }
 }
 
+#[cfg(all(target_os = "linux", not(test)))]
+fn command_argv(command: &Command) -> Option<Vec<String>> {
+    let program = command.get_program().to_str()?.to_string();
+    let mut argv = vec![program];
+    argv.extend(
+        command
+            .get_args()
+            .map(|argument| argument.to_str().map(str::to_string))
+            .collect::<Option<Vec<_>>>()?,
+    );
+    Some(argv)
+}
+
+fn supervisor_capture_is_bounded(
+    captured: &crate::checks::gitleaks::runner::Captured,
+    response_limit: usize,
+) -> bool {
+    !captured.process_group_survived && captured.stderr.len() <= response_limit
+}
+
 /// Hidden CLI entry point. It is intentionally an exec boundary: only this
 /// short-lived process becomes a Linux child subreaper.
 #[doc(hidden)]
 pub fn run_from_environment() -> ExitCode {
     let response = std::env::var(REQUEST_ENV)
         .ok()
+        .filter(|raw| request_payload_is_bounded(raw))
         .and_then(|raw| serde_json::from_str::<SupervisorRequest>(&raw).ok())
+        .filter(request_is_valid)
         .map_or_else(unproven_response, run_supervisor);
     match serde_json::to_writer(std::io::stdout().lock(), &response) {
         Ok(()) => ExitCode::SUCCESS,
@@ -225,14 +325,20 @@ pub fn run_from_environment() -> ExitCode {
 
 #[cfg(target_os = "linux")]
 fn run_supervisor(request: SupervisorRequest) -> SupervisorResponse {
-    let Some(timeout_ms) = request.timeout_ms.parse::<u64>().ok() else {
+    if !request_is_valid(&request) {
         return unproven_response();
+    }
+    let capture_limit = match valid_capture_limit(request.capture_limit) {
+        Some(limit) => limit,
+        None => return unproven_response(),
     };
-    if request.argv.is_empty()
-        || timeout_ms == 0
-        || !parent_is_current(request.parent_pid)
-        || direct_children().is_err()
-    {
+    let deadline = match request_deadline(&request) {
+        Some(deadline) => deadline,
+        None => return unproven_response(),
+    };
+    // Preserve the caller-cancellation check before enabling containment or
+    // launching the command in this dedicated supervisor.
+    if !parent_is_current(request.parent_pid) || direct_children().is_err() {
         return unproven_response();
     }
     let mut original_subreaper = 0;
@@ -259,9 +365,6 @@ fn run_supervisor(request: SupervisorRequest) -> SupervisorResponse {
         );
     }
 
-    let deadline = Instant::now()
-        .checked_add(Duration::from_millis(timeout_ms))
-        .unwrap_or_else(Instant::now);
     let Some(execution_deadline) = deadline.checked_sub(CLEANUP_RESERVE) else {
         return unproven_response();
     };
@@ -283,17 +386,29 @@ fn run_supervisor(request: SupervisorRequest) -> SupervisorResponse {
         }
     };
     let pid = child.id();
-    let stdout = drain_bounded(child.stdout.take());
-    let stderr = drain_bounded(child.stderr.take());
-    let status = wait_bounded(&mut child, execution_deadline, request.parent_pid);
+    let Some(mut stdout) = NonblockingCapture::new(child.stdout.take(), capture_limit) else {
+        cleanup_spawned_command(&mut child, pid, deadline);
+        return unproven_response();
+    };
+    let Some(mut stderr) = NonblockingCapture::new(child.stderr.take(), capture_limit) else {
+        cleanup_spawned_command(&mut child, pid, deadline);
+        return unproven_response();
+    };
+    let status = wait_and_drain(
+        &mut child,
+        &mut stdout,
+        &mut stderr,
+        execution_deadline,
+        Some(request.parent_pid),
+    );
     if status.is_none() {
         kill_process_group(pid);
         let _ = child.kill();
     }
     let direct_reaped = status.is_some() || reap_direct_child(&mut child, deadline);
     let cleanup = terminate_adopted_descendants(pid, deadline);
-    let captured_stdout = join_bounded(stdout, deadline);
-    let captured_stderr = join_bounded(stderr, deadline);
+    let captured_stdout = finish_capture(&mut stdout, deadline);
+    let captured_stderr = finish_capture(&mut stderr, deadline);
 
     let outcome = match cleanup {
         // A command cutoff is already a non-passing wait result; preserve its
@@ -324,9 +439,19 @@ fn run_supervisor(request: SupervisorRequest) -> SupervisorResponse {
         identity_still_current
             .then(|| status.and_then(|status| status.code()))
             .flatten(),
-        captured_stdout.unwrap_or_default(),
-        captured_stderr.unwrap_or_default(),
+        captured_stdout
+            .as_ref()
+            .map_or_else(Vec::new, |capture| capture.bytes.clone()),
+        captured_stderr
+            .as_ref()
+            .map_or_else(Vec::new, |capture| capture.bytes.clone()),
     );
+    if let Some(capture) = captured_stdout {
+        response.stdout_truncated = capture.truncated;
+    }
+    if let Some(capture) = captured_stderr {
+        response.stderr_truncated = capture.truncated;
+    }
     response.cwd_identity = Some(cwd_identity);
     response
 }
@@ -358,6 +483,94 @@ fn request_cwd_identity(request: &SupervisorRequest) -> Option<String> {
     crate::fsutil::directory_identity(&capability).ok()
 }
 
+fn request_payload_is_bounded(raw: &str) -> bool {
+    raw.len() <= MAX_REQUEST_ENVELOPE_BYTES
+}
+
+fn request_is_valid(request: &SupervisorRequest) -> bool {
+    if request.parent_pid == 0
+        || request.argv.is_empty()
+        || request.argv[0].is_empty()
+        || request.argv.iter().any(|argument| argument.contains('\0'))
+    {
+        return false;
+    }
+    if !encoded_path_is_valid(&request.repository_root)
+        || !encoded_path_is_valid(&request.workspace_root)
+        || !encoded_path_is_valid(&request.cwd)
+        || valid_capture_limit(request.capture_limit).is_none()
+    {
+        return false;
+    }
+    let environment_is_valid = request.environment.as_deref().map_or_else(
+        || {
+            [&request.path, &request.home, &request.ci]
+                .into_iter()
+                .flatten()
+                .all(|value| encoded_environment_value_is_valid(value))
+        },
+        encoded_environment_entries_are_valid,
+    );
+    environment_is_valid && serialize_request(request).is_ok()
+}
+
+fn encoded_path_is_valid(value: &str) -> bool {
+    value.len() <= MAX_REQUEST_PATH_BYTES.saturating_mul(2) && decode_path(value).is_some()
+}
+
+fn encoded_environment_value_is_valid(value: &str) -> bool {
+    value.len() <= MAX_REQUEST_ENV_BYTES.saturating_mul(2) && decode_environment(value).is_some()
+}
+
+fn encoded_environment_name_is_valid(value: &str) -> bool {
+    value.len() <= MAX_REQUEST_ENV_BYTES.saturating_mul(2)
+        && decode_environment_name(value).is_some()
+}
+
+fn encoded_environment_entries_are_valid(environment: &[EncodedEnvironment]) -> bool {
+    if environment.len() > MAX_REQUEST_ENVIRONMENT_ENTRIES {
+        return false;
+    }
+    let mut total_bytes = 0_usize;
+    environment.iter().all(|entry| {
+        if !encoded_environment_name_is_valid(&entry.name)
+            || !encoded_environment_value_is_valid(&entry.value)
+        {
+            return false;
+        }
+        let Some(next_total) = total_bytes
+            .checked_add(entry.name.len())
+            .and_then(|total| total.checked_add(entry.value.len()))
+        else {
+            return false;
+        };
+        total_bytes = next_total;
+        total_bytes <= MAX_REQUEST_ENVIRONMENT_BYTES
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn request_deadline(request: &SupervisorRequest) -> Option<Instant> {
+    if let Some(raw_deadline) = &request.deadline_ns {
+        let deadline_ns = raw_deadline.parse::<u64>().ok()?;
+        let now_ns = monotonic_now_ns()?;
+        let remaining_ns = deadline_ns.checked_sub(now_ns)?;
+        return Instant::now().checked_add(Duration::from_nanos(remaining_ns));
+    }
+    let timeout_ms = request.timeout_ms.as_deref()?.parse::<u64>().ok()?;
+    (timeout_ms > 0).then(|| Instant::now().checked_add(Duration::from_millis(timeout_ms)))?
+}
+
+fn default_capture_limit() -> u64 {
+    MAX_CAPTURE_BYTES
+}
+
+fn valid_capture_limit(limit: u64) -> Option<usize> {
+    (limit > 0 && limit <= MAX_CAPTURE_LIMIT_BYTES)
+        .then_some(limit)
+        .and_then(|limit| usize::try_from(limit).ok())
+}
+
 fn command_from_request(
     request: &SupervisorRequest,
 ) -> Result<(Command, std::fs::File), ContainedRunError> {
@@ -371,17 +584,26 @@ fn command_from_request(
             .map_err(|_| ContainedRunError::ContainmentUnproven)?;
     let mut command = Command::new(&request.argv[0]);
     command.args(&request.argv[1..]).env_clear();
-    if let Some(path) = &request.path {
-        let path = decode_environment(path).ok_or(ContainedRunError::ContainmentUnproven)?;
-        command.env("PATH", path);
-    }
-    if let Some(home) = &request.home {
-        let home = decode_environment(home).ok_or(ContainedRunError::ContainmentUnproven)?;
-        command.env("HOME", home);
-    }
-    if let Some(ci) = &request.ci {
-        let ci = decode_environment(ci).ok_or(ContainedRunError::ContainmentUnproven)?;
-        command.env("CI", ci);
+    if let Some(environment) = &request.environment {
+        for entry in environment {
+            let name = decode_environment_name(&entry.name)
+                .ok_or(ContainedRunError::ContainmentUnproven)?;
+            let value =
+                decode_environment(&entry.value).ok_or(ContainedRunError::ContainmentUnproven)?;
+            command.env(name, value);
+        }
+    } else {
+        for (name, value) in [
+            ("PATH", &request.path),
+            ("HOME", &request.home),
+            ("CI", &request.ci),
+        ] {
+            if let Some(value) = value {
+                let value =
+                    decode_environment(value).ok_or(ContainedRunError::ContainmentUnproven)?;
+                command.env(name, value);
+            }
+        }
     }
     Ok((command, cwd_capability))
 }
@@ -429,15 +651,203 @@ fn parent_is_current(expected_pid: u32) -> bool {
         .is_some_and(|parent| parent == expected_pid)
 }
 
-fn wait_bounded(
-    child: &mut std::process::Child,
+#[cfg(any(target_os = "linux", all(unix, test)))]
+struct NonblockingCapture<R> {
+    stream: Option<R>,
+    bytes: Vec<u8>,
+    truncated: bool,
+    failed: bool,
+    limit: usize,
+}
+
+#[cfg(any(target_os = "linux", all(unix, test)))]
+impl<R: Read + AsRawFd> NonblockingCapture<R> {
+    fn new(stream: Option<R>, limit: usize) -> Option<Self> {
+        let stream = stream?;
+        set_nonblocking(stream.as_raw_fd()).ok()?;
+        Some(Self {
+            stream: Some(stream),
+            bytes: Vec::new(),
+            truncated: false,
+            failed: false,
+            limit,
+        })
+    }
+
+    fn read_available(&mut self) -> bool {
+        let Some(stream) = self.stream.as_mut() else {
+            return true;
+        };
+        let mut buffer = [0_u8; 8 * 1024];
+        match stream.read(&mut buffer) {
+            Ok(0) => {
+                self.stream = None;
+                true
+            }
+            Ok(read) => {
+                let remaining = self.limit.saturating_sub(self.bytes.len());
+                let accepted = read.min(remaining);
+                self.bytes.extend_from_slice(&buffer[..accepted]);
+                self.truncated |= accepted < read;
+                true
+            }
+            Err(error)
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) =>
+            {
+                true
+            }
+            Err(_) => {
+                self.failed = true;
+                self.stream = None;
+                false
+            }
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.stream.is_none()
+    }
+}
+
+#[cfg(any(target_os = "linux", all(unix, test)))]
+fn set_nonblocking(fd: RawFd) -> std::io::Result<()> {
+    // SAFETY: fcntl operates on the owned pipe descriptor and does not outlive it.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fcntl updates only flags on the owned pipe descriptor.
+    let result = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    (result == 0)
+        .then_some(())
+        .ok_or_else(std::io::Error::last_os_error)
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn monotonic_deadline_ns(deadline: Instant) -> Option<u64> {
+    let now = monotonic_now_ns()?;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    now.checked_add(remaining.as_nanos().min(u128::from(u64::MAX)) as u64)
+}
+
+#[cfg(target_os = "linux")]
+fn monotonic_now_ns() -> Option<u64> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime writes one timespec to a valid local pointer.
+    (unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) } == 0)
+        .then(|| {
+            (time.tv_sec as u64)
+                .checked_mul(1_000_000_000)?
+                .checked_add(time.tv_nsec as u64)
+        })
+        .flatten()
+}
+
+#[cfg(all(unix, test))]
+fn run_test_command_with_deadline(
+    mut command: Command,
     deadline: Instant,
-    parent_pid: u32,
+) -> Result<Captured, ContainedRunError> {
+    if deadline.saturating_duration_since(Instant::now()).is_zero() {
+        return Err(ContainedRunError::CouldNotRun);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    set_own_process_group(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|_| ContainedRunError::CouldNotRun)?;
+    let pid = child.id();
+    let Some(mut stdout) = NonblockingCapture::new(child.stdout.take(), MAX_CAPTURE_BYTES as usize)
+    else {
+        kill_process_group(pid);
+        let _ = child.kill();
+        let _ = reap_direct_child(&mut child, deadline);
+        return Err(ContainedRunError::ContainmentUnproven);
+    };
+    let Some(mut stderr) = NonblockingCapture::new(child.stderr.take(), MAX_CAPTURE_BYTES as usize)
+    else {
+        kill_process_group(pid);
+        let _ = child.kill();
+        let _ = reap_direct_child(&mut child, deadline);
+        return Err(ContainedRunError::ContainmentUnproven);
+    };
+
+    let status = wait_and_drain(&mut child, &mut stdout, &mut stderr, deadline, None);
+    if status.is_none() {
+        kill_process_group(pid);
+        let _ = child.kill();
+    }
+    let direct_reaped = status.is_some() || reap_direct_child(&mut child, deadline);
+    let process_group_survived = if status.is_some() {
+        test_process_group_exists(pid)
+    } else {
+        Some(false)
+    };
+    kill_process_group(pid);
+    let captured_stdout = finish_capture(&mut stdout, deadline);
+    let captured_stderr = finish_capture(&mut stderr, deadline);
+
+    let Some(process_group_survived) = process_group_survived else {
+        return Err(ContainedRunError::ContainmentUnproven);
+    };
+    if process_group_survived {
+        return Err(ContainedRunError::ContainmentViolation);
+    }
+    if status.is_none() {
+        return Err(ContainedRunError::CouldNotRun);
+    }
+    if !direct_reaped {
+        return Err(ContainedRunError::ContainmentUnproven);
+    }
+    let (Some(stdout), Some(stderr)) = (captured_stdout, captured_stderr) else {
+        return Err(ContainedRunError::CouldNotRun);
+    };
+    if stdout.truncated || stderr.truncated {
+        return Err(ContainedRunError::CouldNotRun);
+    }
+    Ok(Captured {
+        code: status.and_then(|status| status.code()),
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
+        cwd_identity: None,
+    })
+}
+
+#[cfg(all(unix, test))]
+fn test_process_group_exists(pid: u32) -> Option<bool> {
+    // SAFETY: signal zero only probes the configured command's process group.
+    let result = unsafe { libc::kill(-(pid as libc::pid_t), 0) };
+    if result == 0 {
+        return Some(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Some(false),
+        Some(libc::EPERM) => Some(true),
+        _ => None,
+    }
+}
+
+#[cfg(any(target_os = "linux", all(unix, test)))]
+fn wait_and_drain(
+    child: &mut std::process::Child,
+    stdout: &mut NonblockingCapture<std::process::ChildStdout>,
+    stderr: &mut NonblockingCapture<std::process::ChildStderr>,
+    deadline: Instant,
+    parent_pid: Option<u32>,
 ) -> Option<std::process::ExitStatus> {
     loop {
-        if !parent_is_current(parent_pid) {
+        if parent_pid.is_some_and(|parent_pid| !parent_is_current(parent_pid)) {
             return None;
         }
+        let _ = stdout.read_available();
+        let _ = stderr.read_available();
         match child.try_wait() {
             Ok(Some(status)) => return Some(status),
             Err(_) => return None,
@@ -449,6 +859,39 @@ fn wait_bounded(
         }
         thread::sleep(POLL_INTERVAL.min(remaining));
     }
+}
+
+#[cfg(any(target_os = "linux", all(unix, test)))]
+fn finish_capture<R: Read + AsRawFd>(
+    capture: &mut NonblockingCapture<R>,
+    deadline: Instant,
+) -> Option<NonblockingCapture<R>> {
+    while !capture.is_closed() {
+        if !capture.read_available() {
+            return None;
+        }
+        if capture.is_closed() {
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        thread::sleep(POLL_INTERVAL.min(remaining));
+    }
+    let limit = capture.limit;
+    (!capture.failed).then(|| {
+        std::mem::replace(
+            capture,
+            NonblockingCapture {
+                stream: None,
+                bytes: Vec::new(),
+                truncated: false,
+                failed: false,
+                limit,
+            },
+        )
+    })
 }
 
 fn reap_direct_child(child: &mut std::process::Child, deadline: Instant) -> bool {
@@ -466,38 +909,6 @@ fn reap_direct_child(child: &mut std::process::Child, deadline: Instant) -> bool
     }
 }
 
-fn join_bounded(handle: Option<thread::JoinHandle<Vec<u8>>>, deadline: Instant) -> Option<Vec<u8>> {
-    let handle = handle?;
-    while !handle.is_finished() {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return None;
-        }
-        thread::sleep(POLL_INTERVAL.min(remaining));
-    }
-    handle.join().ok()
-}
-
-fn drain_bounded<R: Read + Send + 'static>(
-    stream: Option<R>,
-) -> Option<thread::JoinHandle<Vec<u8>>> {
-    stream.map(|mut stream| {
-        thread::spawn(move || {
-            let mut captured = Vec::new();
-            let _ = (&mut stream)
-                .take(MAX_CAPTURE_BYTES)
-                .read_to_end(&mut captured);
-            let mut discard = [0_u8; 8 * 1024];
-            while let Ok(read) = stream.read(&mut discard) {
-                if read == 0 {
-                    break;
-                }
-            }
-            captured
-        })
-    })
-}
-
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Cleanup {
@@ -507,13 +918,43 @@ enum Cleanup {
 }
 
 #[cfg(target_os = "linux")]
+fn cleanup_spawned_command(child: &mut std::process::Child, pid: u32, deadline: Instant) {
+    kill_process_group(pid);
+    let _ = child.kill();
+    // Capture setup can fail after spawn, so still reap the direct command and
+    // every adopted descendant within the caller's original cleanup budget.
+    let _ = reap_direct_child(child, deadline);
+    let _ = terminate_adopted_descendants(pid, deadline);
+}
+
+#[cfg(target_os = "linux")]
+fn cleanup_decision(
+    found: bool,
+    quiet_elapsed: Duration,
+    deadline_remaining: Duration,
+) -> Option<Cleanup> {
+    if quiet_elapsed >= QUIESCENCE {
+        return Some(if found {
+            Cleanup::Violation
+        } else {
+            Cleanup::Clean
+        });
+    }
+    deadline_remaining.is_zero().then_some(Cleanup::Unproven)
+}
+
+#[cfg(target_os = "linux")]
 fn terminate_adopted_descendants(direct_pid: u32, deadline: Instant) -> Cleanup {
     let mut found = false;
     let mut quiet_since = None;
+    let mut observation_uncertain = false;
     loop {
-        let reaped_adopted = match reap_exited_children(direct_pid as libc::pid_t) {
+        let reaped_adopted = match reap_exited_children(direct_pid as libc::pid_t, deadline) {
             Ok(reaped) => reaped,
-            Err(()) => return Cleanup::Unproven,
+            Err(()) => {
+                observation_uncertain = true;
+                false
+            }
         };
         if reaped_adopted {
             // An adopted descendant can already be a zombie before the first
@@ -523,28 +964,43 @@ fn terminate_adopted_descendants(direct_pid: u32, deadline: Instant) -> Cleanup 
             quiet_since = None;
         }
         let children = match direct_children() {
-            Ok(children) => children,
-            Err(()) => return Cleanup::Unproven,
-        };
-        if children.is_empty() {
-            let quiet_since = quiet_since.get_or_insert_with(Instant::now);
-            if quiet_since.elapsed() >= QUIESCENCE {
-                return if found {
-                    Cleanup::Violation
-                } else {
-                    Cleanup::Clean
-                };
+            Ok(children) => Some(children),
+            Err(()) => {
+                observation_uncertain = true;
+                None
             }
-        } else {
-            found = true;
-            quiet_since = None;
-            for pid in children {
-                // SAFETY: every direct child of this dedicated supervisor was
-                // created by the one configured command.
-                unsafe {
-                    let _ = libc::kill(pid, libc::SIGKILL);
+        };
+        if let Some(children) = children {
+            if children.is_empty() {
+                if observation_uncertain {
+                    quiet_since = None;
+                } else {
+                    let quiet_since = quiet_since.get_or_insert_with(Instant::now);
+                    if let Some(cleanup) = cleanup_decision(
+                        found,
+                        quiet_since.elapsed(),
+                        deadline.saturating_duration_since(Instant::now()),
+                    ) {
+                        return cleanup;
+                    }
+                }
+            } else {
+                found = true;
+                quiet_since = None;
+                for pid in children {
+                    // SAFETY: every direct child of this dedicated supervisor
+                    // was created by the one configured command.
+                    unsafe {
+                        let _ = libc::kill(pid, libc::SIGKILL);
+                    }
                 }
             }
+        } else {
+            quiet_since = None;
+        }
+        if observation_uncertain {
+            // Keep attempting best-effort cleanup, but never report it as proven.
+            kill_process_group(direct_pid);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -555,7 +1011,7 @@ fn terminate_adopted_descendants(direct_pid: u32, deadline: Instant) -> Cleanup 
 }
 
 #[cfg(target_os = "linux")]
-fn reap_exited_children(direct_pid: libc::pid_t) -> Result<bool, ()> {
+fn reap_exited_children(direct_pid: libc::pid_t, deadline: Instant) -> Result<bool, ()> {
     let mut reaped_adopted = false;
     loop {
         // SAFETY: waitpid with WNOHANG does not write through the null status pointer.
@@ -568,11 +1024,13 @@ fn reap_exited_children(direct_pid: libc::pid_t) -> Result<bool, ()> {
             -1 => {
                 let error = std::io::Error::last_os_error().raw_os_error();
                 if error == Some(libc::EINTR) {
-                    continue;
+                    if Instant::now() < deadline {
+                        continue;
+                    }
+                    return Err(());
                 }
                 // ECHILD is the normal no-waitable-children result after the
-                // direct command has been reaped; every other wait error is
-                // containment-unproven rather than a clean cleanup.
+                // direct command is reaped; every other wait error is uncertain.
                 return (error == Some(libc::ECHILD))
                     .then_some(reaped_adopted)
                     .ok_or(());
@@ -598,7 +1056,30 @@ fn build_request(
     cwd: &Path,
     timeout_ms: u64,
 ) -> Result<SupervisorRequest, ()> {
-    if argv.is_empty() || argv.iter().any(|argument| argument.contains('\0')) {
+    let environment = ["PATH", "HOME", "CI"]
+        .into_iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(name), value)))
+        .collect::<Vec<_>>();
+    build_request_with_relative_timeout(
+        argv,
+        &environment,
+        repository_root,
+        workspace_root,
+        cwd,
+        timeout_ms,
+    )
+}
+
+fn build_request_with_relative_timeout(
+    argv: &[String],
+    environment: &[(OsString, OsString)],
+    repository_root: &Path,
+    workspace_root: &Path,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> Result<SupervisorRequest, ()> {
+    if argv.is_empty() || argv[0].is_empty() || argv.iter().any(|argument| argument.contains('\0'))
+    {
         return Err(());
     }
     Ok(SupervisorRequest {
@@ -607,11 +1088,74 @@ fn build_request(
         repository_root: encode_path(repository_root).ok_or(())?,
         workspace_root: encode_path(workspace_root).ok_or(())?,
         cwd: encode_path(cwd).ok_or(())?,
-        timeout_ms: format!("{timeout_ms:020}"),
-        path: encode_environment("PATH")?,
-        home: encode_environment("HOME")?,
-        ci: encode_environment("CI")?,
+        timeout_ms: Some(format!("{timeout_ms:020}")),
+        deadline_ns: None,
+        environment: Some(encode_environment_entries(environment)?),
+        capture_limit: MAX_CAPTURE_BYTES,
+        path: None,
+        home: None,
+        ci: None,
     })
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn build_request_with_deadline(
+    argv: &[String],
+    environment: &[(OsString, OsString)],
+    repository_root: &Path,
+    workspace_root: &Path,
+    cwd: &Path,
+    deadline_ns: u64,
+    capture_limit: u64,
+) -> Result<SupervisorRequest, ()> {
+    if argv.is_empty() || argv[0].is_empty() || argv.iter().any(|argument| argument.contains('\0'))
+    {
+        return Err(());
+    }
+    valid_capture_limit(capture_limit).ok_or(())?;
+    Ok(SupervisorRequest {
+        parent_pid: std::process::id(),
+        argv: argv.to_vec(),
+        repository_root: encode_path(repository_root).ok_or(())?,
+        workspace_root: encode_path(workspace_root).ok_or(())?,
+        cwd: encode_path(cwd).ok_or(())?,
+        timeout_ms: None,
+        deadline_ns: Some(deadline_ns.to_string()),
+        environment: Some(encode_environment_entries(environment)?),
+        capture_limit,
+        path: None,
+        home: None,
+        ci: None,
+    })
+}
+
+fn encode_environment_entries(
+    environment: &[(OsString, OsString)],
+) -> Result<Vec<EncodedEnvironment>, ()> {
+    if environment.len() > MAX_REQUEST_ENVIRONMENT_ENTRIES {
+        return Err(());
+    }
+    let mut total_bytes = 0_usize;
+    let mut encoded = Vec::with_capacity(environment.len());
+    for (name, value) in environment {
+        let encoded_name = encode_environment_value(name.as_os_str())?;
+        if decode_environment_name(&encoded_name).is_none() {
+            return Err(());
+        }
+        let encoded_value = encode_environment_value(value.as_os_str())?;
+        total_bytes = total_bytes
+            .checked_add(encoded_name.len())
+            .and_then(|bytes| bytes.checked_add(encoded_value.len()))
+            .ok_or(())?;
+        if total_bytes > MAX_REQUEST_ENVIRONMENT_BYTES {
+            return Err(());
+        }
+        encoded.push(EncodedEnvironment {
+            name: encoded_name,
+            value: encoded_value,
+        });
+    }
+    Ok(encoded)
 }
 
 #[cfg(test)]
@@ -655,19 +1199,12 @@ fn encode_path(path: &Path) -> Option<String> {
     (bytes.len() <= MAX_REQUEST_PATH_BYTES && !bytes.contains(&0)).then(|| encode_hex(bytes))
 }
 
-fn encode_environment(name: &str) -> Result<Option<String>, ()> {
-    let Some(value) = std::env::var_os(name) else {
-        return Ok(None);
-    };
-    encode_environment_value(value.as_os_str()).map(Some)
-}
-
 fn encode_environment_value(value: &OsStr) -> Result<String, ()> {
     #[cfg(unix)]
     let bytes = value.as_bytes();
     #[cfg(not(unix))]
     let bytes = value.to_str().ok_or(())?.as_bytes();
-    if bytes.len() > MAX_REQUEST_ENV_BYTES {
+    if bytes.len() > MAX_REQUEST_ENV_BYTES || bytes.contains(&0) {
         return Err(());
     }
     Ok(encode_hex(bytes))
@@ -675,7 +1212,7 @@ fn encode_environment_value(value: &OsStr) -> Result<String, ()> {
 
 fn decode_environment(value: &str) -> Option<OsString> {
     let bytes = decode_hex(value)?;
-    if bytes.len() > MAX_REQUEST_ENV_BYTES {
+    if bytes.len() > MAX_REQUEST_ENV_BYTES || bytes.contains(&0) {
         return None;
     }
     #[cfg(unix)]
@@ -688,9 +1225,18 @@ fn decode_environment(value: &str) -> Option<OsString> {
     }
 }
 
+fn decode_environment_name(value: &str) -> Option<OsString> {
+    let name = decode_environment(value)?;
+    #[cfg(unix)]
+    let bytes = name.as_os_str().as_bytes();
+    #[cfg(not(unix))]
+    let bytes = name.to_str()?.as_bytes();
+    (!bytes.is_empty() && !bytes.contains(&b'=')).then_some(name)
+}
+
 fn decode_path(value: &str) -> Option<PathBuf> {
     let bytes = decode_hex(value)?;
-    if bytes.len() > MAX_REQUEST_PATH_BYTES {
+    if bytes.len() > MAX_REQUEST_PATH_BYTES || bytes.contains(&0) {
         return None;
     }
     #[cfg(unix)]
@@ -716,6 +1262,8 @@ fn response(
         code,
         stdout_hex: encode_hex(&stdout),
         stderr_hex: encode_hex(&stderr),
+        stdout_truncated: false,
+        stderr_truncated: false,
         cwd_identity: None,
     }
 }
@@ -804,6 +1352,225 @@ fn kill_process_group(_pid: u32) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    fn valid_request_fixture() -> SupervisorRequest {
+        SupervisorRequest {
+            parent_pid: std::process::id(),
+            argv: vec!["true".to_string()],
+            repository_root: encode_path(Path::new(".")).expect("path encoding"),
+            workspace_root: encode_path(Path::new(".")).expect("path encoding"),
+            cwd: encode_path(Path::new(".")).expect("path encoding"),
+            timeout_ms: Some("1000".to_string()),
+            deadline_ns: None,
+            environment: None,
+            capture_limit: MAX_CAPTURE_BYTES,
+            path: None,
+            home: None,
+            ci: None,
+        }
+    }
+
+    #[test]
+    fn supervisor_capture_rejects_survivors_and_oversized_stderr() {
+        let captured = crate::checks::gitleaks::runner::Captured {
+            code: Some(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            process_group_survived: false,
+        };
+        assert!(supervisor_capture_is_bounded(&captured, 0));
+
+        let mut survived = captured;
+        survived.process_group_survived = true;
+        assert!(!supervisor_capture_is_bounded(&survived, usize::MAX));
+
+        let oversized = crate::checks::gitleaks::runner::Captured {
+            code: Some(0),
+            stdout: Vec::new(),
+            stderr: vec![0],
+            process_group_survived: false,
+        };
+        assert!(!supervisor_capture_is_bounded(&oversized, 0));
+    }
+
+    #[test]
+    fn capture_limit_accepts_ruff_bound_and_rejects_unbounded_values() {
+        assert_eq!(
+            valid_capture_limit(MAX_CAPTURE_BYTES),
+            Some(MAX_CAPTURE_BYTES as usize)
+        );
+        assert_eq!(
+            valid_capture_limit(MAX_CAPTURE_LIMIT_BYTES),
+            Some(MAX_CAPTURE_LIMIT_BYTES as usize)
+        );
+        assert!(valid_capture_limit(0).is_none());
+        assert!(valid_capture_limit(MAX_CAPTURE_LIMIT_BYTES + 1).is_none());
+    }
+
+    #[test]
+    fn environment_validation_accepts_exact_encoded_byte_limit() {
+        let value_length = MAX_REQUEST_ENVIRONMENT_BYTES / 8 - 1;
+        let exact = (0..4)
+            .map(|_| {
+                (
+                    OsString::from("N"),
+                    OsString::from("x".repeat(value_length)),
+                )
+            })
+            .collect::<Vec<_>>();
+        let encoded = encode_environment_entries(&exact).expect("bounded environment");
+
+        assert_eq!(
+            encoded
+                .iter()
+                .map(|entry| entry.name.len() + entry.value.len())
+                .sum::<usize>(),
+            MAX_REQUEST_ENVIRONMENT_BYTES
+        );
+        assert!(encoded_environment_entries_are_valid(&encoded));
+    }
+
+    #[test]
+    fn environment_transport_rejects_too_many_entries_and_bytes() {
+        let too_many = (0..=MAX_REQUEST_ENVIRONMENT_ENTRIES)
+            .map(|index| (OsString::from(format!("N{index}")), OsString::from("v")))
+            .collect::<Vec<_>>();
+        let too_large = (0..5)
+            .map(|index| {
+                (
+                    OsString::from(format!("N{index}")),
+                    OsString::from("x".repeat(MAX_REQUEST_ENV_BYTES)),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(encode_environment_entries(&too_many).is_err());
+        assert!(encode_environment_entries(&too_large).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn receiver_rejects_oversized_envelopes_before_parsing() {
+        assert!(request_payload_is_bounded(
+            &"x".repeat(MAX_REQUEST_ENVELOPE_BYTES)
+        ));
+        assert!(!request_payload_is_bounded(
+            &"x".repeat(MAX_REQUEST_ENVELOPE_BYTES + 1)
+        ));
+
+        let mut request = valid_request_fixture();
+        request.argv = vec!["x".repeat(MAX_REQUEST_ENVELOPE_BYTES)];
+        assert!(!request_is_valid(&request));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn receiver_validates_environment_arguments_capture_and_parent() {
+        let mut request = valid_request_fixture();
+        assert!(request_is_valid(&request));
+
+        request.parent_pid = 0;
+        assert!(!request_is_valid(&request));
+        request.parent_pid = std::process::id();
+        request.argv[0].clear();
+        assert!(!request_is_valid(&request));
+        request.argv[0] = "true".to_string();
+        request.capture_limit = 0;
+        assert!(!request_is_valid(&request));
+        request.capture_limit = MAX_CAPTURE_BYTES;
+        request.repository_root = "not-hex".to_string();
+        assert!(!request_is_valid(&request));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn receiver_rejects_oversized_and_invalid_environment_entries() {
+        let mut too_many = valid_request_fixture();
+        too_many.environment = Some(
+            (0..=MAX_REQUEST_ENVIRONMENT_ENTRIES)
+                .map(|index| EncodedEnvironment {
+                    name: encode_hex(format!("N{index}").as_bytes()),
+                    value: encode_hex(b"v"),
+                })
+                .collect(),
+        );
+        assert!(!request_is_valid(&too_many));
+
+        let mut invalid_name = valid_request_fixture();
+        invalid_name.environment = Some(vec![EncodedEnvironment {
+            name: encode_hex(b"NAME=INVALID"),
+            value: encode_hex(b"value"),
+        }]);
+        assert!(!request_is_valid(&invalid_name));
+
+        let mut invalid_value = valid_request_fixture();
+        invalid_value.environment = Some(vec![EncodedEnvironment {
+            name: encode_hex(b"NAME"),
+            value: "not-hex".to_string(),
+        }]);
+        assert!(!request_is_valid(&invalid_value));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn absolute_deadline_is_strict_and_relative_deadline_remains_supported() {
+        let mut request = valid_request_fixture();
+        request.deadline_ns = Some("not-a-monotonic-deadline".to_string());
+        assert!(request_deadline(&request).is_none());
+
+        request.deadline_ns = Some("0".to_string());
+        assert!(request_deadline(&request).is_none());
+
+        request.deadline_ns = None;
+        assert!(request_deadline(&request).is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn expired_cleanup_deadline_cannot_be_reported_clean() {
+        assert_eq!(
+            cleanup_decision(false, Duration::ZERO, Duration::ZERO),
+            Some(Cleanup::Unproven)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_mode_returns_stdout_and_stderr_from_bounded_capture() {
+        let root = std::env::current_dir().expect("current directory");
+        let argv = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "printf supervisor-stdout; printf supervisor-stderr >&2".to_string(),
+        ];
+        let captured = run_with_deadline(
+            &argv,
+            &root,
+            Path::new("."),
+            Path::new("."),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .expect("bounded test-mode command");
+
+        assert_eq!(captured.code, Some(0));
+        assert_eq!(captured.stdout, b"supervisor-stdout");
+        assert_eq!(captured.stderr, b"supervisor-stderr");
+        #[cfg(target_os = "linux")]
+        assert!(captured.cwd_identity.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_mode_rejects_truncated_capture_without_blocking_on_pipe_capacity() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "head -c 262145 /dev/zero"]);
+        let started = Instant::now();
+        let result =
+            run_test_command_with_deadline(command, Instant::now() + Duration::from_secs(5));
+        assert!(matches!(result, Err(ContainedRunError::CouldNotRun)));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 
     #[test]
     fn hex_round_trips_binary_capture() {
