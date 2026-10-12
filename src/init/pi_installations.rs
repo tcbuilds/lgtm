@@ -231,17 +231,20 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
     preflight_targets(home, &[&directory.join("installation.json")])
         .map_err(|error| error.to_string())?;
     let entries = match std::fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok("No tracked LGTM installations. Register existing project/global installations once with the appropriate lgtm init command.".to_string());
-        }
+        Ok(entries) => Some(entries),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(format!("read Pi installation registry ({error})")),
     };
     let deadline = Instant::now() + REFRESH_BUDGET;
     let mut refreshed = 0;
     let mut preserved = 0;
     let mut file_writes = 0;
-    for (index, entry) in entries.enumerate() {
+    // Registration stores canonical targets; HOME may use macOS /var aliases.
+    let global_root = std::fs::canonicalize(home)
+        .map_err(|error| format!("resolve installation HOME ({error})"))?;
+    let global_target = global_root.join(".pi/agent/extensions/lgtm.ts");
+    let mut global_registered = false;
+    for (index, entry) in entries.into_iter().flatten().enumerate() {
         if index >= MAX_INSTALLATIONS || Instant::now() >= deadline {
             return Err(
                 "Pi extension refresh exceeded its bounded installation budget".to_string(),
@@ -254,15 +257,16 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
             continue;
         }
         let mut installation = read_installation(&path)?;
+        global_registered |= installation.target == global_target;
         if std::fs::canonicalize(&installation.binary).ok().as_deref() != Some(binary) {
             preserved += 1;
             continue;
         }
         let managed = refresh_managed(&mut installation)?;
         file_writes += managed;
-        if managed > 0 {
-            persist(home, installation.clone()).map_err(|error| error.to_string())?;
-        }
+        // Migration metadata must survive even when managed files already match.
+        // persist avoids writing when the complete registration is unchanged.
+        persist(home, installation.clone()).map_err(|error| error.to_string())?;
         let pi_result = if installation
             .managed
             .as_ref()
@@ -286,9 +290,48 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
             }
         }
     }
+    if !global_registered {
+        let migrated = refresh_legacy_global(&global_root, binary)?;
+        if migrated > 0 {
+            refreshed += 1;
+            file_writes += migrated;
+        }
+    }
     Ok(format!(
-        "LGTM installations: {refreshed} refreshed, {preserved} unchanged or preserved; {file_writes} managed file writes. Reload running agent sessions. Register untracked installations once with the appropriate lgtm init command."
+        "LGTM installations: {refreshed} refreshed, {preserved} unchanged or preserved; {file_writes} managed file writes. Reload running agent sessions. Register untracked project installations once with the appropriate lgtm init command."
     ))
+}
+
+// Discover only the canonical global hook, never scan unrelated repositories.
+fn refresh_legacy_global(home: &Path, binary: &Path) -> Result<usize, String> {
+    let target = home.join(".pi/agent/extensions/lgtm.ts");
+    preflight_targets(home, &[&target]).map_err(|error| error.to_string())?;
+    let Some(existing) = read_if_exists(&target).map_err(|error| error.to_string())? else {
+        return Ok(0);
+    };
+    let binary_text = binary.to_str().ok_or("Pi executable path is not UTF-8")?;
+    let generated =
+        pi::render(binary_text, ExtensionScope::Global).map_err(|error| error.to_string())?;
+    let binding = format!("const LGTM_BINARY = {};", serde_json::json!(binary_text));
+    if !existing.lines().any(|line| line == binding)
+        || !pi::owned_template(&existing, &generated, ExtensionScope::Global)
+    {
+        return Ok(0);
+    }
+    let mut managed = managed_record(home, super::InitAgent::Pi, true, false);
+    managed
+        .guidance
+        .retain(|path| path != &home.join(".pi/agent/AGENTS.md"));
+    let mut installation = Installation {
+        version: 1,
+        target,
+        binary: binary.to_path_buf(),
+        global: true,
+        managed: Some(managed),
+    };
+    let count = refresh_one(&installation)? + refresh_managed(&mut installation)?;
+    persist(home, installation).map_err(|error| error.to_string())?;
+    Ok(count)
 }
 
 fn refresh_managed(installation: &mut Installation) -> Result<usize, String> {
