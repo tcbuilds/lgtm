@@ -51,6 +51,183 @@ fn make_stale(target: &Path) -> String {
     stale
 }
 
+// These CLI checks exercise the updater without downloading or replacing a binary.
+fn update_current(home: &Path) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args([
+            "update",
+            "--version",
+            concat!("v", env!("CARGO_PKG_VERSION")),
+        ])
+        .env("HOME", home)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .expect("update starts");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        if child.try_wait().expect("update status").is_some() {
+            return child.wait_with_output().expect("update output");
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().expect("kill stalled update");
+            child.wait().expect("reap update");
+            panic!("update exceeded deadline");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn update_migrates_unregistered_global_hook_and_shared_pi_guidance_once() {
+    let home = TempRepo::new();
+    assert!(init(&home, home.path(), true, false).status.success());
+    fs::remove_dir_all(home.path().join(".local/state/lgtm/pi-installations"))
+        .expect("simulate pre-registry installation");
+    home.write(
+        ".pi/agent/AGENTS.md",
+        "# Personal guidance\nKeep my preferences.\n",
+    );
+    home.write(
+        ".pi/agent/settings.json",
+        r#"{"theme":"dark","defaultTools":["read","bash"],"codemode":{"mode":"on"}}"#,
+    );
+    let target = home.path().join(".pi/agent/extensions/lgtm.ts");
+    let stale = make_stale(&target);
+    assert!(update_current(home.path()).status.success());
+    let refreshed = home.read(".pi/agent/extensions/lgtm.ts");
+    assert_ne!(refreshed, stale);
+    assert_eq!(home.read(".pi/agent/extensions/lgtm.ts.bak"), stale);
+    let guidance = home.read(".pi/agent/AGENTS.md");
+    assert!(guidance.starts_with("# Personal guidance\nKeep my preferences.\n"));
+    let codex = home.read(".codex/AGENTS.md");
+    assert!(guidance.ends_with(&codex));
+    let settings: serde_json::Value =
+        serde_json::from_str(&home.read(".pi/agent/settings.json")).expect("settings");
+    assert_eq!(
+        settings["defaultTools"],
+        serde_json::json!(["read", "bash", "+codemode"])
+    );
+    assert_eq!(settings["theme"], "dark");
+    assert!(update_current(home.path()).status.success());
+    assert_eq!(home.read(".pi/agent/AGENTS.md"), guidance);
+    assert_eq!(home.read(".pi/agent/extensions/lgtm.ts"), refreshed);
+    home.write(".pi/agent/AGENTS.md", "Owner removed managed block\n");
+    fs::remove_file(&target).expect("disable hook");
+    assert!(update_current(home.path()).status.success());
+    assert!(!target.exists());
+    assert_eq!(
+        home.read(".pi/agent/AGENTS.md"),
+        "Owner removed managed block\n"
+    );
+}
+
+#[test]
+fn global_init_enables_codemode_and_preserves_owner_settings_and_opt_outs() {
+    for tools in [
+        None,
+        Some(serde_json::json!(["read"])),
+        Some(serde_json::json!([])),
+        Some(serde_json::json!(["-codemode"])),
+    ] {
+        let home = TempRepo::new();
+        let mut settings = serde_json::json!({"theme":"dark", "codemode":{"mode":"only"}});
+        if let Some(tools) = &tools {
+            settings["defaultTools"] = tools.clone();
+        }
+        home.write(".pi/agent/settings.json", &settings.to_string());
+        home.write(".pi/agent/AGENTS.md", "Owner guidance\n");
+        assert!(init(&home, home.path(), true, false).status.success());
+        let actual: serde_json::Value =
+            serde_json::from_str(&home.read(".pi/agent/settings.json")).expect("settings");
+        let expected = match tools {
+            None => serde_json::json!(["+codemode"]),
+            Some(ref value) if value == &serde_json::json!(["read"]) => {
+                serde_json::json!(["read", "+codemode"])
+            }
+            Some(value) => value,
+        };
+        assert_eq!(actual["defaultTools"], expected);
+        assert_eq!(actual["codemode"], settings["codemode"]);
+        assert_eq!(actual["theme"], "dark");
+        assert!(
+            home.read(".pi/agent/AGENTS.md")
+                .starts_with("Owner guidance\n")
+        );
+    }
+}
+
+#[test]
+fn no_write_global_migration_records_guidance_opt_out_boundary() {
+    let home = TempRepo::new();
+    assert!(init(&home, home.path(), true, false).status.success());
+    let registry = home.path().join(".local/state/lgtm/pi-installations");
+    let record = fs::read_dir(&registry)
+        .expect("registry")
+        .next()
+        .expect("entry")
+        .expect("record")
+        .path();
+    let mut registration: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&record).expect("record")).expect("JSON");
+    registration["managed"]["guidance"]
+        .as_array_mut()
+        .expect("guidance")
+        .retain(|path| path.as_str() != home.path().join(".pi/agent/AGENTS.md").to_str());
+    fs::write(&record, registration.to_string()).expect("old registration");
+    let original = home.read(".pi/agent/AGENTS.md");
+    assert!(update_current(home.path()).status.success());
+    assert_eq!(home.read(".pi/agent/AGENTS.md"), original);
+    let saved: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&record).expect("record")).expect("JSON");
+    assert!(
+        saved["managed"]["guidance"]
+            .as_array()
+            .expect("guidance")
+            .contains(&serde_json::json!(home.path().join(".pi/agent/AGENTS.md")))
+    );
+    home.write(".pi/agent/AGENTS.md", "Owner opt-out\n");
+    assert!(update_current(home.path()).status.success());
+    assert_eq!(home.read(".pi/agent/AGENTS.md"), "Owner opt-out\n");
+}
+
+#[test]
+fn global_init_preserves_disabled_builtin_codemode_and_rejects_invalid_tool_lists() {
+    let home = TempRepo::new();
+    let settings = r#"{"extensions":["-builtin:codemode"],"defaultTools":["read"]}"#;
+    home.write(".pi/agent/settings.json", settings);
+    assert!(init(&home, home.path(), true, false).status.success());
+    assert_eq!(home.read(".pi/agent/settings.json"), settings);
+    assert!(update_current(home.path()).status.success());
+    assert_eq!(home.read(".pi/agent/settings.json"), settings);
+    let invalid = TempRepo::new();
+    invalid.write(".pi/agent/settings.json", r#"{"defaultTools":"read"}"#);
+    assert!(!init(&invalid, invalid.path(), true, false).status.success());
+    assert!(!invalid.exists(".pi/agent/extensions/lgtm.ts"));
+    assert!(!invalid.exists(".pi/agent/AGENTS.md"));
+}
+
+#[test]
+fn update_does_not_adopt_custom_or_repointed_unregistered_global_hooks() {
+    for customized in [true, false] {
+        let home = TempRepo::new();
+        assert!(init(&home, home.path(), true, false).status.success());
+        fs::remove_dir_all(home.path().join(".local/state/lgtm/pi-installations"))
+            .expect("remove registry");
+        let target = home.path().join(".pi/agent/extensions/lgtm.ts");
+        let stale = make_stale(&target);
+        let owner = if customized {
+            format!("{stale}\n// Custom hook\n")
+        } else {
+            stale.replace(env!("CARGO_BIN_EXE_lgtm"), "/owner/lgtm")
+        };
+        fs::write(&target, &owner).expect("owner change");
+        assert!(update_current(home.path()).status.success());
+        assert_eq!(home.read(".pi/agent/extensions/lgtm.ts"), owner);
+        assert!(!home.exists(".local/state/lgtm/pi-installations"));
+    }
+}
+
 #[test]
 fn refresh_updates_registered_project_and_global_pins_and_is_idempotent() {
     let home = TempRepo::new();

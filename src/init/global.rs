@@ -18,7 +18,7 @@ pub struct GlobalInitSummary {
     pub rules: rules::Installed,
 }
 
-/// Install global Claude and Codex configuration below `home`.
+/// Install global Claude, Codex, and Pi configuration below `home`.
 pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
     if !home.is_absolute() {
         return Err(InitError::UnwritableTarget {
@@ -30,6 +30,8 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
     let claude_settings = home.join(".claude/settings.json");
     let codex_hooks = home.join(".codex/hooks.json");
     let codex_agents = home.join(".codex/AGENTS.md");
+    let pi_agents = home.join(".pi/agent/AGENTS.md");
+    let pi_settings = home.join(".pi/agent/settings.json");
     let pi_extension = home.join(".pi/agent/extensions/lgtm.ts");
     let pi_backup = pi_extension.with_file_name("lgtm.ts.bak");
     let binary = codex::hook_binary();
@@ -37,12 +39,17 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
         render_claude_hooks(config::validate_claude_settings(&claude_settings)?, &binary);
     let codex_render = codex::render_hooks(config::validate_settings(&codex_hooks)?);
     let agents_render = render_agents(&codex_agents)?;
+    let pi_agents_render = render_agents(&pi_agents)?;
+    let pi_settings_render =
+        pi_config::render_codemode_settings(pi_config::validate_settings(&pi_settings)?);
     let (guidance_plan, rules) = rules::plan(home, InitAgent::Claude)?;
 
     let mut targets = vec![
         claude_settings.clone(),
         codex_hooks.clone(),
         codex_agents.clone(),
+        pi_agents.clone(),
+        pi_settings.clone(),
         pi_extension.clone(),
         pi_backup.clone(),
     ];
@@ -81,6 +88,18 @@ pub fn run(home: &Path, dry_run: bool) -> Result<GlobalInitSummary, InitError> {
             label: ".codex/AGENTS.md".to_string(),
             render: agents_render,
             private: false,
+        },
+        PlannedGlobalWrite {
+            path: pi_agents,
+            label: ".pi/agent/AGENTS.md".to_string(),
+            render: pi_agents_render,
+            private: true,
+        },
+        PlannedGlobalWrite {
+            path: pi_settings,
+            label: ".pi/agent/settings.json".to_string(),
+            render: pi_settings_render,
+            private: true,
         },
     ];
     if let Some(contents) = pi_plan.backup_contents.as_ref() {

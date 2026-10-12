@@ -23,6 +23,13 @@ pub(super) fn validate_settings(path: &Path) -> Result<ValidatedPiObject, InitEr
             );
         }
     }
+    if let Some(tools) = object.as_ref().and_then(|value| value.get("defaultTools"))
+        && !tools
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_string))
+    {
+        return malformed(path, "defaultTools must be a string array");
+    }
     Ok(object)
 }
 
@@ -72,7 +79,42 @@ pub(super) fn render_settings(existing: ValidatedPiObject) -> Option<Vec<u8>> {
             packages.push(package.clone());
         }
     }
+    enable_codemode(&mut merged);
     render_changed(original, merged)
+}
+
+pub(super) fn render_codemode_settings(existing: ValidatedPiObject) -> Option<Vec<u8>> {
+    let original = existing.unwrap_or_default();
+    let mut merged = original.clone();
+    enable_codemode(&mut merged);
+    render_changed(original, merged)
+}
+
+fn enable_codemode(settings: &mut Map<String, Value>) {
+    if settings
+        .get("extensions")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.as_str() == Some("-builtin:codemode"))
+        })
+    {
+        return;
+    }
+    let tools = settings
+        .entry("defaultTools")
+        .or_insert_with(|| serde_json::json!(["+codemode"]));
+    let tools = tools.as_array_mut().expect("validated defaultTools array");
+    // Empty selections and explicit removals are owner opt-outs.
+    if tools.is_empty()
+        || tools
+            .iter()
+            .any(|tool| matches!(tool.as_str(), Some("codemode" | "+codemode" | "-codemode")))
+    {
+        return;
+    }
+    tools.push(Value::String("+codemode".to_string()));
 }
 
 pub(super) fn render_lsp(existing: ValidatedPiObject) -> Option<Vec<u8>> {
