@@ -239,7 +239,10 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
     let mut refreshed = 0;
     let mut preserved = 0;
     let mut file_writes = 0;
-    let global_target = home.join(".pi/agent/extensions/lgtm.ts");
+    // Registration stores canonical targets; HOME may use macOS /var aliases.
+    let global_root = std::fs::canonicalize(home)
+        .map_err(|error| format!("resolve installation HOME ({error})"))?;
+    let global_target = global_root.join(".pi/agent/extensions/lgtm.ts");
     let mut global_registered = false;
     for (index, entry) in entries.into_iter().flatten().enumerate() {
         if index >= MAX_INSTALLATIONS || Instant::now() >= deadline {
@@ -288,7 +291,7 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
         }
     }
     if !global_registered {
-        let migrated = refresh_legacy_global(home, binary)?;
+        let migrated = refresh_legacy_global(&global_root, binary)?;
         if migrated > 0 {
             refreshed += 1;
             file_writes += migrated;

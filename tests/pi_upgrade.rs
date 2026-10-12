@@ -160,6 +160,9 @@ fn global_init_enables_codemode_and_preserves_owner_settings_and_opt_outs() {
 #[test]
 fn no_write_global_migration_records_guidance_opt_out_boundary() {
     let home = TempRepo::new();
+    let pi_guidance = fs::canonicalize(home.path())
+        .expect("canonical HOME")
+        .join(".pi/agent/AGENTS.md");
     assert!(init(&home, home.path(), true, false).status.success());
     let registry = home.path().join(".local/state/lgtm/pi-installations");
     let record = fs::read_dir(&registry)
@@ -173,7 +176,7 @@ fn no_write_global_migration_records_guidance_opt_out_boundary() {
     registration["managed"]["guidance"]
         .as_array_mut()
         .expect("guidance")
-        .retain(|path| path.as_str() != home.path().join(".pi/agent/AGENTS.md").to_str());
+        .retain(|path| path.as_str() != pi_guidance.to_str());
     fs::write(&record, registration.to_string()).expect("old registration");
     let original = home.read(".pi/agent/AGENTS.md");
     assert!(update_current(home.path()).status.success());
@@ -184,11 +187,29 @@ fn no_write_global_migration_records_guidance_opt_out_boundary() {
         saved["managed"]["guidance"]
             .as_array()
             .expect("guidance")
-            .contains(&serde_json::json!(home.path().join(".pi/agent/AGENTS.md")))
+            .contains(&serde_json::json!(pi_guidance))
     );
     home.write(".pi/agent/AGENTS.md", "Owner opt-out\n");
     assert!(update_current(home.path()).status.success());
     assert_eq!(home.read(".pi/agent/AGENTS.md"), "Owner opt-out\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn refresh_does_not_duplicate_global_registration_through_home_alias() {
+    let actual = TempRepo::new();
+    let alias_parent = TempRepo::new();
+    let alias = alias_parent.path().join("home");
+    std::os::unix::fs::symlink(actual.path(), &alias).expect("HOME alias");
+    assert!(init(&actual, &alias, true, false).status.success());
+    make_stale(&actual.path().join(".pi/agent/extensions/lgtm.ts"));
+    assert!(update_current(&alias).status.success());
+    let registry = actual.path().join(".local/state/lgtm/pi-installations");
+    assert_eq!(fs::read_dir(&registry).expect("registry").count(), 1);
+    actual.write(".pi/agent/AGENTS.md", "Owner opt-out\n");
+    assert!(update_current(&alias).status.success());
+    assert_eq!(fs::read_dir(&registry).expect("registry").count(), 1);
+    assert_eq!(actual.read(".pi/agent/AGENTS.md"), "Owner opt-out\n");
 }
 
 #[test]
