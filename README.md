@@ -49,7 +49,7 @@ For Pi, run:
 lgtm init --agent pi
 ```
 
-Pi init writes the LGTM extension under `.pi/extensions/`, merges the pinned Pi package set into `.pi/settings.json`, and merges the configured language-server routes into `.pi/pi-lsp.json`. Existing package versions, package filters, settings, timeouts, and named server routes win over LGTM defaults. After the project is trusted, Pi loads the extension and installs missing configured packages through its normal package flow. Language-server executables are not installed by LGTM or pi-lsp; use `/lsp` and `lgtm doctor` to identify missing commands.
+Pi init writes the LGTM extension under `.pi/extensions/`, merges unpinned Pi package defaults into `.pi/settings.json`, and merges the configured language-server routes into `.pi/pi-lsp.json`. The defaults include web search, GitHub PR status, and goal support. Init and refresh remove only the exact old version pins shipped by LGTM; other package versions, package filters, settings, timeouts, and named server routes are preserved. Run `pi update --extensions` to download newer packages; `lgtm update` changes declarations, not installed npm packages. After the project is trusted, Pi loads the extension and installs missing configured packages through its normal package flow. Language-server executables are not installed by LGTM or pi-lsp; use `/lsp` and `lgtm doctor` to identify missing commands.
 
 Pi packages and project extensions execute with the user's permissions. Review the generated files before trusting the project. Roll back by removing only LGTM's extension and generated package/server entries; do not delete either JSON file when it also contains user configuration.
 

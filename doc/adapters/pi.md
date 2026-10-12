@@ -69,10 +69,12 @@ provenance.
 ## Installation and rollback
 
 Project setup uses `lgtm init --agent pi`. It writes the owned extension to
-`.pi/extensions/lgtm.ts`, merges the pinned project package set into
+`.pi/extensions/lgtm.ts`, merges unpinned project package defaults into
 `.pi/settings.json`, and merges the configured language-server routes into
-`.pi/pi-lsp.json`. Package identity is compared without its npm version, so an
-existing pin or package filter remains authoritative instead of being duplicated.
+`.pi/pi-lsp.json`. Init and refresh remove only the exact old pins shipped by
+LGTM through v0.12.3. Other version choices and all package filters remain.
+Package identity is compared without its npm version to avoid adding a second
+entry for the same package.
 Existing top-level Pi settings, timeout values, and named LSP server routes are
 also preserved. Pi loads these project resources only after project trust; its
 package manager, not LGTM, installs missing packages. Neither LGTM nor pi-lsp
@@ -135,6 +137,30 @@ Pi lifecycle hooks use a 10-second transport deadline. Bash pre-tool calls use a
 that gate has a fixed 300-second total budget, including bounded checks and evidence
 persistence, and denies on aggregate exhaustion. Claude and Codex keep their
 existing full-gate budget.
+
+## User guide: package updates
+
+Pi project settings take precedence over global settings for the same package.
+An old project pin can therefore keep a package old even when its global entry
+has no version. LGTM no longer adds these version pins. The default list includes
+`pi-web-search`, `@narumitw/pi-github-pr`, and `@narumitw/pi-goal`.
+
+Run `lgtm update` to update LGTM and refresh registered project declarations.
+Then run `pi update --extensions` in the project to update its installed packages.
+Reload Pi after the update. LGTM does not run npm or download these packages.
+Global init still manages guidance, the hook, and codemode; it does not add the
+project package list to global settings.
+
+Migration uses an exact list of the old LGTM specifications. If you chose the
+same exact version yourself, LGTM cannot tell that choice from its old default
+and removes that pin too. Different custom versions remain. Object-form settings
+keep their resource filters and other fields when their source is migrated.
+
+Unpinned packages can receive breaking changes. Extensions run with your user
+permissions. Review updates before you trust them. Web search needs a supported
+provider and its credentials. Installing goal support does not start a goal.
+To roll back a package, select a tested version in Pi settings and reconcile the
+installation with Pi. An exact old LGTM default will be migrated again on refresh.
 
 ## User guide: shared guidance and codemode
 

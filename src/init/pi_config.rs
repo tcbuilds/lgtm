@@ -68,6 +68,9 @@ pub(super) fn render_settings(existing: ValidatedPiObject) -> Option<Vec<u8>> {
         .as_array_mut()
         .expect("validated Pi settings packages are an array");
 
+    for package in packages.iter_mut() {
+        migrate_shipped_pin(package);
+    }
     for package in required_packages {
         let required_source = package_source(package).expect("template package has a source");
         let required_identity = package_identity(required_source);
@@ -203,6 +206,34 @@ fn validate_servers(path: &Path, servers: &Map<String, Value>) -> Result<(), Ini
         }
     }
     Ok(())
+}
+
+// Only exact specifications shipped by LGTM are migrated. Other pins remain
+// owner-controlled, and object-form resource filters remain unchanged.
+fn migrate_shipped_pin(package: &mut Value) {
+    let Some(source) = package_source(package) else {
+        return;
+    };
+    if !matches!(
+        source,
+        "npm:@narumitw/pi-lsp@0.49.4"
+            | "npm:@narumitw/pi-worktree@0.51.1"
+            | "npm:@the-forge-flow/pi-rules@0.1.0"
+            | "npm:pi-ask-user@0.14.0"
+            | "npm:pi-mcp-extension@1.5.0"
+            | "npm:pi-subagents@0.50.0"
+            | "npm:rtfd-pi@0.1.1"
+    ) {
+        return;
+    }
+    let unpinned = Value::String(package_identity(source));
+    match package {
+        Value::String(_) => *package = unpinned,
+        Value::Object(object) => {
+            object.insert("source".to_string(), unpinned);
+        }
+        _ => unreachable!("validated package source"),
+    }
 }
 
 fn package_source(value: &Value) -> Option<&str> {

@@ -134,7 +134,7 @@ fn pi_settings_merge_preserves_package_identity_and_is_idempotent() {
         1,
         "a differently pinned package with the same Pi identity must not be duplicated"
     );
-    assert!(packages.contains(&json!("npm:pi-subagents@0.50.0")));
+    assert!(packages.contains(&json!("npm:pi-subagents")));
     let object = merged.as_object().expect("object").clone();
     assert!(pi_config::render_settings(Some(object)).is_none());
 }
