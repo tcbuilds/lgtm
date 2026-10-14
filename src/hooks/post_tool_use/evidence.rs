@@ -36,7 +36,7 @@ pub(super) const MAX_RECORDED_PATHS: usize = 512;
 /// `failed`/`unverified` records from the current session (dropping older
 /// records first) so a burst of clean edits cannot erase the actionable signal
 /// the Stop gate must still see.
-pub(super) fn append_evidence(
+pub(crate) fn append_evidence(
     root: &Path,
     session_id: Option<&str>,
     edited_file: Option<&str>,

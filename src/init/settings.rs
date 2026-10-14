@@ -53,7 +53,7 @@ pub fn build_v2_config(workspaces: &[Workspace]) -> Value {
     .expect("V2 config model serializes")
 }
 
-/// Merge LGTM's Claude plugins, permission guards, and five hook entries.
+/// Merge LGTM's Claude plugins, permission guards, and lifecycle hook entries.
 ///
 /// `existing` is the parsed settings object (an empty object for a fresh repo).
 /// Existing values and unrelated top-level settings are preserved. Missing
@@ -126,6 +126,7 @@ fn merge_permission_denies(settings: &mut Map<String, Value>) {
 pub(super) fn refresh_existing_hooks(existing: &Map<String, Value>) -> Map<String, Value> {
     let mut refreshed = existing.clone();
     if let Some(hooks) = refreshed.get_mut("hooks").and_then(Value::as_object_mut) {
+        migrate_shell_failure_hook(hooks);
         for wiring in &HOOK_EVENTS {
             if let Some(entries) = hooks.get_mut(wiring.event).and_then(Value::as_array_mut) {
                 for entry in entries
@@ -138,6 +139,40 @@ pub(super) fn refresh_existing_hooks(existing: &Map<String, Value>) -> Map<Strin
         }
     }
     refreshed
+}
+
+// The old success matcher is a one-time migration boundary. Once refreshed,
+// removing the failure event remains an opt-out on subsequent refreshes.
+fn migrate_shell_failure_hook(hooks: &mut Map<String, Value>) {
+    if hooks.contains_key("PostToolUseFailure") {
+        return;
+    }
+    let legacy = hooks
+        .get("PostToolUse")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|entry| {
+            entry.get("matcher").and_then(Value::as_str) == Some("Edit|Write")
+                && entry_runs_command(entry, "lgtm hook post-tool-use")
+        });
+    let Some(legacy) = legacy else { return };
+    let Some(commands) = legacy.get("hooks").and_then(Value::as_array) else {
+        return;
+    };
+    let commands: Vec<_> = commands
+        .iter()
+        .filter(|hook| {
+            hook.get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| commands_match(command, "lgtm hook post-tool-use"))
+        })
+        .cloned()
+        .collect();
+    hooks.insert(
+        "PostToolUseFailure".to_string(),
+        json!([{"matcher":"Bash","hooks":commands}]),
+    );
 }
 
 /// Add each lgtm hook entry to the hooks map, reconciling any existing lgtm

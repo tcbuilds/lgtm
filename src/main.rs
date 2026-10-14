@@ -1323,6 +1323,12 @@ fn normalize_pi_payload(raw: &str, request: &lgtm::adapter::HookRequest) -> Resu
     if let Some(capability) = request.approval_capability {
         object.insert("approval_capability".to_string(), capability.as_value());
     }
+    if let Some(call) = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("toolCallId").cloned())
+    {
+        object.insert("tool_use_id".to_string(), call);
+    }
     let mut normalized = serde_json::Map::new();
     match tool_name {
         "Bash" => {

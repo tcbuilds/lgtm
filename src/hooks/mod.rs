@@ -14,5 +14,6 @@ pub mod post_tool_use;
 pub mod pre_tool_use;
 mod root;
 pub mod session_start;
+mod shell_tracking;
 pub mod stop;
 pub mod user_prompt_submit;

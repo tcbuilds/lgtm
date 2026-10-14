@@ -85,13 +85,13 @@ const EVIDENCE_GITIGNORE_LINE: &str = "**/.lgtm/evidence/";
 /// planted oversized file surfaces to the operator instead of corrupting a merge.
 const MAX_READ_BYTES: u64 = 256 * 1024;
 
-/// The five Claude Code lifecycle events wired by init, paired with the hook
+/// The Claude Code lifecycle events wired by init, paired with the hook
 /// subcommand each invokes.
 ///
 /// Commands are the bare `lgtm ...` form and assume `lgtm` is reachable on the
 /// `PATH` of the shell Claude Code spawns hooks in. `lgtm doctor` is
 /// responsible for verifying that reachability; init only writes the wiring.
-const HOOK_EVENTS: [HookWiring; 5] = [
+const HOOK_EVENTS: [HookWiring; 6] = [
     HookWiring {
         event: "SessionStart",
         command: "lgtm hook session-start",
@@ -110,7 +110,12 @@ const HOOK_EVENTS: [HookWiring; 5] = [
     HookWiring {
         event: "PostToolUse",
         command: "lgtm hook post-tool-use",
-        matcher: Some("Edit|Write"),
+        matcher: Some("Bash|Edit|Write"),
+    },
+    HookWiring {
+        event: "PostToolUseFailure",
+        command: "lgtm hook post-tool-use",
+        matcher: Some("Bash"),
     },
     HookWiring {
         event: "Stop",
