@@ -13,6 +13,8 @@ const OWNED_END: &str = "// lgtm-pi-extension: end";
 // upgrade. The b45c/ed0f entries are the v0.10.1 Pi 0.84.2 project/global
 // templates.
 const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
+    "ca4ba7eacae8b1f138933e6a4c7e7d443ac4880018c7faa429eae6c5b650ed18",
+    "1b823a8b1b6b847ebc970652afd2c30d67a70abc04796514765d878ae76a70e5",
     "524b3d58c2f839420c14f8ec081855ea3499d4e219d1f5c4c131fe4051d28c2c",
     "a6719ad16be1e48543acb3ae7014afa6b1361d4b85110cd56350807798cb2caa",
     "b45c8c6756955338325fd4d80386523b846b14cc6066a07dc506ce71219079ca",
@@ -405,9 +407,11 @@ function buildPayload(eventType, event, ctx, pi) {
     payload.toolName = event.toolName;
     payload.input = policyToolInput(event.toolName, event.input);
     payload.approvalCapability = APPROVAL_CAPABILITY;
+    payload.toolCallId = event.toolCallId;
   } else if (eventType === "tool_result") {
     payload.toolName = event.toolName;
     payload.input = policyToolInput(event.toolName, event.input);
+    payload.toolCallId = event.toolCallId;
   }
   return payload;
 }
@@ -822,7 +826,7 @@ async function handle(pi, eventType, event, ctx, approvalState) {
     if (policyEvent) {
       const supported = eventType === "tool_call"
         ? ["bash", "edit", "write"].includes(event.toolName)
-        : ["read", "edit", "write"].includes(event.toolName);
+        : ["read", "bash", "edit", "write"].includes(event.toolName);
       if (!supported) return undefined;
       if (!verifiedToolContract(pi, event)) {
         appendFailure(pi, ctx, eventType, "tool_provenance_unverified");

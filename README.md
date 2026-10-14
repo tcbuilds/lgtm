@@ -167,7 +167,7 @@ The five Claude events have different jobs:
 | `SessionStart` | Detect the repo and provide the permanent contract. | Context injection |
 | `UserPromptSubmit` | Classify intent and inject only relevant policy. | Context injection |
 | `PreToolUse` | Protect paths and baselines; run the full gate before agent commits. | Allow or deny |
-| `PostToolUse` | Give quick feedback after each edit and record findings. | Warning or block |
+| `PostToolUse` | Give quick feedback after edits and matched shell changes; record findings. | Warning or block |
 | `Stop` | Run targeted final checks, inspect the diff, verify claims, and decide completion. | Allow or block |
 
 Evidence is written locally under `.lgtm/evidence/`. It records what ran, its
@@ -211,6 +211,10 @@ lgtm check --tier full
 
 See [the Codex adapter contract](doc/adapters/codex.md) for exit statuses and
 platform limits.
+
+[Shell change tracking](doc/shell-change-tracking.md) records script edits, new files,
+deletions, and renames without claiming unchanged pre-existing user files. Missing
+or ambiguous hook events remain unverified.
 
 PostToolUse hooks run fast, touched-workspace gates. An agent's `git commit`
 attempt runs the full tier, including applicable tests, builds, and coverage;

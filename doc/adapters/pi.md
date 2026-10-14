@@ -109,7 +109,9 @@ files: rules, guidance, installed hooks, generated Codex execpolicy, Pi extensio
 and installed Pi package/LSP configuration. An already-current update also refreshes
 them. Only canonical Pi extensions pointing to that executable are changed;
 customized, repointed, missing, or disabled extensions are preserved. Existing
-hook events are reconciled without re-adding removed events. Repo policy and
+hook events are reconciled without re-adding removed events, except for the
+one-time Claude failure-hook migration described in
+[shell change tracking](../shell-change-tracking.md). Repo policy and
 command configuration, owner settings, and custom files remain untouched. Edited
 shipped rules are backed up using the existing init backup behavior.
 

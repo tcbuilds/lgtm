@@ -75,7 +75,9 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
     );
     assert!(extension.contains("mergeToolResult"));
     assert!(extension.contains("if (toolName === \"read\")"));
-    assert!(extension.contains("[\"read\", \"edit\", \"write\"].includes(event.toolName)"));
+    assert!(
+        extension.contains("[\"read\", \"bash\", \"edit\", \"write\"].includes(event.toolName)")
+    );
     assert!(!extension.contains("details: event.details"));
     assert!(!extension.contains("isError: event.isError"));
     assert!(!extension.contains("usage: cloneJson(event.usage)"));
@@ -395,7 +397,8 @@ function deepFreeze(value) {
   for (const child of Object.values(value)) deepFreeze(child);
   return Object.freeze(value);
 }
-const toolCall = deepFreeze({ toolName: "bash", input: { command: "echo safe", nested: { values: [1, 2] } } });
+const toolCall = deepFreeze({ toolCallId: "bash-call", toolName: "bash", input: { command: "echo safe", nested: { values: [1, 2] } } });
+const bashResult = deepFreeze({ toolCallId: "bash-call", toolName: "bash", input: { command: "echo safe" }, content: [{ type: "text", text: "shell output" }], isError: true });
 const toolCallBefore = JSON.stringify(toolCall);
 const toolResult = deepFreeze({ toolName: "edit", input: { path: "file", edits: [{ oldText: "old", newText: "new" }] }, content: [{ type: "text", text: "original" }], details: { source: "pi" }, isError: true, usage: { input: 3, output: 4 } });
 const toolResultBefore = JSON.stringify(toolResult);
@@ -405,6 +408,14 @@ Promise.resolve(handlers.tool_call(toolCall, ctx))
   .then((failureResult) => {
     if (failureResult !== undefined || failures.length !== 1 || failures[0].data.reason !== "nonzero") { console.error(JSON.stringify({failureResult, failures})); process.exit(2); }
     if (JSON.stringify(toolCall) !== toolCallBefore) process.exit(6);
+    if (JSON.parse(fs.readFileSync("captured.json", "utf8")).toolCallId !== "bash-call") process.exit(15);
+    return handlers.tool_result(bashResult, ctx);
+  })
+  .then((bashMerged) => {
+    const captured = JSON.parse(fs.readFileSync("captured.json", "utf8"));
+    if (!bashMerged || bashMerged.content[0].text !== "shell output"
+        || bashMerged.content[1].text !== "policy feedback"
+        || captured.toolCallId !== "bash-call" || captured.type !== "tool_result") process.exit(16);
     return handlers.tool_result(toolResult, ctx);
   })
   .then((merged) => {

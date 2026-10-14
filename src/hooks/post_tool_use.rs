@@ -1,6 +1,5 @@
 //! PostToolUse hook: run fast checks on the file an edit just touched.
 
-use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -19,6 +18,7 @@ mod input;
 mod target;
 
 use evidence::append_evidence;
+pub(super) use evidence::append_evidence as append_tracking_evidence;
 use input::{MAX_PAYLOAD_BYTES, edited_file, parse_input};
 use target::{repo_root, resolve_read_path, resolve_target, unverified_target};
 
@@ -65,10 +65,45 @@ fn run_inner(
     if adapter.harness_name() == "pi" && hook_input.tool_name.as_deref() == Some("Read") {
         return run_pi_read_guidance(&root, &hook_input, output, adapter);
     }
-    let Some(file_path) = edited_file(&hook_input) else {
-        return ExitCode::SUCCESS;
+    let (edited_file, mut results) = if hook_input.tool_name.as_deref() == Some("Bash") {
+        let command = hook_input
+            .tool_input
+            .as_ref()
+            .and_then(|input| input.command.as_deref().or(input.cmd.as_deref()))
+            .unwrap_or_default();
+        // Direct commits have their own fresh staged gate and do not open shell snapshots.
+        if matches!(
+            super::pre_tool_use::command::parse_commit_invocation(command),
+            Ok(Some(_))
+        ) || matches!(
+            crate::guarded_commit::parse_invocation(command),
+            Ok(Some(_))
+        ) {
+            return ExitCode::SUCCESS;
+        }
+        let paths = match super::shell_tracking::finish(
+            &root,
+            hook_input.session_id.as_deref(),
+            hook_input.tool_use_id.as_deref(),
+            command,
+        ) {
+            Ok(paths) => paths,
+            Err(_) => return fail_open(adapter),
+        };
+        if paths.is_empty() {
+            return ExitCode::SUCCESS;
+        }
+        let existing = paths
+            .iter()
+            .filter_map(|path| resolve_target(&root, path))
+            .collect::<Vec<_>>();
+        (None, scan_paths(&root, &existing))
+    } else {
+        let Some(file_path) = edited_file(&hook_input) else {
+            return ExitCode::SUCCESS;
+        };
+        scan_target(&root, &file_path)
     };
-    let (edited_file, mut results) = scan_target(&root, &file_path);
     let (_, registry, overrides, waivers, compatibility, _) =
         match crate::policy::load_profiled_registry(&root) {
             Ok(profile) => profile,
@@ -95,6 +130,9 @@ fn run_inner(
             edited_file.as_deref(),
             result,
         );
+    }
+    if hook_input.hook_event_name.as_deref() == Some("PostToolUseFailure") {
+        return ExitCode::SUCCESS;
     }
     handle_results(output, adapter, &results)
 }
@@ -183,74 +221,74 @@ fn scan_target(root: &Path, file_path: &str) -> (Option<String>, Vec<Enforcement
     let Some(resolved) = resolve_target(root, file_path) else {
         return (None, vec![unverified_target(file_path)]);
     };
+    let results = scan_paths(root, std::slice::from_ref(&resolved));
+    (Some(resolved), results)
+}
+
+fn scan_paths(root: &Path, paths: &[String]) -> Vec<EnforcementResult> {
     let mut results = Vec::new();
     for check in tiers::checks(tiers::for_hook(Hook::PostToolUse)) {
         match check {
-            Check::Secrets => results.push(scan_secrets(&resolved)),
-            Check::Diff => results.extend(scan_diff(root, &resolved)),
-            Check::Ruff if resolved.ends_with(".py") => {
-                results.extend(ruff::scan(std::slice::from_ref(&resolved)));
+            Check::Secrets if !paths.is_empty() => {
+                let mut result = gitleaks::scan(paths);
+                if result.locations.is_empty() {
+                    result.locations = paths
+                        .iter()
+                        .map(|file| crate::checks::Location {
+                            file: file.clone(),
+                            line: None,
+                        })
+                        .collect();
+                }
+                results.push(result);
             }
-            Check::Ruff => {}
+            Check::Secrets => {}
+            Check::Diff => {
+                let touched = paths
+                    .iter()
+                    .filter_map(|path| {
+                        Path::new(path)
+                            .strip_prefix(root)
+                            .ok()
+                            .map(|path| path.to_string_lossy().into_owned())
+                    })
+                    .collect();
+                results.extend(crate::checks::diff::evaluate_at(
+                    root,
+                    &touched,
+                    None,
+                    None,
+                    crate::checks::diff::Stage::PostToolUse,
+                ));
+            }
+            Check::Ruff => {
+                let python: Vec<_> = paths
+                    .iter()
+                    .filter(|path| path.ends_with(".py"))
+                    .cloned()
+                    .collect();
+                if !python.is_empty() {
+                    results.extend(ruff::scan(&python));
+                }
+            }
             Check::NativeLanguages => {
-                results.extend(languages::scan(std::slice::from_ref(&resolved)));
-                results.extend(structure::scan(std::slice::from_ref(&resolved)));
-                results.extend(crate::checks::modules::scan(std::slice::from_ref(
-                    &resolved,
-                )));
-                results.extend(crate::checks::naming::scan(std::slice::from_ref(&resolved)));
-                results.extend(crate::checks::boundary::scan(std::slice::from_ref(
-                    &resolved,
-                )));
-                results.extend(crate::checks::logging::scan(std::slice::from_ref(
-                    &resolved,
-                )));
-                results.extend(crate::checks::determinism::scan(std::slice::from_ref(
-                    &resolved,
-                )));
-                results.extend(crate::checks::ui::scan(std::slice::from_ref(&resolved)));
-                results.extend(crate::checks::justification::scan(std::slice::from_ref(
-                    &resolved,
-                )));
-                results.extend(crate::checks::construction::scan(std::slice::from_ref(
-                    &resolved,
-                )));
-                results.extend(crate::checks::endpoints::scan(std::slice::from_ref(
-                    &resolved,
-                )));
+                results.extend(languages::scan(paths));
+                results.extend(structure::scan(paths));
+                results.extend(crate::checks::modules::scan(paths));
+                results.extend(crate::checks::naming::scan(paths));
+                results.extend(crate::checks::boundary::scan(paths));
+                results.extend(crate::checks::logging::scan(paths));
+                results.extend(crate::checks::determinism::scan(paths));
+                results.extend(crate::checks::ui::scan(paths));
+                results.extend(crate::checks::justification::scan(paths));
+                results.extend(crate::checks::construction::scan(paths));
+                results.extend(crate::checks::endpoints::scan(paths));
             }
             _ => unreachable!("fast tier contains only fast checks"),
         }
     }
-    (Some(resolved), results)
+    results
 }
-
-fn scan_secrets(resolved: &str) -> EnforcementResult {
-    let mut result = gitleaks::scan(&[resolved.to_string()]);
-    if result.locations.is_empty() {
-        result.locations.push(crate::checks::Location {
-            file: resolved.to_string(),
-            line: None,
-        });
-    }
-    result
-}
-
-fn scan_diff(root: &Path, resolved: &str) -> Vec<EnforcementResult> {
-    let touched = Path::new(&resolved)
-        .strip_prefix(root)
-        .ok()
-        .map(|path| BTreeSet::from([path.to_string_lossy().into_owned()]))
-        .unwrap_or_default();
-    crate::checks::diff::evaluate_at(
-        root,
-        &touched,
-        None,
-        None,
-        crate::checks::diff::Stage::PostToolUse,
-    )
-}
-
 fn handle_results(
     output: &mut impl Write,
     adapter: &dyn HookAdapter,

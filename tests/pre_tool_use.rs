@@ -227,9 +227,15 @@ fn allows_benign_bash_commands_and_safer_variants() {
         );
     }
     assert!(
-        !root.join(".lgtm/evidence").exists(),
-        "an allowed shell command has no edit target and must not capture a baseline"
+        !root
+            .join(".lgtm/evidence/current-task.baseline.json")
+            .exists(),
+        "a shell payload without call identity must not establish a baseline"
     );
+    let evidence = std::fs::read_to_string(root.join(".lgtm/evidence/current-task.results.jsonl"))
+        .expect("missing shell identities are recorded as unverified");
+    assert!(evidence.contains("shell-change-tracking"));
+    assert!(evidence.contains("\"status\":\"unverified\""));
     std::fs::remove_dir_all(root).ok();
 }
 

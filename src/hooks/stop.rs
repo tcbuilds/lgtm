@@ -82,6 +82,7 @@ struct EditRecord {
 
 struct TouchedPaths {
     files: Vec<String>,
+    deleted: BTreeSet<String>,
     had_edits: bool,
     ledger_issue: Option<String>,
     reuse_uncertain: bool,
@@ -536,17 +537,18 @@ fn run_inner_with_options(
             .validate_workspace(hook_input.workspace.as_deref())
             .err()
     });
-    let (paths, had_edits, ledger_issue, path_scan_status, mut reuse_uncertain) =
+    let (paths, deleted, had_edits, ledger_issue, path_scan_status, mut reuse_uncertain) =
         if hook_input.check {
             let (paths, status, reuse_uncertain) = match precomputed_check_paths {
                 Some(paths) => paths,
                 None => check_paths_with_deadline(&root, total_deadline)?,
             };
-            (paths, false, None, status, reuse_uncertain)
+            (paths, BTreeSet::new(), false, None, status, reuse_uncertain)
         } else {
             let touched = touched_paths(&root, hook_input.session_id.as_deref())?;
             (
                 touched.files,
+                touched.deleted,
                 touched.had_edits,
                 touched.ledger_issue,
                 CheckPathScanStatus::Complete,
@@ -587,11 +589,12 @@ fn run_inner_with_options(
     let run_file_checks = (hook_input.check || had_edits)
         && path_scan_status.is_complete()
         && !deadline_expired(total_deadline);
-    let mut results = if run_file_checks && !commit_scope {
-        rerun_checks(&paths, total_deadline)
-    } else {
-        Vec::new()
-    };
+    let mut results =
+        if run_file_checks && !commit_scope && (!paths.is_empty() || deleted.is_empty()) {
+            rerun_checks(&paths, total_deadline)
+        } else {
+            Vec::new()
+        };
     if let Some(result) = check_path_scan_result(path_scan_status, pre_commit) {
         results.push(result);
     }
@@ -601,6 +604,7 @@ fn run_inner_with_options(
     let touched: BTreeSet<String> = paths
         .iter()
         .filter_map(|path| relative_path(&root, path))
+        .chain(deleted)
         .collect();
     if run_file_checks {
         let intent = read_intent(&root, hook_input.session_id.as_deref());
@@ -1667,11 +1671,15 @@ fn retain_structural_issue(issue: &mut Option<String>, reason: &str) {
 fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, String> {
     let ledger = root.join(".lgtm/evidence/current-task.results.jsonl");
     let mut paths = BTreeSet::new();
+    let mut deleted = BTreeSet::new();
     let mut raw_candidates = BTreeSet::new();
     let mut resolved_candidates = BTreeMap::new();
-    let mut had_edits = false;
+    let mut structural_issue = match super::shell_tracking::issue(root, session_id) {
+        Ok(issue) => issue,
+        Err(reason) => Some(format!("shell tracking state unverified: {reason}")),
+    };
+    let mut had_edits = structural_issue.is_some();
     let mut reuse_uncertain = false;
-    let mut structural_issue = None;
     let mut truncation_issue = None;
     let raw = match read_current_task_ledger(&ledger) {
         CurrentTaskLedger::Missing => String::new(),
@@ -1679,6 +1687,7 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
         CurrentTaskLedger::Unverified(reason) => {
             return Ok(TouchedPaths {
                 files: Vec::new(),
+                deleted: BTreeSet::new(),
                 had_edits: true,
                 ledger_issue: Some(reason),
                 reuse_uncertain: true,
@@ -1721,7 +1730,30 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
             continue;
         }
         had_edits = true;
+        if record.result.rule_id == super::shell_tracking::RULE
+            && record.result.status == Status::Unverified
+        {
+            retain_structural_issue(&mut structural_issue, &record.result.message);
+        }
         if let Some(file) = record.edited_file.as_deref() {
+            if record.result.rule_id == super::shell_tracking::RULE
+                && record.result.status == Status::Passed
+                && record.result.evidence.check == super::shell_tracking::TOUCH_CHECK
+                && super::shell_tracking::is_deleted_path(root, file)
+            {
+                if raw_candidates.len() >= MAX_TOUCHED_PATHS && !raw_candidates.contains(file) {
+                    retain_structural_issue(
+                        &mut structural_issue,
+                        "current-task evidence contains too many edited paths",
+                    );
+                    break 'records;
+                }
+                raw_candidates.insert(file.to_string());
+                deleted.insert(file.to_string());
+                // Deleted paths participate in diff policy, never content scanners or cached proof.
+                reuse_uncertain = true;
+                continue;
+            }
             let (resolved, candidate_uncertain) = match resolve_touched_candidate(
                 root,
                 file,
@@ -1786,6 +1818,7 @@ fn touched_paths(root: &Path, session_id: Option<&str>) -> Result<TouchedPaths, 
         reuse_uncertain || structural_issue.is_some() || truncation_issue.is_some();
     Ok(TouchedPaths {
         files: paths.into_iter().collect(),
+        deleted,
         had_edits,
         ledger_issue: structural_issue
             .or_else(|| truncation_issue.map(|(_, reason)| reason.to_string())),
