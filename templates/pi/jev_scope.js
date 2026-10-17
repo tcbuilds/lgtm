@@ -2,23 +2,14 @@
 // This never verifies a claim, never creates command evidence, and never changes
 // a gate. LGTM's own Stop/claims verification stays authoritative.
 const registerLgtmJevScope = (() => {
-  const MODEL = "~typesafe/jev-latest";
+  const { MODEL, record, probability, usageOf } = lgtmJevCommon;
   const MAX_SCOPE_CHARS = 512;
   const MAX_CLAIMS = 8;
   const MAX_CLAIM_CHARS = 512;
   const MAX_PATHS = 200;
   const REQUEST_TIMEOUT_MS = 8_000;
   const VERDICTS = ["supported", "unsupported", "contradicted", "unclear"];
-  const record = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-  const probability = (v) => Number.isFinite(v) && v >= 0 && v <= 1;
   const failure = (reason, status = "unavailable") => ({ status, reason, advisory: true, scope: null, claims: null, usage: null });
-
-  function usageOf(result) {
-    const u = result?.usage;
-    if (!record(u) || ![u.input, u.output, u.totalTokens].every((v) => Number.isFinite(v) && v >= 0)) return null;
-    const cost = record(u.cost) && Number.isFinite(u.cost.total) && u.cost.total >= 0 ? { total: u.cost.total } : undefined;
-    return { input: u.input, output: u.output, totalTokens: u.totalTokens, ...(cost ? { cost } : {}) };
-  }
 
   function boundedText(value, limit) {
     return typeof value === "string" && value.trim().length > 0 && value.length <= limit ? value : undefined;
@@ -35,21 +26,17 @@ const registerLgtmJevScope = (() => {
     return { scope, claims, revision: params.revision };
   }
 
-  async function bash(ctx, command, signal) {
-    const result = await ctx.executeTool("bash", { command }, { signal });
-    if (result?.isError || result?.result?.isError) throw new Error("git_unavailable");
-    const blocks = result?.result?.content ?? result?.content;
-    const text = typeof blocks === "string" ? blocks : (Array.isArray(blocks) ? blocks.find((block) => block.type === "text")?.text : undefined);
-    if (typeof text !== "string") throw new Error("git_unavailable");
-    return text;
-  }
+  const bash = lgtmJevCommon.bashText;
 
   async function obtainReview(ctx, signal) {
     if (typeof ctx.executeTool !== "function") throw new Error("native_api_unavailable");
     const revision = (await bash(ctx, "git rev-parse HEAD", signal)).trim();
     if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error("git_unavailable");
-    const paths = (await bash(ctx, "git diff --name-only HEAD", signal)).split("\n").map((line) => line.trim()).filter(Boolean);
-    if (paths.length > MAX_PATHS) throw new Error("diff_too_large");
+    const output = await bash(ctx, "git diff --no-ext-diff --no-textconv --no-renames --name-only -z HEAD", signal);
+    if (output && !output.endsWith("\0")) throw new Error("git_unavailable");
+    const paths = output ? output.slice(0, -1).split("\0") : [];
+    if (paths.length > MAX_PATHS || paths.some((name) => !name || name.length > 512)) throw new Error("diff_too_large");
+    if (paths.some((name) => lgtmJevCommon.privatePath(name) || lgtmJevCommon.hasSensitive(name))) throw new Error("private_paths");
     return { revision, paths };
   }
 
@@ -90,31 +77,10 @@ const registerLgtmJevScope = (() => {
     return known === 0 ? "unavailable" : "partial";
   }
 
-  async function workspaceFor(ctx) {
-    try {
-      const root = findInitializedRoot(ctx.cwd) ?? resolve(ctx.cwd);
-      if (ctx.isProjectTrusted?.() !== true || !trustedRuntimeVersion()) return undefined;
-      const fs = await import("node:fs");
-      if (SCOPE === "project" && fs.realpathSync(join(root, ".pi/extensions/lgtm.ts")) !== fs.realpathSync(extensionLocation())) return undefined;
-      return root;
-    } catch {
-      return undefined;
-    }
-  }
-
   async function classify(ctx, request, evidence, signal) {
-    const runtime = ctx.modelRegistry;
-    if (typeof runtime?.classify !== "function" || typeof runtime?.findOfType !== "function") return failure("native_api_unavailable");
-    const model = runtime.findOfType("classifier", "openrouter", MODEL);
-    if (!model) return failure("model_unavailable");
-    signal.throwIfAborted();
-    let result;
-    try {
-      result = await runtime.classify(model, { state: { review: { scope: { text: request.scope, revision: evidence.revision }, paths: evidence.paths } }, questions: outboundQuestions(request.scope, request.claims) }, { signal });
-    } catch {
-      return failure("request_unavailable");
-    }
-    signal.throwIfAborted();
+    const response = await lgtmJevCommon.request(ctx, { review: { scope: { text: request.scope, revision: evidence.revision }, paths: evidence.paths } }, outboundQuestions(request.scope, request.claims), signal);
+    if (response.failure) return failure(response.failure);
+    const result = response.result;
     const usage = usageOf(result);
     if (result?.stopReason !== "stop" || !record(result.answers)) return { ...failure("invalid_or_unavailable_response"), usage };
     const drift = driftFor(result);
@@ -136,54 +102,33 @@ const registerLgtmJevScope = (() => {
   function runFailure(error, aborted) {
     const reason = error?.message;
     if (reason === "diff_too_large") return failure("diff_too_large", "rejected");
-    if (reason === "git_unavailable") return failure("git_unavailable");
+    if (["git_unavailable", "native_output_unverified", "workspace_unavailable"].includes(reason)) return failure(reason);
+    if (["invalid_request", "private_paths", "sensitive_request"].includes(reason)) return failure(reason, "rejected");
     return failure(aborted ? "cancelled_or_timeout" : "request_unavailable");
   }
 
   async function execute(lifetime, params, signal, ctx) {
-    const request = parseRequest(params);
-    if (!request) return failure("invalid_request", "rejected");
-    const root = await workspaceFor(ctx);
-    if (!root) return failure("workspace_unavailable");
-    const controller = new AbortController();
-    const combined = AbortSignal.any([controller.signal, signal, lifetime()].filter(Boolean));
-    let timer;
-    const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => { controller.abort(); reject(new Error("deadline")); }, REQUEST_TIMEOUT_MS);
-    });
     try {
-      return await Promise.race([runCheck(ctx, request, combined), deadline]);
+      return await lgtmJevCommon.bounded(signal, lifetime, REQUEST_TIMEOUT_MS, async (combined) => {
+        if (!record(params) || Object.keys(params).some((key) => key !== "requestPath")) throw new Error("invalid_request");
+        const { value } = await lgtmJevCommon.readRequest(ctx, params, combined);
+        const request = parseRequest(value);
+        if (!request) throw new Error("invalid_request");
+        if ([request.scope, ...request.claims].some(lgtmJevCommon.hasSensitive)) throw new Error("sensitive_request");
+        return runCheck(ctx, request, combined);
+      });
     } catch (error) {
-      return runFailure(error, combined.aborted);
-    } finally {
-      clearTimeout(timer);
-      controller.abort();
+      return runFailure(error, signal?.aborted || error?.message === "cancelled_or_timeout");
     }
   }
 
   return function register(pi, lifetime) {
-    if (typeof pi.registerTool !== "function") return;
-    try {
-      if (pi.getAllTools?.().some((tool) => tool.name === "lgtm_jev_scope")) return;
-      pi.registerTool({
-        name: "lgtm_jev_scope", label: "Jev scope and claim advice", exposure: "codemode",
-        description: "Advisory check that compares a declared scope and final claims against the current changed paths. Never verifies a claim, creates command evidence, or changes a gate.",
-        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
-        reachesTools: () => ["bash"],
-        parameters: { type: "object", required: ["scope", "claims"], additionalProperties: false,
-          properties: { scope: { type: "string", maxLength: MAX_SCOPE_CHARS },
-            claims: { type: "array", minItems: 1, maxItems: MAX_CLAIMS, items: { type: "string", maxLength: MAX_CLAIM_CHARS } },
-            revision: { type: "string" } } },
-        outputSchema: { type: "object", required: ["status"], properties: { status: { type: "string" } }, additionalProperties: true },
-        async execute(_id, params, signal, _update, ctx) {
-          const result = await execute(lifetime, params, signal, ctx);
-          try { pi.appendEntry("lgtm-jev", result); } catch { /* Optional metadata persistence must not break tools or enforcement. */ }
-          return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, details: result,
-            ...(result.usage ? { usage: result.usage } : {}) };
-        },
-      });
-    } catch {
-      try { pi.appendEntry("lgtm-jev", { status: "unavailable", reason: "scope-registration" }); } catch { /* Session metadata is best effort. */ }
-    }
+    lgtmJevCommon.register(pi, {
+      name: "lgtm_jev_scope", label: "Jev scope and claim advice",
+      description: "Read a bounded JSON request file containing scope, claims and optional revision. Compare it with complete current changed paths. Advice only; never verifies a claim or changes a gate.",
+      reachesTools: () => ["read", "bash"],
+      parameters: lgtmJevCommon.referenceParameters([]),
+      run: (params, signal, ctx) => execute(lifetime, params, signal, ctx),
+    });
   };
 })();

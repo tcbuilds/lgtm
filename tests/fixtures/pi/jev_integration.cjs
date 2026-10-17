@@ -2,15 +2,9 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { loadExtension, writeRequest, readResult, readResponse, nativeResponse } = require("./jev_harness.cjs");
 const sourcePath = process.argv[2];
 const watchdog = setTimeout(() => process.exit(124), 30_000);
-function loadExtension(file) {
-  const source = fs.readFileSync(file, "utf8")
-    .replace(/^import \{([^\n]+)\} from "([^\"]+)";$/gm, 'const {$1} = require("$2");')
-    .replaceAll("new URL(import.meta.url)", JSON.stringify(file))
-    .replace("export default function lgtm", "function lgtm");
-  return new Function("require", "process", source + "\nreturn lgtm;")(require, process);
-}
 const handlers = {}, tools = new Map(), entries = [];
 let registrations = 0;
 async function emit(name, event, ctx) {
@@ -31,11 +25,14 @@ const context = {
   sessionManager: { getSessionId: () => "jev-integration", getSessionFile: () => undefined },
   ui: { notify: () => {} },
   executeTool: async (name, args) => {
-    assert.equal(name, "read"); reads++;
+    assert.equal(name, "read");
+    if (path.basename(args.path) === "request.json") return readResult(args);
+    reads++;
     const text = fs.readFileSync(path.resolve(args.path), "utf8");
-    if (readBlocks) return { result: { content: readBlocks(readTransform(text)) }, isError: false };
-    return { result: { content: [{ type: "text", text: readTransform(text) },
-      { type: "text", text: "Appended LGTM path-scoped guidance is not file content." }] }, isError: false };
+    const content = readBlocks ? readBlocks(readTransform(text)) : [{ type: "text", text: readTransform(text) },
+      { type: "text", text: "Appended LGTM path-scoped guidance is not file content." }];
+    const retained = content.filter((block) => block.type === "text").map((block) => block.text).join("\n").includes(text);
+    return readResponse(args, content, retained ? text : undefined);
   },
   modelRegistry: {
     findOfType: (type, provider, id) => {
@@ -58,11 +55,136 @@ const params = { paths: ["app.rs"], questions: { validates: { type: "bool",
 async function invoke(p = params, signal = context.signal) {
   const tool = tools.get("lgtm_jev_files");
   assert.ok(tool, "init must supply the Jev file tool without opt-in");
-  const result = await tool.execute("query", p, signal, () => {}, context);
+  const { preview, ...request } = p;
+  const result = await tool.execute("query", { requestPath: writeRequest(request), ...(preview === undefined ? {} : { preview }) }, signal, () => {}, context);
   assert.ok(result.structuredContent);
   assert.ok(!JSON.stringify(result).includes(body.trim()), "raw source reached the calling model");
   return result.structuredContent;
 }
+async function proveNoRawSourceReads() {
+  const sync = require("node:module").syncBuiltinESMExports;
+  const open = fs.openSync, read = fs.readSync, executeTool = context.executeTool;
+  const selected = new Set();
+  let rawReads = 0;
+  fs.openSync = (filename, ...args) => {
+    const fd = open(filename, ...args);
+    if (path.resolve(String(filename)) === path.resolve("app.rs")) selected.add(fd);
+    else selected.delete(fd);
+    return fd;
+  };
+  fs.readSync = (fd, ...args) => { if (selected.has(fd)) rawReads++; return read(fd, ...args); };
+  sync();
+  const before = requests.length;
+  try {
+    context.executeTool = async (name, args) => {
+      assert.equal(name, "read");
+      if (path.basename(args.path) === "request.json") return readResult(args);
+      return { isError: true, result: { isError: true, content: [{ type: "text", text: "denied" }] } };
+    };
+    const preview = await invoke({ ...params, preview: true });
+    assert.equal(preview.status, "preview");
+    assert.equal(preview.files[0].coverage, "estimated");
+    assert.equal(rawReads, 0, "metadata preview read source bytes");
+    assert.notEqual((await invoke()).status, "ok");
+    assert.equal(rawReads, 0, "a denied native read was followed by raw source access");
+    assert.equal(requests.length, before);
+    for (const sanitized of [body, body.replace("validate_policy", "validate_record")]) {
+      fs.writeFileSync("sanitized.rs", sanitized);
+      context.executeTool = async (name, args) => {
+        assert.equal(name, "read");
+        return readResult(path.basename(args.path) === "request.json" ? args : { path: path.resolve("sanitized.rs") });
+      };
+      const redirected = await invoke();
+      assert.equal(redirected.files[0].reason, "read_redirected");
+      assert.equal(rawReads, 0, "a redirected read accessed original source bytes");
+      assert.equal(requests.length, before, "a redirected read reached the classifier");
+    }
+  } finally {
+    context.executeTool = executeTool;
+    fs.openSync = open;
+    fs.readSync = read;
+    sync();
+  }
+}
+
+async function proveLazyContextGuards() {
+  const tool = tools.get("lgtm_jev_files");
+  const requestPath = writeRequest(params);
+  const guarded = Object.defineProperties({}, Object.getOwnPropertyDescriptors(context));
+  Object.defineProperty(guarded, "unusedGuard", { enumerable: true,
+    get() { throw new Error("unused native-context getter was evaluated"); } });
+  const preview = await tool.execute("lazy-preview", { requestPath, preview: true }, context.signal, undefined, guarded);
+  assert.equal(preview.structuredContent.status, "preview", "a context wrapper eagerly evaluated native getters");
+  let registry = context.modelRegistry;
+  const current = Object.defineProperties({}, Object.getOwnPropertyDescriptors(context));
+  Object.defineProperty(current, "modelRegistry", { get: () => registry });
+  current.executeTool = async (...args) => {
+    const result = await context.executeTool(...args);
+    registry = undefined;
+    return result;
+  };
+  const before = requests.length;
+  const stale = await tool.execute("lazy-stale", { requestPath }, context.signal, undefined, current);
+  assert.equal(stale.structuredContent.status, "unavailable");
+  assert.equal(requests.length, before, "a wrapper cached native state before the governed read");
+}
+
+async function proveLateNativeFailureIsSafe() {
+  const executeTool = context.executeTool;
+  const controller = new AbortController();
+  const canary = "LATE_NATIVE_SOURCE_CANARY";
+  const before = requests.length;
+  let release;
+  let late = Promise.resolve({ isError: false });
+  const gate = new Promise((resolve) => { release = resolve; });
+  context.executeTool = async (name, args) => {
+    assert.equal(name, "read");
+    if (path.basename(args.path) === "request.json") return readResult(args);
+    controller.abort();
+    late = gate.then(() => nativeResponse("read", args, { isError: true,
+      content: [{ type: "text", text: canary }], details: { raw: canary }, structuredContent: canary }));
+    return late;
+  };
+  try {
+    const cancelled = await invoke(params, controller.signal);
+    assert.equal(cancelled.status, "unavailable");
+    assert.equal(controller.signal.aborted, true, "the selected native read never ran");
+    assert.equal(requests.length, before);
+    release();
+    const outcome = await late;
+    assert.equal(outcome.isError, true, "error sanitizing must preserve native failure status");
+    assert.ok(!JSON.stringify(outcome).includes(canary), "late native output escaped after advisory cancellation");
+    // Drain settled continuations; this is not a wall-clock sleep.
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    release();
+    context.executeTool = executeTool;
+  }
+}
+
+async function proveRequestBounds() {
+  const tool = tools.get("lgtm_jev_files");
+  const before = requests.length;
+  const requestPath = writeRequest({ ...params, questions: { validates: { ...params.questions.validates,
+    instructions: "Judge this public file. " + "字".repeat(500) } } });
+  fs.appendFileSync(requestPath, " ".repeat(32_768 - fs.statSync(requestPath).size));
+  let output = await tool.execute("boundary", { requestPath, preview: true }, context.signal, undefined, context);
+  assert.equal(output.structuredContent.status, "preview", "32 KiB request was rejected");
+  fs.appendFileSync(requestPath, " ");
+  output = await tool.execute("boundary", { requestPath, preview: true }, context.signal, undefined, context);
+  assert.equal(output.structuredContent.status, "rejected", "32 KiB + 1 request was accepted");
+  for (const ending of ["\n", "\r\n"]) {
+    const lines = writeRequest(params);
+    fs.appendFileSync(lines, ending.repeat(1499));
+    output = await tool.execute("boundary", { requestPath: lines, preview: true }, context.signal, undefined, context);
+    assert.equal(output.structuredContent.status, "preview", "1500-line request was rejected");
+    fs.appendFileSync(lines, ending);
+    output = await tool.execute("boundary", { requestPath: lines, preview: true }, context.signal, undefined, context);
+    assert.equal(output.structuredContent.status, "rejected", "1501-line request was accepted");
+  }
+  assert.equal(requests.length, before, "request previews contacted the classifier");
+}
+
 (async () => {
   classify = answer;
   loadExtension(sourcePath)(pi);
@@ -109,6 +231,11 @@ async function invoke(p = params, signal = context.signal) {
   assert.notEqual((await invoke()).status, "ok");
   context.isProjectTrusted = () => true;
   assert.equal(requests.length, before, "rejected/private input was transmitted");
+
+  await proveNoRawSourceReads();
+  await proveRequestBounds();
+  await proveLateNativeFailureIsSafe();
+  await proveLazyContextGuards();
 
   readTransform = () => "[REDACTED]";
   assert.notEqual((await invoke()).status, "ok");

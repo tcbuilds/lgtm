@@ -13,6 +13,8 @@ const OWNED_END: &str = "// lgtm-pi-extension: end";
 // upgrade. The b45c/ed0f entries are the v0.10.1 Pi 0.84.2 project/global
 // templates.
 const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
+    "baeeb98fad031a77dccce410102224dbec3fafaf8313fefa4ebbaa02404ee626",
+    "e3b405dda0afb72a0b0ef697b2277c37cc4395203dd941896ce5e33768dd0d47",
     "439c5f58c1bca50a4c3b6d8932f8f6200b38758bca5e0571512c4547270f67d8",
     "9d6ff3f2a1eae81f37a979989c94def375cf7bd3b95ce466257bf331b7164003",
     "8375bd687e10d6ffb7af82ed5fdcc452682eefbac485474931ddf83760581c25",
@@ -51,6 +53,7 @@ const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
     "48ece1bf940d19769ea526c38c8743510af934141211563e5ab9b4ccaaa6dcce",
     "fb7abda05c353b6f867767ffb24e7abaa582df0e7ab041f1a64739523ac5641d",
 ];
+const JEV_COMMON_TEMPLATE: &str = include_str!("../../templates/pi/jev_common.js");
 const JEV_TEMPLATE: &str = include_str!("../../templates/pi/jev.js");
 const JEV_REVIEW_TEMPLATE: &str = include_str!("../../templates/pi/jev_review.js");
 const JEV_SCOPE_TEMPLATE: &str = include_str!("../../templates/pi/jev_scope.js");
@@ -726,15 +729,35 @@ function validToolResultEvent(event) {
       && withinJsonBudget(event.usage, TOOL_INPUT_BYTES));
 }
 
-function mergeToolResult(event, response) {
-  if (response === undefined) return undefined;
-  const originalContent = cloneJson(event.content, TOOL_INPUT_BYTES);
+function nativeReadBinding(event, ctx) {
+  if (event.toolName !== "read" || event.isError || typeof event.structuredContent !== "string"
+      || typeof event.input?.path !== "string" || typeof ctx?.cwd !== "string"
+      || event.details?.truncation?.truncated || !withinJsonBudget(event.structuredContent, TOOL_INPUT_BYTES)) return undefined;
   return {
-    content: [
-      ...originalContent,
-      ...cloneJson(response.content, TOOL_INPUT_BYTES),
-    ],
+    protocol: "lgtm-pi-read-v1",
+    pathDigest: createHash("sha256").update(resolve(ctx.cwd, event.input.path)).digest("hex"),
+    textDigest: createHash("sha256").update(event.structuredContent).digest("hex"),
   };
+}
+
+function jevNativeFailure(event) {
+  if (event.isError !== true || !lgtmJevCommon.owns(event.parentToolCallId)) return undefined;
+  return { content: [{ type: "text", text: "LGTM Jev native tool failed; output omitted" }], details: {} };
+}
+
+function mergeToolResult(event, response, ctx) {
+  let patch;
+  if (response !== undefined) {
+    patch = { content: [...cloneJson(event.content, TOOL_INPUT_BYTES), ...cloneJson(response.content, TOOL_INPUT_BYTES)] };
+    // Appending guidance retains all current authorized data; never resurrect a dropped field.
+    if (event.structuredContent !== undefined) patch.structuredContent = cloneJson(event.structuredContent, TOOL_INPUT_BYTES);
+  }
+  const binding = nativeReadBinding(event, ctx);
+  const owned = lgtmJevCommon.owns(event.parentToolCallId);
+  if ((!binding && !owned) || (event.details !== undefined && (event.details === null || typeof event.details !== "object" || Array.isArray(event.details)))) return patch;
+  return { ...patch, details: { ...event.details,
+    ...(owned ? { lgtmAdvisory: { protocol: "lgtm-pi-advisory-v1" } } : {}),
+    ...(binding ? { lgtmRead: binding } : {}) } };
 }
 
 async function refreshCommitRuntime(pi, root, ctx, signal) {
@@ -931,12 +954,14 @@ async function handle(pi, eventType, event, ctx, approvalState) {
         }
       }
     }
-    return eventType === "tool_result" ? mergeToolResult(event, result.response) : result.response;
+    return eventType === "tool_result" ? mergeToolResult(event, result.response, ctx) : result.response;
   } catch {
     appendFailure(pi, ctx, eventType, "handler", approvalState, generation);
     return undefined;
   }
 }
+
+__LGTM_JEV_COMMON__
 
 __LGTM_JEV__
 
@@ -977,8 +1002,11 @@ export default function lgtm(pi) {
   });
   pi.on("tool_call", (event, ctx) =>
     handle(pi, "tool_call", event, ctx, approvalState));
-  pi.on("tool_result", (event, ctx) =>
-    handle(pi, "tool_result", event, ctx, approvalState));
+  pi.on("tool_result", async (event, ctx) => {
+    const response = await handle(pi, "tool_result", event, ctx, approvalState);
+    // Deterministic post checks still run; only advisory-native error output is suppressed.
+    return jevNativeFailure(event) ?? response;
+  });
   pi.on("agent_settled", (event, ctx) =>
     handle(pi, "agent_settled", event, ctx, approvalState));
 }
@@ -1038,6 +1066,7 @@ pub(crate) fn render(binary: &str, scope: ExtensionScope) -> Result<Vec<u8>, Ini
     let project_digest = expected_template_digest(ExtensionScope::Project);
     let scope_digest = expected_template_digest(scope);
     Ok(EXTENSION_TEMPLATE
+        .replace("__LGTM_JEV_COMMON__", JEV_COMMON_TEMPLATE)
         .replace("__LGTM_JEV__", JEV_TEMPLATE)
         .replace("__LGTM_JEV_REVIEW__", JEV_REVIEW_TEMPLATE)
         .replace("__LGTM_JEV_SCOPE__", JEV_SCOPE_TEMPLATE)
@@ -1054,6 +1083,7 @@ pub(crate) fn render(binary: &str, scope: ExtensionScope) -> Result<Vec<u8>, Ini
 
 pub(crate) fn expected_template_digest(scope: ExtensionScope) -> String {
     let canonical = EXTENSION_TEMPLATE
+        .replace("__LGTM_JEV_COMMON__", JEV_COMMON_TEMPLATE)
         .replace("__LGTM_JEV__", JEV_TEMPLATE)
         .replace("__LGTM_JEV_REVIEW__", JEV_REVIEW_TEMPLATE)
         .replace("__LGTM_JEV_SCOPE__", JEV_SCOPE_TEMPLATE)

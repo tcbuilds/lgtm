@@ -2,22 +2,13 @@
 // It never reads the transcript, never compacts, never drops a tool/result pair,
 // and never changes Pi's native summary or cut safety.
 const registerLgtmJevCompaction = (() => {
-  const MODEL = "~typesafe/jev-latest";
+  const { MODEL, record, probability, usageOf } = lgtmJevCommon;
   const MAX_PATHS = 200;
   const MAX_ITEMS = 8;
   const MAX_TEXT = 512;
   const REQUEST_TIMEOUT_MS = 8_000;
   const RECOMMENDATIONS = ["compact_now", "compact_after_finishing", "stay_put", "unclear"];
-  const record = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-  const probability = (v) => Number.isFinite(v) && v >= 0 && v <= 1;
   const failure = (reason, status = "unavailable") => ({ status, reason, advisory: true, compaction: null, preservation: null, usage: null });
-
-  function usageOf(result) {
-    const u = result?.usage;
-    if (!record(u) || ![u.input, u.output, u.totalTokens].every((v) => Number.isFinite(v) && v >= 0)) return null;
-    const cost = record(u.cost) && Number.isFinite(u.cost.total) && u.cost.total >= 0 ? { total: u.cost.total } : undefined;
-    return { input: u.input, output: u.output, totalTokens: u.totalTokens, ...(cost ? { cost } : {}) };
-  }
 
   function boundedList(value, limit) {
     if (value === undefined) return [];
@@ -61,32 +52,24 @@ const registerLgtmJevCompaction = (() => {
     };
   }
 
-  async function workspaceFor(ctx) {
-    try {
-      const root = findInitializedRoot(ctx.cwd) ?? resolve(ctx.cwd);
-      if (ctx.isProjectTrusted?.() !== true || !trustedRuntimeVersion()) return undefined;
-      const fs = await import("node:fs");
-      if (SCOPE === "project" && fs.realpathSync(join(root, ".pi/extensions/lgtm.ts")) !== fs.realpathSync(extensionLocation())) return undefined;
-      return root;
-    } catch {
-      return undefined;
+  function sanitizeState(request) {
+    const safe = {};
+    if (request.paths.some(lgtmJevCommon.privatePath)) throw new Error("sensitive_state");
+    for (const [field, values] of Object.entries(request)) {
+      safe[field] = values.map((value) => {
+        const result = lgtmJevCommon.redact(value);
+        if (result.rejected) throw new Error("sensitive_state");
+        return result.text;
+      });
     }
+    return safe;
   }
 
   async function classify(ctx, request, signal) {
-    const runtime = ctx.modelRegistry;
-    if (typeof runtime?.classify !== "function" || typeof runtime?.findOfType !== "function") return failure("native_api_unavailable");
-    const model = runtime.findOfType("classifier", "openrouter", MODEL);
-    if (!model) return failure("model_unavailable");
     const state = { paths: request.paths, unfinished: request.unfinished, constraints: request.constraints };
-    signal.throwIfAborted();
-    let result;
-    try {
-      result = await runtime.classify(model, { state: { compaction: { state } }, questions: outboundQuestions() }, { signal });
-    } catch {
-      return failure("request_unavailable");
-    }
-    signal.throwIfAborted();
+    const response = await lgtmJevCommon.request(ctx, { compaction: { state } }, outboundQuestions(), signal);
+    if (response.failure) return failure(response.failure);
+    const result = response.result;
     const advice = adviceFor(result);
     if (!advice || advice.known === 0) return { ...failure("invalid_or_unavailable_response"), usage: usageOf(result) };
     const { known, ...compaction } = advice;
@@ -99,49 +82,28 @@ const registerLgtmJevCompaction = (() => {
   }
 
   async function execute(lifetime, params, signal, ctx) {
-    const request = parseRequest(params);
-    if (!request) return failure("invalid_request", "rejected");
-    const root = await workspaceFor(ctx);
-    if (!root) return failure("workspace_unavailable");
-    const controller = new AbortController();
-    const combined = AbortSignal.any([controller.signal, signal, lifetime()].filter(Boolean));
-    let timer;
-    const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => { controller.abort(); reject(new Error("deadline")); }, REQUEST_TIMEOUT_MS);
-    });
     try {
-      return await Promise.race([classify(ctx, request, combined), deadline]);
-    } catch {
-      return failure(combined.aborted ? "cancelled_or_timeout" : "request_unavailable");
-    } finally {
-      clearTimeout(timer);
-      controller.abort();
+      return await lgtmJevCommon.bounded(signal, lifetime, REQUEST_TIMEOUT_MS, async (combined) => {
+        if (!record(params) || Object.keys(params).some((key) => key !== "requestPath")) throw new Error("invalid_request");
+        const { value } = await lgtmJevCommon.readRequest(ctx, params, combined);
+        const request = parseRequest(value);
+        if (!request) throw new Error("invalid_request");
+        return classify(ctx, sanitizeState(request), combined);
+      });
+    } catch (error) {
+      if (["invalid_request", "sensitive_state"].includes(error?.message)) return failure(error.message, "rejected");
+      if (error?.message === "workspace_unavailable") return failure("workspace_unavailable");
+      return failure(signal?.aborted || error?.message === "cancelled_or_timeout" ? "cancelled_or_timeout" : "request_unavailable");
     }
   }
 
   return function register(pi, lifetime) {
-    if (typeof pi.registerTool !== "function") return;
-    try {
-      if (pi.getAllTools?.().some((tool) => tool.name === "lgtm_jev_compaction")) return;
-      pi.registerTool({
-        name: "lgtm_jev_compaction", label: "Jev compaction advice", exposure: "codemode",
-        description: "Advise whether this is a task boundary and list what to preserve before Pi's own /compact. It cannot compact, delete transcript, or change Pi compaction settings.",
-        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
-        parameters: { type: "object", properties: {
-          changedPaths: { type: "array", maxItems: MAX_PATHS, items: { type: "string", maxLength: MAX_TEXT } },
-          unfinished: { type: "array", maxItems: MAX_ITEMS, items: { type: "string", maxLength: MAX_TEXT } },
-          constraints: { type: "array", maxItems: MAX_ITEMS, items: { type: "string", maxLength: MAX_TEXT } } },
-          additionalProperties: false },
-        outputSchema: { type: "object", required: ["status"], properties: { status: { type: "string" } }, additionalProperties: true },
-        async execute(_id, params, signal, _update, ctx) {
-          const result = await execute(lifetime, params, signal, ctx);
-          try { pi.appendEntry("lgtm-jev", result); } catch { /* Optional metadata persistence must not break tools or enforcement. */ }
-          return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, details: result,
-            ...(result.usage ? { usage: result.usage } : {}) };
-        },
-      });
-    } catch {
-      try { pi.appendEntry("lgtm-jev", { status: "unavailable", reason: "compaction-registration" }); } catch { /* Session metadata is best effort. */ }
-    }
+    lgtmJevCommon.register(pi, {
+      name: "lgtm_jev_compaction", label: "Jev compaction advice",
+      description: "Read a bounded JSON request file containing changedPaths, unfinished and constraints. Advise before Pi's own /compact; cannot compact, delete transcript, or change settings.",
+      reachesTools: () => ["read"],
+      parameters: lgtmJevCommon.referenceParameters([]),
+      run: (params, signal, ctx) => execute(lifetime, params, signal, ctx),
+    });
   };
 })();

@@ -1,6 +1,7 @@
 // Rendered into the owned LGTM extension; never loaded as a separate extension.
 const registerLgtmJev = (() => {
-  const MODEL = "~typesafe/jev-latest";
+  const common = lgtmJevCommon;
+  const MODEL = common.MODEL;
   const MAX_FILE_BYTES = 16 * 1024;
   const MAX_FILES = 8;
   const MAX_QUESTIONS = 4;
@@ -8,19 +9,14 @@ const registerLgtmJev = (() => {
   const MAX_LINES = 1500;
   const REQUEST_TIMEOUT_MS = 5_000;
   const AGGREGATE_TIMEOUT_MS = 20_000;
-  const PRIVATE_PATH = /^(?:\.git|\.lgtm|\.pi|\.claude|node_modules|target|dist|vendor|\.env(?:\..*)?|auth\.json|credentials(?:\..*)?|id_rsa|id_ed25519)$/i;
-  const SECRET = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{16,})\b|\bBearer\s+[A-Za-z0-9._-]{16,}/;
-  const PRIVATE_SUFFIX = /\.(?:pem|key|p12|pfx|keystore)$/i;
-  const SECRET_ASSIGNMENT = /\b\w*(?:api[_-]?key|password|secret|token)["']?\s*[:=]\s*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}')/i;
-  const CONFIG_CREDENTIAL = /^\s*[\w.-]*(?:password|secret|token|api[_-]?key)\s*[:=]\s*\S+/im;
   const SAFE_REASONS = new Set([
     "invalid_path", "path_denied", "symlink_denied", "prohibited_path",
     "invalid_policy", "policy_symlink", "file_ineligible", "file_changed",
-    "path_changed", "content_ineligible", "read_denied", "read_filtered",
-    "source_changed", "volume_limit", "deadline",
+    "path_changed", "content_ineligible", "read_denied", "read_filtered", "read_redirected",
+    "source_changed", "volume_limit", "deadline", "timeout", "cancelled", "cancelled_or_timeout",
   ]);
-  const record = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-  const probability = (v) => Number.isFinite(v) && v >= 0 && v <= 1;
+  const record = common.record;
+  const probability = common.probability;
   const failure = (reason, status = "unavailable") => ({ status, reason, advisory: true, files: [], counts: null, usage: null });
 
   function safeReason(error) {
@@ -54,13 +50,23 @@ const registerLgtmJev = (() => {
     if (!record(question) || typeof question.instructions !== "string") return false;
     if (question.instructions.trim().length === 0 || question.instructions.length > 1024) return false;
     const validate = CRITERIA_VALIDATORS[question.type];
-    return typeof validate === "function" && validate(question.criteria) === true;
+    if (typeof validate !== "function" || validate(question.criteria) !== true) return false;
+    const criteria = Array.isArray(question.criteria) ? question.criteria : Object.entries(question.criteria).flat();
+    return ![id, question.instructions, ...criteria].some(common.hasSensitive);
   }
 
   function validNames(paths) {
     if (!Array.isArray(paths) || paths.length < 1 || paths.length > MAX_FILES) return false;
     if (!paths.every((name) => typeof name === "string" && name.length > 0 && name.length <= 512)) return false;
     return new Set(paths).size === paths.length;
+  }
+
+  function validateReferenceRequest(params) {
+    if (!record(params) || !Object.hasOwn(params, "requestPath")) return undefined;
+    if (Object.keys(params).some((key) => !["requestPath", "preview"].includes(key))) return undefined;
+    if (typeof params.requestPath !== "string" || params.requestPath.length === 0 || params.requestPath.length > 512) return undefined;
+    if (params.preview !== undefined && typeof params.preview !== "boolean") return undefined;
+    return { requestPath: params.requestPath, preview: params.preview === true };
   }
 
   function validQuestions(questions) {
@@ -70,106 +76,21 @@ const registerLgtmJev = (() => {
     return entries.every(([id, question]) => validateQuestion(id, question)) ? questions : undefined;
   }
 
-  function validateRequest(params) {
-    if (!record(params) || !validNames(params.paths)) return undefined;
-    const questions = validQuestions(params.questions);
-    if (!questions) return undefined;
-    if (params.preview !== undefined && typeof params.preview !== "boolean") return undefined;
-    return { paths: params.paths, questions, preview: params.preview === true };
+  function validateRequestBody(value) {
+    if (!record(value) || Object.keys(value).length !== 2
+        || !Object.hasOwn(value, "paths") || !Object.hasOwn(value, "questions")) return undefined;
+    if (!validNames(value.paths)) return undefined;
+    const questions = validQuestions(value.questions);
+    return questions ? { paths: value.paths, questions } : undefined;
   }
 
-  function policyAllows(fs, root, relative) {
-    const directory = join(root, ".lgtm");
-    if (fs.lstatSync(directory, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error("policy_symlink");
-    for (const name of ["config.json", "execpolicy.json"]) {
-      const file = join(directory, name);
-      if (!fs.lstatSync(file, { throwIfNoEntry: false })) continue;
-      const patterns = policyPaths(fs, file);
-      if (patterns.some((p) => prohibitedPath(p, relative.replaceAll("\\", "/")))) throw new Error("prohibited_path");
-    }
+  function isPrivatePath(name) {
+    return name.split(/[\\/]/).some((part) => common.privatePath(part));
   }
 
-  // The parsed value is narrowed immediately by record(). The cached reference
-  // keeps this already-guarded read off the native substring scan.
-  const parseJsonUnknown = JSON.parse;
-
-  function policyPaths(fs, file) {
-    const policy = parseJsonUnknown(new TextDecoder("utf-8", { fatal: true }).decode(readBytes(fs, file, 64 * 1024)));
-    if (!record(policy)) throw new Error("invalid_policy");
-    const patterns = policy.prohibited_paths ?? [];
-    if (!Array.isArray(patterns) || patterns.length > 1024) throw new Error("invalid_policy");
-    return patterns;
-  }
-
-  function prohibitedPath(pattern, name) {
-    if (typeof pattern !== "string" || !pattern || pattern.length > 4096 || /[\x00-\x1f]/.test(pattern)) throw new Error("invalid_policy");
-    const p = pattern.replaceAll("\\", "/");
-    if (p === "*" || p === "**") return true;
-    const prefix = p.endsWith("/**") ? p.slice(0, -3) : p;
-    if (prefix.includes("*") || prefix.startsWith("/") || prefix.split("/").some((s) => !s || s === "." || s === "..")) throw new Error("invalid_policy");
-    return name === prefix || (p.endsWith("/**") && name.startsWith(prefix + "/"));
-  }
-
-  function eligiblePath(fs, path, root, name) {
-    if (typeof name !== "string" || !name || name.length > 512 || /[\x00-\x1f\x7f]/.test(name)) throw new Error("invalid_path");
-    const base = fs.realpathSync(root);
-    const full = path.resolve(base, name);
-    const relative = path.relative(base, full);
-    const parts = relative.split(path.sep);
-    if (!relative || path.isAbsolute(relative) || parts.length > 64 || parts.includes("..")
-        || parts.some((p) => PRIVATE_PATH.test(p)) || PRIVATE_SUFFIX.test(full)) throw new Error("path_denied");
-    policyAllows(fs, base, relative);
-    let parent = base;
-    for (const part of parts) {
-      parent = path.join(parent, part);
-      if (fs.lstatSync(parent).isSymbolicLink()) throw new Error("symlink_denied");
-    }
-    return { full, relative };
-  }
-
-  function sameRead(before, after, length) {
-    return before.size === length && after.size === before.size
-      && after.mtimeMs === before.mtimeMs && after.ctimeMs === before.ctimeMs;
-  }
-
-  function readBytes(fs, full, limit) {
-    const fd = fs.openSync(full, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-    try {
-      const before = fs.fstatSync(fd);
-      if (!before.isFile() || before.nlink !== 1 || before.size > limit) throw new Error("file_ineligible");
-      if (fs.realpathSync(full) !== full) throw new Error("path_changed");
-      const named = fs.statSync(full);
-      if (named.ino !== before.ino || named.dev !== before.dev) throw new Error("path_changed");
-      const buffer = Buffer.alloc(limit + 1);
-      const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
-      if (length > limit || !sameRead(before, fs.fstatSync(fd), length)) throw new Error("file_changed");
-      return buffer.subarray(0, length);
-    } finally {
-      fs.closeSync(fd);
-    }
-  }
-
-  async function snapshot(root, name) {
-    const fs = await import("node:fs");
-    const path = await import("node:path");
-    const { full, relative } = eligiblePath(fs, path, root, name);
-    const bytes = readBytes(fs, full, MAX_FILE_BYTES);
-    const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    if (!eligibleContent(relative, content)) throw new Error("content_ineligible");
-    return { path: relative, content, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
-  }
-
-  function eligibleContent(name, content) {
-    if (!content.trim() || content.includes("\0") || content.split("\n").length > MAX_LINES) return false;
-    if (SECRET.test(content) || SECRET_ASSIGNMENT.test(content)) return false;
-    return !(/\.(?:ya?ml|toml|ini|txt|properties|cfg)$/i.test(name) && CONFIG_CREDENTIAL.test(content));
-  }
-
-  function usageOf(result) {
-    const u = result?.usage;
-    if (!record(u) || ![u.input, u.output, u.totalTokens].every((v) => Number.isFinite(v) && v >= 0)) return null;
-    const cost = record(u.cost) && Number.isFinite(u.cost.total) && u.cost.total >= 0 ? { total: u.cost.total } : undefined;
-    return { input: u.input, output: u.output, totalTokens: u.totalTokens, ...(cost ? { cost } : {}) };
+  function assertEligibleContent(content) {
+    if (!content.trim() || content.includes("\0") || content.split("\n").length > MAX_LINES
+        || common.hasSensitive(content)) throw new Error("content_ineligible");
   }
 
   function totalUsage(entries) {
@@ -212,8 +133,8 @@ const registerLgtmJev = (() => {
   }
 
   function scoreAnswer(question, answer) {
-    if (!record(answer) || answer.type !== "score" || !Number.isInteger(answer.score)) return undefined;
-    if (answer.score < 0 || answer.score >= question.criteria.length) return undefined;
+    if (!record(answer) || answer.type !== "score" || !Number.isFinite(answer.score)) return undefined;
+    if (answer.score < 0 || answer.score > question.criteria.length - 1) return undefined;
     if (!probability(answer.confidence)) return undefined;
     return { type: "score", score: answer.score, confidence: answer.confidence };
   }
@@ -246,42 +167,29 @@ const registerLgtmJev = (() => {
     };
   }
 
-  async function candidatePath(root, name) {
-    const fs = await import("node:fs");
-    const path = await import("node:path");
-    const { full } = eligiblePath(fs, path, root, name);
-    const metadata = fs.lstatSync(full);
-    if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size > MAX_FILE_BYTES) throw new Error("file_ineligible");
-    return full;
-  }
-
   async function governedFile(ctx, root, name, signal) {
-    const full = await candidatePath(root, name);
-    const read = await ctx.executeTool("read", { path: full }, { signal });
-    if (read?.isError || read?.result?.isError) throw new Error("read_denied");
-    const file = await snapshot(root, name);
-    // Pi's executeTool returns { toolCall, result: { content }, isError }; older
-    // shapes return { content }. LGTM wraps the file text in one or more
-    // separate guidance blocks, so join every text block and require the
-    // original source to survive, which also proves the read was not redacted.
-    const blocks = read?.result?.content ?? read?.content;
-    const visible = Array.isArray(blocks)
-      ? blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n") : undefined;
-    if (typeof visible !== "string" || visible.length > 256 * 1024 || !visible.includes(file.content)) throw new Error("read_filtered");
-    if ((await snapshot(root, file.path)).sha256 !== file.sha256) throw new Error("source_changed");
+    if (isPrivatePath(name)) throw new Error("path_denied");
+    const file = await common.readFile(ctx, root, name, signal, MAX_FILE_BYTES);
+    assertEligibleContent(file.content);
     return file;
   }
 
   async function isFresh(root, file) {
     try {
-      return (await snapshot(root, file.path)).sha256 === file.sha256;
+      return (await common.snapshot(root, file.path, MAX_FILE_BYTES)).identity === file.identity;
     } catch {
       return false;
     }
   }
 
+  function outputPath(name) {
+    if (common.privatePath(name) || common.hasSensitive(name)) return null;
+    if (name.startsWith("/") || name.startsWith("\\") || /^[A-Za-z]:/.test(name)) return null;
+    return name.split(/[\\/]/).includes("..") ? null : name;
+  }
+
   function unknownItem(id, name, reason) {
-    return { id, path: name, status: "unavailable", coverage: "none", reason };
+    return { id, path: outputPath(name), status: "unavailable", coverage: "none", reason };
   }
 
   function countItems(files) {
@@ -314,34 +222,23 @@ const registerLgtmJev = (() => {
     if (budget && file.bytes > budget.remaining) return { item: unknownItem(id, name, "volume_limit"), usage: null };
     if (budget) budget.remaining -= file.bytes;
     const outbound = Object.fromEntries(Object.entries(questions).map(([qid, q]) => [qid, guardedQuestion(q)]));
-    let result;
-    try {
-      result = await ctx.modelRegistry.classify(model, { state: { file: { id, content: file.content } }, questions: outbound }, { signal });
-    } catch {
-      return { item: unknownItem(id, name, "request_unavailable"), usage: null };
-    }
-    const usage = usageOf(result);
+    const response = await common.request(ctx, { file: { id, content: file.content } }, outbound, signal, model);
+    if (response.failure) return { item: unknownItem(id, name, response.failure), usage: null };
+    const result = response.result;
+    const usage = common.usageOf(result);
     const answers = answersFor(questions, result);
     if (!answers) return { item: unknownItem(id, name, "invalid_or_unavailable_response"), usage };
-    const metadata = { id, path: file.path, bytes: file.bytes, sha256: file.sha256, coverage: "complete" };
+    const metadata = { id, path: file.path, bytes: file.bytes, sha256: file.sha256, hashKind: "governed_output", coverage: "governed" };
     const item = (await isFresh(root, file)) ? { ...metadata, status: "ok", answers } : { ...metadata, status: "stale" };
     return { item, usage };
   }
 
   async function classifyBounded(ctx, root, model, request, id, name, signal, budget) {
-    const controller = new AbortController();
-    const combined = AbortSignal.any([controller.signal, signal]);
-    let timer;
-    const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => { controller.abort(); reject(new Error("deadline")); }, REQUEST_TIMEOUT_MS);
-    });
     try {
-      return await Promise.race([classifyOne(ctx, root, model, request.questions, id, name, combined, budget), deadline]);
+      return await common.bounded(signal, undefined, REQUEST_TIMEOUT_MS, (boundedSignal) =>
+        classifyOne(ctx, root, model, request.questions, id, name, boundedSignal, budget));
     } catch {
       return { item: unknownItem(id, name, "cancelled_or_timeout"), usage: null };
-    } finally {
-      clearTimeout(timer);
-      controller.abort();
     }
   }
 
@@ -369,25 +266,25 @@ const registerLgtmJev = (() => {
     };
   }
 
-  async function previewEntry(fs, root, name, index, bytes) {
+  async function previewEntry(root, name, index, bytes) {
     const id = `f${index}`;
     try {
-      const full = await candidatePath(root, name);
-      const size = fs.lstatSync(full).size;
-      if (bytes + size > MAX_TOTAL_BYTES) return { item: { id, path: name, status: "skipped", coverage: "none", reason: "volume_limit" } };
-      return { bytes: bytes + size, item: { id, path: name, status: "eligible", coverage: "estimated", bytes: size } };
+      if (isPrivatePath(name)) throw new Error("path_denied");
+      await common.candidatePath(root, name, MAX_FILE_BYTES);
+      const file = await common.snapshot(root, name, MAX_FILE_BYTES);
+      if (bytes + file.bytes > MAX_TOTAL_BYTES) return { item: { id, path: file.path, status: "skipped", coverage: "none", reason: "volume_limit" } };
+      return { bytes: bytes + file.bytes, item: { id, path: file.path, status: "eligible", coverage: "estimated", bytes: file.bytes } };
     } catch (error) {
-      return { item: { id, path: name, status: "skipped", coverage: "none", reason: safeReason(error) } };
+      return { item: { id, path: outputPath(name), status: "skipped", coverage: "none", reason: safeReason(error) } };
     }
   }
 
   async function previewFor(root, request) {
-    const fs = await import("node:fs");
     const files = [];
     let bytes = 0;
     let included = 0;
     for (const [index, name] of request.paths.entries()) {
-      const entry = await previewEntry(fs, root, name, index, bytes);
+      const entry = await previewEntry(root, name, index, bytes);
       if (entry.bytes !== undefined) bytes = entry.bytes;
       files.push(entry.item);
       if (entry.item.status === "eligible") included += 1;
@@ -401,84 +298,50 @@ const registerLgtmJev = (() => {
     };
   }
 
-  async function workspaceFor(ctx) {
-    try {
-      const root = findInitializedRoot(ctx.cwd) ?? resolve(ctx.cwd);
-      if (ctx.isProjectTrusted?.() !== true || !trustedRuntimeVersion()) return undefined;
-      const fs = await import("node:fs");
-      if (SCOPE === "project" && fs.realpathSync(join(root, ".pi/extensions/lgtm.ts")) !== fs.realpathSync(extensionLocation())) return undefined;
-      return root;
-    } catch {
-      return undefined;
+  async function runClassify(ctx, root, request, signal, lifetime) {
+    let model;
+    try { model = common.classifier(ctx); } catch (error) {
+      const reason = ["native_api_unavailable", "model_unavailable"].includes(error?.message) ? error.message : "request_unavailable";
+      return failure(reason);
     }
-  }
-
-  async function runPreview(ctx, request) {
-    const root = await workspaceFor(ctx);
-    if (!root) return failure("workspace_unavailable");
-    return previewFor(root, request);
-  }
-
-  async function runClassify(ctx, request, signal, lifetime) {
-    const runtime = ctx.modelRegistry;
-    if (typeof runtime?.classify !== "function" || typeof runtime?.findOfType !== "function"
-        || typeof ctx.executeTool !== "function") return failure("native_api_unavailable");
-    const model = runtime.findOfType("classifier", "openrouter", MODEL);
-    if (!model) return failure("model_unavailable");
-    const root = await workspaceFor(ctx);
-    if (!root) return failure("workspace_unavailable");
-    const controller = new AbortController();
-    const combined = AbortSignal.any([controller.signal, signal, lifetime()].filter(Boolean));
-    let timer;
-    const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => { controller.abort(); reject(new Error("deadline")); }, AGGREGATE_TIMEOUT_MS);
-    });
     try {
-      const result = await Promise.race([classifyFiles(ctx, root, model, request, combined), deadline]);
-      return combined.aborted ? failure("cancelled") : result;
-    } catch {
-      // Provider/read errors can contain source; emit fixed diagnostics instead.
-      return failure(combined.aborted ? "cancelled_or_timeout" : "request_unavailable");
-    } finally {
-      clearTimeout(timer);
-      controller.abort();
+      return await common.bounded(signal, lifetime, AGGREGATE_TIMEOUT_MS, async (boundedSignal) => {
+        const result = await classifyFiles(ctx, root, model, request, boundedSignal);
+        return boundedSignal.aborted ? failure("cancelled") : result;
+      });
+    } catch (error) {
+      const reason = safeReason(error);
+      return failure(["deadline", "timeout", "cancelled", "cancelled_or_timeout"].includes(reason)
+        ? "cancelled_or_timeout" : "request_unavailable");
     }
   }
 
   async function execute(lifetime, params, signal, ctx) {
-    const request = validateRequest(params);
-    if (!request) return failure("invalid_request", "rejected");
-    if (request.preview) return runPreview(ctx, request);
-    return runClassify(ctx, request, signal, lifetime);
+    const outer = validateReferenceRequest(params);
+    if (!outer) return failure("invalid_request", "rejected");
+    try {
+      return await common.bounded(signal, lifetime, AGGREGATE_TIMEOUT_MS, async (combined) => {
+        const loaded = await common.readRequest(ctx, outer, combined);
+        const request = validateRequestBody(loaded.value);
+        if (!request) return failure("invalid_request", "rejected");
+        if (outer.preview) return previewFor(loaded.root, request);
+        return runClassify(ctx, loaded.root, request, combined, lifetime);
+      });
+    } catch (error) {
+      if (signal?.aborted || error?.message === "cancelled_or_timeout") return failure("cancelled_or_timeout");
+      if (["workspace_unavailable", "native_api_unavailable"].includes(error?.message)) return failure(error.message);
+      return failure("request_unavailable", "rejected");
+    }
   }
 
   return function register(pi, lifetime) {
-    if (typeof pi.registerTool !== "function") return;
-    try {
-      if (pi.getAllTools?.().some((tool) => tool.name === "lgtm_jev_files")) return;
-      pi.registerTool({
-        name: "lgtm_jev_files", label: "Jev file questions", exposure: "codemode",
-        description: "Ask bounded typed questions (bool/choice/score) about workspace files without returning source. Set preview:true to inspect scope and estimated cost with zero classifier calls. Advisory only; if unavailable, use normal reads. Read actual code before editing or quoting.",
-        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
-        reachesTools: () => ["read"],
-        parameters: { type: "object", required: ["paths", "questions"], additionalProperties: false,
-          properties: {
-            paths: { type: "array", minItems: 1, maxItems: MAX_FILES, items: { type: "string", maxLength: 512 } },
-            questions: { type: "object", minProperties: 1, maxProperties: MAX_QUESTIONS },
-            preview: { type: "boolean" },
-          } },
-        outputSchema: { type: "object", required: ["status"], properties: { status: { type: "string" } }, additionalProperties: true },
-        async execute(_id, params, signal, _update, ctx) {
-          const result = await execute(lifetime, params, signal, ctx);
-          // Only safe decision metadata is persisted, never request bodies or file text.
-          try { pi.appendEntry("lgtm-jev", result); } catch { /* Optional metadata persistence must not break tools or enforcement. */ }
-          return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, details: result,
-            ...(result.usage ? { usage: result.usage } : {}) };
-        },
-      });
-    } catch {
-      // Jev registration failure is independent from LGTM's enforcement lifecycle.
-      try { pi.appendEntry("lgtm-jev", { status: "unavailable", reason: "registration" }); } catch { /* Session metadata is best effort. */ }
-    }
+    common.register(pi, {
+      name: "lgtm_jev_files",
+      label: "Jev file questions",
+      description: "Pass requestPath for a JSON file with bounded paths and typed questions. Only requestPath and optional preview are accepted. Do not send inline paths/questions; Pi may journal invalid arguments, so keep request bodies out of tool arguments. Preview makes zero classifier calls. Advisory only; if unavailable, use normal reads. Read actual code before editing or quoting.",
+      reachesTools: () => ["read"],
+      parameters: common.referenceParameters(["preview"]),
+      run: (params, signal, ctx) => execute(lifetime, params, signal, ctx),
+    });
   };
 })();

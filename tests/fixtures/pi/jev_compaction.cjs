@@ -1,16 +1,9 @@
 // Exercises the advisory compaction tool with a fake provider boundary.
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
+const { loadExtension, writeRequest, readResult } = require("./jev_harness.cjs");
 const sourcePath = process.argv[2];
 const watchdog = setTimeout(() => process.exit(124), 30_000);
 
-function loadExtension(file) {
-  const source = fs.readFileSync(file, "utf8")
-    .replace(/^import \{([^\n]+)\} from "([^"]+)";$/gm, 'const {$1} = require("$2");')
-    .replaceAll("new URL(import.meta.url)", JSON.stringify(file))
-    .replace("export default function lgtm", "function lgtm");
-  return new Function("require", "process", source + "\nreturn lgtm;")(require, process);
-}
 
 const handlers = {}, tools = new Map();
 const pi = {
@@ -25,7 +18,7 @@ let requests = [], calls = 0, scripted = () => { throw new Error("scripted provi
 const context = {
   cwd: process.cwd(), isProjectTrusted: () => true,
   signal: new AbortController().signal,
-  executeTool: async () => { throw new Error("compaction advice must not call tools"); },
+  executeTool: async (name, args) => { assert.equal(name, "read", "compaction may only read its request"); return readResult(args); },
   modelRegistry: {
     findOfType: (type, provider, id) => {
       assert.equal(type, "classifier"); assert.equal(provider, "openrouter"); assert.equal(id, "~typesafe/jev-latest");
@@ -48,7 +41,7 @@ const base = { changedPaths: ["src/a.rs", "tests/a.rs"], unfinished: ["wire refr
 async function invoke(params = base, signal = context.signal) {
   const tool = tools.get("lgtm_jev_compaction");
   assert.ok(tool, "init must supply the compaction tool");
-  const result = await tool.execute("compact", params, signal, () => {}, context);
+  const result = await tool.execute("compact", { requestPath: writeRequest(params) }, signal, () => {}, context);
   assert.ok(result.structuredContent);
   return result.structuredContent;
 }
@@ -58,7 +51,7 @@ async function invoke(params = base, signal = context.signal) {
   await emit("session_start", {}, context);
   const tool = tools.get("lgtm_jev_compaction");
   assert.equal(tool.exposure, "codemode");
-  assert.ok(!tool.reachesTools || tool.reachesTools().length === 0, "compaction advice must not reach tools");
+  assert.deepEqual(tool.reachesTools(), ["read"], "compaction advice may only read its bounded request");
   assert.equal(calls, 0, "startup made a paid request");
 
   let before = calls;

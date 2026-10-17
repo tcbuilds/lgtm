@@ -1,16 +1,9 @@
 // Exercises the advisory scope/claim tool with a fake git and provider boundary.
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
+const { loadExtension, writeRequest, readResult, bashResult } = require("./jev_harness.cjs");
 const sourcePath = process.argv[2];
 const watchdog = setTimeout(() => process.exit(124), 30_000);
 
-function loadExtension(file) {
-  const source = fs.readFileSync(file, "utf8")
-    .replace(/^import \{([^\n]+)\} from "([^"]+)";$/gm, 'const {$1} = require("$2");')
-    .replaceAll("new URL(import.meta.url)", JSON.stringify(file))
-    .replace("export default function lgtm", "function lgtm");
-  return new Function("require", "process", source + "\nreturn lgtm;")(require, process);
-}
 
 const handlers = {}, tools = new Map();
 const pi = {
@@ -28,10 +21,11 @@ const context = {
   cwd: process.cwd(), isProjectTrusted: () => true,
   signal: new AbortController().signal,
   executeTool: async (name, args) => {
+    if (name === "read") return readResult(args);
     assert.equal(name, "bash");
-    if (args.command === "git rev-parse HEAD") return { result: { content: [{ type: "text", text: `${REVISION}\n` }] }, isError: false };
-    assert.equal(args.command, "git diff --name-only HEAD");
-    return { result: { content: [{ type: "text", text: paths.join("\n") }] }, isError: false };
+    if (args.command === "git rev-parse HEAD") return bashResult(`${REVISION}\n`);
+    assert.equal(args.command, "git diff --no-ext-diff --no-textconv --no-renames --name-only -z HEAD");
+    return bashResult(paths.length ? paths.join("\0") + "\0" : "");
   },
   modelRegistry: {
     findOfType: (type, provider, id) => {
@@ -59,7 +53,7 @@ const base = { scope: "documentation only, no production code", claims: ["Only m
 async function invoke(params = base, signal = context.signal) {
   const tool = tools.get("lgtm_jev_scope");
   assert.ok(tool, "init must supply the scope tool");
-  const result = await tool.execute("scope", params, signal, () => {}, context);
+  const result = await tool.execute("scope", { requestPath: writeRequest(params) }, signal, () => {}, context);
   assert.ok(result.structuredContent);
   assert.ok(!JSON.stringify(result).includes("documentation only"), "caller text reached the output");
   return result.structuredContent;
@@ -70,7 +64,7 @@ async function invoke(params = base, signal = context.signal) {
   await emit("session_start", {}, context);
   const tool = tools.get("lgtm_jev_scope");
   assert.equal(tool.exposure, "codemode");
-  assert.deepEqual(tool.reachesTools(), ["bash"]);
+  assert.deepEqual(tool.reachesTools(), ["read", "bash"]);
   assert.deepEqual([...tools.keys()].sort(), ["lgtm_jev_compaction", "lgtm_jev_files", "lgtm_jev_review", "lgtm_jev_scope", "lgtm_jev_triage", "lgtm_jev_untrusted"]);
   assert.equal(calls, 0, "startup made a paid request");
 

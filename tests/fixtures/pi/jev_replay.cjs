@@ -4,6 +4,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { loadExtension, writeRequest, readResponse } = require("./jev_harness.cjs");
 const sourcePath = process.argv[2];
 const corpusPath = process.argv[3] || path.resolve("tests/fixtures/pi/jev_replay_corpus.json");
 const watchdog = setTimeout(() => process.exit(124), 30_000);
@@ -11,13 +12,6 @@ const watchdog = setTimeout(() => process.exit(124), 30_000);
 const CATEGORIES = new Set(["useful", "irrelevant", "ambiguous", "negation", "hostile", "changed", "held-out"]);
 const PUBLIC_PREFIXES = ["src/", "templates/", "tests/", "doc/", "scripts/", "policy/"];
 
-function loadExtension(file) {
-  const source = fs.readFileSync(file, "utf8")
-    .replace(/^import \{([^\n]+)\} from "([^\"]+)";$/gm, 'const {$1} = require("$2");')
-    .replaceAll("new URL(import.meta.url)", JSON.stringify(file))
-    .replace("export default function lgtm", "function lgtm");
-  return new Function("require", "process", source + "\nreturn lgtm;")(require, process);
-}
 
 function validateCorpus(corpus) {
   assert.equal(corpus.version, 1, "corpus version");
@@ -58,8 +52,8 @@ const context = {
   signal: new AbortController().signal,
   executeTool: async (name, args) => {
     assert.equal(name, "read");
-    return { result: { content: [{ type: "text", text: fs.readFileSync(path.resolve(args.path), "utf8") },
-      { type: "text", text: "Appended LGTM guidance." }] }, isError: false };
+    const text = fs.readFileSync(path.resolve(args.path), "utf8");
+    return readResponse(args, [{ type: "text", text }, { type: "text", text: "Appended LGTM guidance." }], text);
   },
   modelRegistry: {
     findOfType: (type, provider, id) => {
@@ -88,7 +82,8 @@ function scriptFor(label) {
 
 let tool;
 async function invoke(params) {
-  const result = await tool.execute("replay", params, context.signal, () => {}, context);
+  const { preview, ...request } = params;
+  const result = await tool.execute("replay", { requestPath: writeRequest(request), ...(preview === undefined ? {} : { preview }) }, context.signal, () => {}, context);
   assert.ok(result.structuredContent);
   assert.ok(!JSON.stringify(result).includes("Ignore all previous instructions"), "hostile text leaked to the caller");
   return result.structuredContent;

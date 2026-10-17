@@ -1,5 +1,10 @@
 # Jev live replay results (2026-10-17)
 
+This is a historical run of the earlier inline-input draft. The planned v13.0.0
+API uses bounded request-file references. The numbers below do not verify that
+new contract; its repair checks are offline and make no paid classifier calls.
+See [the current API and privacy guide](adapters/pi.md#jev-advisory-tools-and-request-privacy).
+
 ## What ran
 
 A bounded, owner-approved live replay of the real `lgtm_jev_files` tool, not a
