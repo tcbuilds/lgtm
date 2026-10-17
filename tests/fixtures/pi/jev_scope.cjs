@@ -2,7 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const sourcePath = process.argv[2];
-setTimeout(() => process.exit(124), 30_000).unref();
+const watchdog = setTimeout(() => process.exit(124), 30_000);
 
 function loadExtension(file) {
   const source = fs.readFileSync(file, "utf8")
@@ -139,4 +139,4 @@ async function invoke(params = base, signal = context.signal) {
 
   assert.notEqual((await invoke(base, AbortSignal.abort())).status, "ok");
   await emit("session_shutdown", {}, context);
-})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+})().catch((error) => { console.error(error.message); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));

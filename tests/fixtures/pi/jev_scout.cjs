@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const sourcePath = process.argv[2];
-setTimeout(() => process.exit(124), 30_000).unref();
+const watchdog = setTimeout(() => process.exit(124), 30_000);
 
 function loadExtension(file) {
   const source = fs.readFileSync(file, "utf8")
@@ -134,7 +134,7 @@ async function invoke(p = params, signal = context.signal) {
   assert.match(result.files[0].sha256, /^[a-f0-9]{64}$/);
   assert.equal(result.files[0].answers.risky.probability, 0.8);
   assert.equal(result.files[0].answers.layer.choice, "domain");
-  assert.equal(result.files[1].answers.quality.level, "partial");
+  assert.equal(result.files[1].answers.quality.score, 1);
   assert.equal(result.counts.ok, 3);
   assert.equal(requests.length, 3, "one classifier call per scouted file");
   assert.equal(reads - readsBefore, 3, "each scouted file used one governed read");
@@ -155,6 +155,15 @@ async function invoke(p = params, signal = context.signal) {
   assert.equal(result.counts.included, 6);
   assert.equal(result.files.at(-1).reason, "volume_limit");
   assert.equal(result.estimated.classifierCalls, 6);
+
+  // The aggregate byte budget must hold on the transport path, not only in preview.
+  const beforeVolume = requests.length;
+  classify = answer;
+  result = await invoke({ paths: volume, questions });
+  const sentBytes = requests.slice(beforeVolume).reduce((total, input) => total + Buffer.byteLength(input.state.file.content, "utf8"), 0);
+  assert.ok(sentBytes <= 65_536, `classification transmitted ${sentBytes} bytes`);
+  assert.equal(result.counts.unavailable, 1, "the excess file was not skipped");
+  assert.equal(result.files.at(-1).reason, "volume_limit");
 
   classify = (_model, input) => ({ ...answer(_model, input), answers: {
     risky: { type: "bool", probability: 0.5 },
@@ -208,4 +217,4 @@ async function invoke(p = params, signal = context.signal) {
   assert.ok(!JSON.stringify(entries).includes("validate_policy"), "session records leaked source");
   assert.equal(fs.readFileSync("a.rs", "utf8"), bodies["a.rs"], "ordinary reads stopped working");
   await emit("session_shutdown", {}, context);
-})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+})().catch((error) => { console.error(error.message); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));

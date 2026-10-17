@@ -57,15 +57,38 @@ const registerLgtmJevTriage = (() => {
     return { text: output, redactions };
   }
 
+  function clipText(text, limit) {
+    const bytes = new TextEncoder().encode(text);
+    if (bytes.length <= limit) return { text, clipped: false, bytes: bytes.length };
+    // Back off to a UTF-8 character boundary so re-encoding never exceeds the bound.
+    let end = limit;
+    while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+    return { text: new TextDecoder().decode(bytes.subarray(0, end)), clipped: true, bytes: end };
+  }
+
   function minimize(excerpt) {
     if (PRIVATE_KEY.test(excerpt)) return { rejected: true };
     const { text, redactions } = redact(excerpt);
-    const clipped = text.length > MAX_EXCERPT_OUT;
-    return { excerpt: text.slice(0, MAX_EXCERPT_OUT), redactions, clipped, bytes: Math.min(text.length, MAX_EXCERPT_OUT) };
+    const clipped = clipText(text, MAX_EXCERPT_OUT);
+    return { excerpt: clipped.text, redactions, clipped: clipped.clipped, bytes: clipped.bytes };
   }
 
-  function factsOf(request) {
-    return { command: request.command, cwd: request.cwd ?? null, exitCode: request.exitCode, finding: request.finding ?? null };
+  function redactField(value) {
+    if (value === undefined) return { value: undefined };
+    if (PRIVATE_KEY.test(value)) return { rejected: true };
+    return { value: redact(value).text };
+  }
+
+  function factsOf(request, fields) {
+    return { command: fields.command, cwd: fields.cwd ?? null, exitCode: request.exitCode, finding: fields.finding ?? null };
+  }
+
+  function prepareMetadata(request) {
+    const command = redactField(request.command);
+    const cwd = redactField(request.cwd);
+    const finding = redactField(request.finding);
+    if (command.rejected || cwd.rejected || finding.rejected) return undefined;
+    return factsOf(request, { command: command.value, cwd: cwd.value, finding: finding.value });
   }
 
   function outboundQuestions() {
@@ -96,12 +119,11 @@ const registerLgtmJevTriage = (() => {
     }
   }
 
-  async function classify(ctx, request, minimized, signal) {
+  async function classify(ctx, facts, minimized, signal) {
     const runtime = ctx.modelRegistry;
     if (typeof runtime?.classify !== "function" || typeof runtime?.findOfType !== "function") return failure("native_api_unavailable");
     const model = runtime.findOfType("classifier", "openrouter", MODEL);
     if (!model) return failure("model_unavailable");
-    const facts = factsOf(request);
     signal.throwIfAborted();
     let result;
     try {
@@ -109,22 +131,14 @@ const registerLgtmJevTriage = (() => {
     } catch {
       return failure("request_unavailable");
     }
+    signal.throwIfAborted();
     const triage = triageFor(result);
     const evidence = { source: "caller_excerpt", bytes: minimized.bytes, clipped: minimized.clipped, redactions: minimized.redactions };
     if (!triage) return { ...failure("invalid_or_unavailable_response"), facts, evidence, usage: usageOf(result) };
     return { status: "ok", advisory: true, facts, triage, evidence, provider: "openrouter", model: MODEL, rubric: 1, usage: usageOf(result) };
   }
 
-  async function execute(lifetime, params, signal, ctx) {
-    const request = parseRequest(params);
-    if (!request) return failure("invalid_request", "rejected");
-    const minimized = minimize(request.excerpt);
-    if (minimized.rejected) return failure("sensitive_excerpt", "rejected");
-    const root = await workspaceFor(ctx);
-    if (!root) return failure("workspace_unavailable");
-    const evidence = { source: "caller_excerpt", bytes: minimized.bytes, clipped: minimized.clipped, redactions: minimized.redactions };
-    // Redaction is not permission: transport needs an explicit caller opt-in.
-    if (!request.allowSend) return { status: "preview", advisory: true, facts: factsOf(request), triage: null, evidence, usage: null };
+  async function runClassify(ctx, facts, minimized, signal, lifetime) {
     const controller = new AbortController();
     const combined = AbortSignal.any([controller.signal, signal, lifetime()].filter(Boolean));
     let timer;
@@ -132,13 +146,28 @@ const registerLgtmJevTriage = (() => {
       timer = setTimeout(() => { controller.abort(); reject(new Error("deadline")); }, REQUEST_TIMEOUT_MS);
     });
     try {
-      return await Promise.race([classify(ctx, request, minimized, combined), deadline]);
+      return await Promise.race([classify(ctx, facts, minimized, combined), deadline]);
     } catch {
       return failure(combined.aborted ? "cancelled_or_timeout" : "request_unavailable");
     } finally {
       clearTimeout(timer);
       controller.abort();
     }
+  }
+
+  async function execute(lifetime, params, signal, ctx) {
+    const request = parseRequest(params);
+    if (!request) return failure("invalid_request", "rejected");
+    const minimized = minimize(request.excerpt);
+    if (minimized.rejected) return failure("sensitive_excerpt", "rejected");
+    const facts = prepareMetadata(request);
+    if (!facts) return failure("sensitive_metadata", "rejected");
+    const root = await workspaceFor(ctx);
+    if (!root) return failure("workspace_unavailable");
+    const evidence = { source: "caller_excerpt", bytes: minimized.bytes, clipped: minimized.clipped, redactions: minimized.redactions };
+    // Redaction is not permission: transport needs an explicit caller opt-in.
+    if (!request.allowSend) return { status: "preview", advisory: true, facts, triage: null, evidence, usage: null };
+    return runClassify(ctx, facts, minimized, signal, lifetime);
   }
 
   return function register(pi, lifetime) {

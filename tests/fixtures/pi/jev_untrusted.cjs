@@ -2,7 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const sourcePath = process.argv[2];
-setTimeout(() => process.exit(124), 30_000).unref();
+const watchdog = setTimeout(() => process.exit(124), 30_000);
 
 function loadExtension(file) {
   const source = fs.readFileSync(file, "utf8")
@@ -115,8 +115,14 @@ async function invoke(params = base, signal = context.signal) {
   assert.equal(result.coverage.coverage, "partial");
   assert.ok(result.coverage.inspected <= 8 * 1024 && result.coverage.provided > 8 * 1024);
 
+  // Bounds are UTF-8 bytes, not UTF-16 units.
+  result = await invoke({ source: "unicode doc", excerpt: "字".repeat(9_000), allowSend: true });
+  assert.equal(result.status, "ok");
+  assert.ok(Buffer.byteLength(requests.at(-1).state.untrusted.excerpt, "utf8") <= 8 * 1024, "CJK excerpt exceeded the byte bound");
+  assert.equal(result.coverage.coverage, "partial");
+
   scripted = () => new Promise(() => {});
   assert.equal((await invoke({ ...base, allowSend: true })).status, "unavailable", "hung provider blocked advice");
   assert.notEqual((await invoke({ ...base, allowSend: true }, AbortSignal.abort())).status, "ok");
   await emit("session_shutdown", {}, context);
-})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+})().catch((error) => { console.error(error.message); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));

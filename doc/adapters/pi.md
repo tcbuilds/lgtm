@@ -397,9 +397,11 @@ Redaction runs before the 8 KiB clip, and clipping is always reported. Regex
 redaction is not permission to upload: without `allowSend: true` the tool returns
 a `preview` with zero calls. Home paths, emails, IPs, and credential-like tokens
 become markers; a private-key block is `rejected` outright and never transported
-or logged. Command, cwd, exit code, and an existing LGTM finding remain facts.
-When Jev is unavailable, inspect the raw log normally; the tool never replaces
-that.
+or logged. Command, cwd, exit code, and an existing LGTM finding remain facts
+after the same redaction; a private-key value in any field is `rejected` before
+transport or persistence. Bounds count UTF-8 bytes, so multi-byte text cannot
+exceed the clip. When Jev is unavailable, inspect the raw log normally; the tool
+never replaces that.
 
 ## Jev compaction advice
 
@@ -440,7 +442,8 @@ text(warning);
 ```
 
 This is **not a security boundary**. A clean inspected span never proves unseen
-text is safe, and clipping is always reported as partial coverage. It never
+text is safe, and clipping is always reported as partial coverage. Bounds count
+UTF-8 bytes, not characters. It never
 overrides trusted instructions, permissions, or deterministic checks, never reads
 files, and never runs commands. A private-key block is `rejected`; missing answers
 stay `partial` or `unavailable`. A harmless quoted or test example is

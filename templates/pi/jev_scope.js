@@ -113,6 +113,7 @@ const registerLgtmJevScope = (() => {
     } catch {
       return failure("request_unavailable");
     }
+    signal.throwIfAborted();
     const usage = usageOf(result);
     if (result?.stopReason !== "stop" || !record(result.answers)) return { ...failure("invalid_or_unavailable_response"), usage };
     const drift = driftFor(result);

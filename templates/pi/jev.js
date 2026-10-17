@@ -211,7 +211,7 @@ const registerLgtmJev = (() => {
     if (!record(answer) || answer.type !== "score" || !Number.isInteger(answer.score)) return undefined;
     if (answer.score < 0 || answer.score >= question.criteria.length) return undefined;
     if (!probability(answer.confidence)) return undefined;
-    return { type: "score", score: answer.score, level: question.criteria[answer.score], confidence: answer.confidence };
+    return { type: "score", score: answer.score, confidence: answer.confidence };
   }
 
   const ANSWER_VALIDATORS = { bool: boolAnswer, choice: choiceAnswer, score: scoreAnswer };
@@ -333,16 +333,34 @@ const registerLgtmJev = (() => {
     }
   }
 
+  async function eligibleSize(root, name) {
+    try {
+      const full = await candidatePath(root, name);
+      const fs = await import("node:fs");
+      return fs.lstatSync(full).size;
+    } catch {
+      return undefined;
+    }
+  }
+
   async function classifyFiles(ctx, root, model, request, signal) {
     const started = Date.now();
     const files = [];
     const usages = [];
+    let bytes = 0;
     for (const [index, name] of request.paths.entries()) {
       const id = `f${index}`;
       if (Date.now() - started >= AGGREGATE_TIMEOUT_MS) {
         files.push(unknownItem(id, name, "deadline"));
         continue;
       }
+      // Enforce the aggregate byte budget on the transport path, not only in preview.
+      const size = await eligibleSize(root, name);
+      if (size !== undefined && bytes + size > MAX_TOTAL_BYTES) {
+        files.push(unknownItem(id, name, "volume_limit"));
+        continue;
+      }
+      if (size !== undefined) bytes += size;
       const outcome = await classifyBounded(ctx, root, model, request, id, name, signal);
       files.push(outcome.item);
       if (outcome.usage) usages.push(outcome.usage);

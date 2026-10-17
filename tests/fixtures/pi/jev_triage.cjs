@@ -2,7 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const sourcePath = process.argv[2];
-setTimeout(() => process.exit(124), 30_000).unref();
+const watchdog = setTimeout(() => process.exit(124), 30_000);
 
 function loadExtension(file) {
   const source = fs.readFileSync(file, "utf8")
@@ -63,6 +63,7 @@ async function invoke(params = base, signal = context.signal) {
   assert.equal(tool.exposure, "codemode");
   assert.equal(calls, 0, "startup made a paid request");
 
+  let before = calls;
   let result = await invoke();
   assert.equal(result.status, "preview");
   assert.equal(result.triage, null);
@@ -73,13 +74,28 @@ async function invoke(params = base, signal = context.signal) {
   assert.ok(!JSON.stringify(result).includes("ada@example.com"), "preview leaked an email");
   assert.ok(!JSON.stringify(result).includes("abcdefghijklmnop"), "preview leaked a token");
 
+  // Metadata is minimized too: secrets never persist or transmit.
+  before = calls;
+  result = await invoke({ ...base, command: "curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz'", cwd: "/home/ada/project", finding: "token=abcdefghijklmnop", excerpt: "plain failure text" });
+  assert.equal(result.status, "preview");
+  assert.ok(!JSON.stringify(result).includes("abcdefghijklmnop"), "metadata secret reached preview");
+  assert.ok(!JSON.stringify(result).includes("/home/ada"), "metadata home path reached preview");
+  assert.equal(calls, before, "metadata preview transmitted");
+  result = await invoke({ ...base, command: "curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz'", finding: "token=abcdefghijklmnop", excerpt: "plain failure text", allowSend: true });
+  assert.ok(!JSON.stringify(requests.at(-1)).includes("abcdefghijklmnop"), "metadata secret was transmitted");
+  assert.ok(!JSON.stringify(result).includes("abcdefghijklmnop"), "metadata secret was returned");
+  result = await invoke({ ...base, command: "-----BEGIN RSA PRIVATE KEY-----", excerpt: "x" });
+  assert.equal(result.status, "rejected");
+  assert.equal(result.reason, "sensitive_metadata");
+
   scripted = choice("code");
+  const approvedBefore = calls;
   result = await invoke({ ...base, allowSend: true });
   assert.equal(result.status, "ok");
   assert.equal(result.triage.category, "code");
   assert.equal(result.triage.unknown, false);
   assert.equal(result.facts.cwd, "/tmp/ws");
-  assert.equal(calls, 1, "approved send must make exactly one call");
+  assert.equal(calls - approvedBefore, 1, "approved send must make exactly one call");
   const sent = JSON.stringify(requests.at(-1));
   assert.ok(!sent.includes("ada@example.com"), "email was not redacted before transport");
   assert.ok(!sent.includes("abcdefghijklmnop"), "token was not redacted before transport");
@@ -109,7 +125,7 @@ async function invoke(params = base, signal = context.signal) {
   assert.equal(result.status, "unavailable");
   assert.ok(!JSON.stringify(result).includes("provider secret"));
 
-  const before = calls;
+  before = calls;
   const key = "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----";
   result = await invoke({ ...base, excerpt: key, allowSend: true });
   assert.equal(result.status, "rejected");
@@ -129,6 +145,12 @@ async function invoke(params = base, signal = context.signal) {
   assert.equal(result.evidence.clipped, true, "clipping was not reported");
   assert.ok(result.evidence.bytes <= 8 * 1024);
 
+  // Bounds are UTF-8 bytes, not UTF-16 units.
+  result = await invoke({ ...base, excerpt: "字".repeat(9_000), allowSend: true });
+  assert.equal(result.status, "ok");
+  assert.ok(Buffer.byteLength(requests.at(-1).state.triage.excerpt, "utf8") <= 8 * 1024, "CJK excerpt exceeded the byte bound");
+  assert.equal(result.evidence.clipped, true);
+
   assert.notEqual((await invoke({ ...base, allowSend: true }, AbortSignal.abort())).status, "ok");
   await emit("session_shutdown", {}, context);
-})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+})().catch((error) => { console.error(error.message); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));

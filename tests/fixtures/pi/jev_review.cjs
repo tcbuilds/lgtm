@@ -2,7 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const sourcePath = process.argv[2];
-setTimeout(() => process.exit(124), 30_000).unref();
+const watchdog = setTimeout(() => process.exit(124), 30_000);
 
 function loadExtension(file) {
   const source = fs.readFileSync(file, "utf8")
@@ -41,7 +41,7 @@ const HARMLESS = [
   "",
 ].join("\n");
 
-let diff = RISKY, calls = 0, classify = allFlags(true);
+let diff = RISKY, calls = 0, requests = [], classify = allFlags(true);
 const context = {
   cwd: process.cwd(), isProjectTrusted: () => true,
   signal: new AbortController().signal,
@@ -55,7 +55,7 @@ const context = {
       assert.equal(type, "classifier"); assert.equal(provider, "openrouter"); assert.equal(id, "~typesafe/jev-latest");
       return { type, provider, id };
     },
-    classify: (model, input) => { calls++; return classify(model, input); },
+    classify: (model, input) => { calls++; requests.push(input); return classify(model, input); },
   },
 };
 
@@ -133,12 +133,17 @@ async function invoke(signal = context.signal) {
   assert.equal(result.reason, "diff_ineligible");
   assert.equal(calls, before, "rejected diffs reached the provider");
 
-  diff = ["diff --git a/.env b/.env", "--- a/.env", "+++ b/.env", "diff --git a/src/app.rs b/src/app.rs", "--- a/src/app.rs", "+++ b/src/app.rs", "@@ -1 +1 @@", "-a", "+b", ""].join("\n");
+  before = calls;
+  diff = ["diff --git a/.env b/.env", "--- a/.env", "+++ b/.env", "@@ -1 +1 @@", "-OLD=1", "+PASSWORD=private_canary", "diff --git a/src/app.rs b/src/app.rs", "--- a/src/app.rs", "+++ b/src/app.rs", "@@ -1 +1 @@", "-a", "+b", ""].join("\n");
   classify = allFlags(false);
   result = await invoke();
-  assert.deepEqual(result.evidence.files, ["src/app.rs"], "private changed path was reported");
-  assert.equal(result.status, "ok");
+  assert.equal(result.status, "rejected", "a private diff was accepted");
+  assert.equal(result.reason, "diff_private");
+  assert.equal(calls, before, "a private diff reached the provider");
+  assert.ok(!requests.some((input) => JSON.stringify(input).includes("private_canary")), "private hunk content was transmitted");
+  assert.ok(!requests.some((input) => JSON.stringify(input).includes(".env")), "private path was transmitted");
 
+  diff = RISKY;
   classify = () => new Promise(() => {});
   result = await invoke();
   assert.equal(result.status, "unavailable", "hung provider blocked review");
@@ -146,4 +151,4 @@ async function invoke(signal = context.signal) {
 
   assert.notEqual((await invoke(AbortSignal.abort())).status, "ok");
   await emit("session_shutdown", {}, context);
-})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+})().catch((error) => { console.error(error.message); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));

@@ -37,16 +37,25 @@ const registerLgtmJevUntrusted = (() => {
 
   function minimize(excerpt) {
     if (PRIVATE_KEY.test(excerpt)) return { rejected: true };
+    const provided = new TextEncoder().encode(excerpt).length;
     let text = excerpt;
     let redactions = 0;
     for (const [pattern, replacement] of REDACTIONS) {
       text = text.replace(pattern, (match) => { redactions += 1; return match.length > 0 ? replacement : match; });
     }
-    const clipped = text.length > MAX_EXCERPT_OUT;
-    const inspected = text.slice(0, MAX_EXCERPT_OUT);
+    const bytes = new TextEncoder().encode(text);
+    const truncated = bytes.length > MAX_EXCERPT_OUT;
+    let end = bytes.length;
+    if (truncated) {
+      // Back off to a UTF-8 character boundary so re-encoding never exceeds the bound.
+      end = MAX_EXCERPT_OUT;
+      while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+    }
+    const inspected = truncated ? new TextDecoder().decode(bytes.subarray(0, end)) : text;
+    const inspectedBytes = end;
     return {
-      excerpt: inspected, redactions, clipped,
-      coverage: { provided: excerpt.length, inspected: inspected.length, clipped, coverage: clipped ? "partial" : "complete" },
+      excerpt: inspected, redactions, clipped: truncated,
+      coverage: { provided, inspected: inspectedBytes, clipped: truncated, coverage: truncated ? "partial" : "complete" },
     };
   }
 
@@ -99,6 +108,7 @@ const registerLgtmJevUntrusted = (() => {
     } catch {
       return failure("request_unavailable");
     }
+    signal.throwIfAborted();
     const warning = warningFor(result);
     const usage = usageOf(result);
     if (!warning) return { ...failure("invalid_or_unavailable_response"), coverage: minimized.coverage, usage };

@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const sourcePath = process.argv[2];
-setTimeout(() => process.exit(124), 30_000).unref();
+const watchdog = setTimeout(() => process.exit(124), 30_000);
 function loadExtension(file) {
   const source = fs.readFileSync(file, "utf8")
     .replace(/^import \{([^\n]+)\} from "([^\"]+)";$/gm, 'const {$1} = require("$2");')
@@ -133,4 +133,4 @@ async function invoke(p = params, signal = context.signal) {
   assert.equal(fs.readFileSync("app.rs", "utf8"), body, "ordinary reads stopped working");
   assert.ok(!JSON.stringify(entries).includes(body.trim()), "session records leaked source");
   await emit("session_shutdown", {}, context);
-})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+})().catch((error) => { console.error(error.message); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));

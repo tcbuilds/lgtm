@@ -86,6 +86,7 @@ const registerLgtmJevCompaction = (() => {
     } catch {
       return failure("request_unavailable");
     }
+    signal.throwIfAborted();
     const advice = adviceFor(result);
     if (!advice || advice.known === 0) return { ...failure("invalid_or_unavailable_response"), usage: usageOf(result) };
     const { known, ...compaction } = advice;

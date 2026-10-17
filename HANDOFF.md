@@ -169,6 +169,36 @@ have to be met before adding one (exact input/questions/provider/model/policy/
 freshness identity, resolved aliases, no cached errors, expiry and size limits,
 corrupt state fails closed, cancellation never writes, no database or service).
 
+## Phase-end review and fix round
+
+One independent Pi review ran over the whole M26 patch (baseline `56d7005`) with
+two fresh-context `reviewer` children at `openai-codex/gpt-6-astra:low` (repo
+Astra routing; the pi-review skill asks for Sol/Astra high and that is overridden
+by AGENTS.md). Parent-verified findings and fixes:
+
+- High: private-path hunks still reached the provider in `jev_review`. Fixed by
+  rejecting the whole diff (`diff_private`) when any header path is private,
+  including quoted Git paths; the fixture now asserts zero calls and no `.env`
+  content in any request.
+- High: `jev_triage` echoed `command`/`cwd`/`finding` unchanged into results and
+  session records. Fixed by redacting those fields and rejecting a private-key
+  value (`sensitive_metadata`) before transport and persistence.
+- Medium: the 64 KiB batch cap was enforced only in preview. Fixed by an actual
+  byte budget on the classification path; the fixture asserts transmitted bytes
+  stay within 65,536 and excess files are skipped.
+- Medium: score answers persisted the question criteria text. Fixed to return the
+  score index and confidence only.
+- Medium: four tools accepted a late provider result after cancellation. Fixed
+  with a post-classification abort check in `jev_compaction`, `jev_scope`,
+  `jev_triage`, and `jev_untrusted`.
+- Medium: clipping used UTF-16 units. Fixed to count and clip on UTF-8 byte
+  boundaries in `jev_triage`, `jev_untrusted`, and `jev_review`; fixtures assert
+  multi-byte payloads stay within the byte bound.
+- Medium: `.unref()` watchdogs could let harnesses exit 0 before assertions.
+  Fixed to a referenced watchdog cleared on completion in all eight fixtures.
+
+Full gates re-ran clean after the fixes. Reviewer re-verification is the next step.
+
 ## Verified commands (slice 26.2)
 
 - `cargo fmt --check`

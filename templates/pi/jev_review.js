@@ -28,13 +28,27 @@ const registerLgtmJevReview = (() => {
     return { input: u.input, output: u.output, totalTokens: u.totalTokens, ...(cost ? { cost } : {}) };
   }
 
-  function changedFiles(patch) {
-    const files = new Set();
-    for (const line of patch.split("\n")) {
-      const match = /^(?:\+\+\+|---) [ab]\/(.+)$/.exec(line);
-      if (match && match[1] !== "/dev/null") files.add(match[1]);
+  function stripPath(token) {
+    let name = token;
+    if (name.startsWith('"') && name.endsWith('"')) {
+      try { name = JSON.parse(name); } catch { name = name.slice(1, -1); }
     }
-    return [...files];
+    if (name === "/dev/null") return undefined;
+    if (name.startsWith("a/") || name.startsWith("b/")) name = name.slice(2);
+    return name.length > 0 ? name : undefined;
+  }
+
+  function headerPaths(patch) {
+    const names = new Set();
+    for (const line of patch.split("\n")) {
+      const match = /^(?:diff --git |\+\+\+ |--- |rename from |rename to |copy from |copy to )(.*)$/.exec(line);
+      if (!match) continue;
+      for (const token of match[1].split(/\s+/)) {
+        const name = stripPath(token);
+        if (name) names.add(name);
+      }
+    }
+    return [...names];
   }
 
   function eligibleDiff(patch) {
@@ -45,14 +59,26 @@ const registerLgtmJevReview = (() => {
     return name.split("/").some((part) => PRIVATE_PATH.test(part)) || PRIVATE_SUFFIX.test(name);
   }
 
+  function clipBytes(text, limit) {
+    const bytes = new TextEncoder().encode(text);
+    if (bytes.length <= limit) return { patch: text, bytes: bytes.length };
+    // Back off to a UTF-8 character boundary so re-encoding never exceeds the bound.
+    let end = limit;
+    while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+    return { patch: new TextDecoder().decode(bytes.subarray(0, end)), bytes: end };
+  }
+
   function parseDiff(text) {
     if (typeof text !== "string" || text.trim().length === 0) throw new Error("diff_empty");
-    if (text.length > MAX_PATCH_BYTES * 4) throw new Error("diff_too_large");
-    const files = changedFiles(text).filter((name) => !privateFile(name));
+    const encodedBytes = new TextEncoder().encode(text).length;
+    if (encodedBytes > MAX_PATCH_BYTES * 4) throw new Error("diff_too_large");
+    const files = headerPaths(text);
+    // A private path anywhere in the diff rejects the whole diff before transport.
+    if (files.some(privateFile)) throw new Error("diff_private");
     if (files.length > MAX_FILES) throw new Error("diff_too_large");
-    const patch = text.slice(0, MAX_PATCH_BYTES);
-    if (!eligibleDiff(patch)) throw new Error("diff_ineligible");
-    return { files, patch, bytes: patch.length, truncated: text.length > MAX_PATCH_BYTES };
+    const clipped = clipBytes(text, MAX_PATCH_BYTES);
+    if (!eligibleDiff(clipped.patch)) throw new Error("diff_ineligible");
+    return { files, patch: clipped.patch, bytes: clipped.bytes, truncated: encodedBytes > MAX_PATCH_BYTES };
   }
 
   async function obtainDiff(ctx, signal) {
@@ -127,7 +153,7 @@ const registerLgtmJevReview = (() => {
     return { status: statusFor(flags), advisory: true, flags, evidence, provider: "openrouter", model: MODEL, rubric: FLAG_IDS.length, usage };
   }
 
-  const DIFF_REASONS = new Set(["diff_empty", "diff_too_large", "diff_ineligible", "diff_unavailable"]);
+  const DIFF_REASONS = new Set(["diff_empty", "diff_too_large", "diff_ineligible", "diff_private", "diff_unavailable"]);
 
   function diffFailure(error) {
     const reason = error?.message;

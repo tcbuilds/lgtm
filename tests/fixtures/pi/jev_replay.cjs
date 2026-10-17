@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const sourcePath = process.argv[2];
 const corpusPath = process.argv[3] || path.resolve("tests/fixtures/pi/jev_replay_corpus.json");
-setTimeout(() => process.exit(124), 30_000).unref();
+const watchdog = setTimeout(() => process.exit(124), 30_000);
 
 const CATEGORIES = new Set(["useful", "irrelevant", "ambiguous", "negation", "hostile", "changed", "held-out"]);
 const PUBLIC_PREFIXES = ["src/", "templates/", "tests/", "doc/", "scripts/", "policy/"];
@@ -181,4 +181,4 @@ async function invoke(params) {
     notes: "scriptedAgreement reflects transport fidelity, not classifier accuracy",
   }));
   await emit("session_shutdown", {}, context);
-})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+})().catch((error) => { console.error(error.message); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));
