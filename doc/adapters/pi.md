@@ -92,8 +92,9 @@ provenance.
 
 An unverified warning means that LGTM could not prove a check ran correctly. It
 is not a policy violation or a successful check. The warning includes a bounded
-reason code, such as `tool_provenance_unverified`. LGTM records every failure in
-Pi session entries with custom type `lgtm`.
+reason code, such as `tool_provenance_unverified`. LGTM attempts to record every
+failure in Pi session entries with custom type `lgtm`. Persistence is best effort
+if Pi rejects the entry.
 
 Each loaded extension shows a warning once per reason per session. A new session,
 `session_start`, or shutdown resets this limit. Warning state holds at most 32

@@ -13,6 +13,10 @@ const OWNED_END: &str = "// lgtm-pi-extension: end";
 // upgrade. The b45c/ed0f entries are the v0.10.1 Pi 0.84.2 project/global
 // templates.
 const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
+    "439c5f58c1bca50a4c3b6d8932f8f6200b38758bca5e0571512c4547270f67d8",
+    "9d6ff3f2a1eae81f37a979989c94def375cf7bd3b95ce466257bf331b7164003",
+    "8375bd687e10d6ffb7af82ed5fdcc452682eefbac485474931ddf83760581c25",
+    "8c2d8f5b69f12eb6f416ea3cb9f941109b93408724b0e49d5c8669a82d6c1efe",
     "23c1852ff08ed3441e7c8f3f90219135b1ba316025e8dc6f811c4802c62c8f55",
     "b030a8b6d3abfd438249526df3b2348585963daa13a9c77a2f8dd7a72669c2ac",
     "ca4ba7eacae8b1f138933e6a4c7e7d443ac4880018c7faa429eae6c5b650ed18",
