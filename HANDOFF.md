@@ -106,6 +106,19 @@ test in `tests/jev_pi.rs` cover risky/harmless diffs, partial/unknown flags,
 provider failure/timeout/cancel, and evidence filtering. Scratch 26.2→26.4
 project and global upgrade/backup/refresh probes pass with the recorded digests.
 
+## Slice 26.5
+
+`templates/pi/jev_scope.js` registers `lgtm_jev_scope`, an advisory check that
+compares a declared scope and up to eight claims against the HEAD revision and
+changed paths (fixed read-only `git` calls, 200-path and 512-character bounds).
+Verdicts are `supported`, `unsupported`, `contradicted`, `unclear`, `missing`,
+or `invalid`; a stale revision or empty diff makes no call. It never creates
+`Passed` evidence and never touches `src/checks/claims.rs` or `src/hooks/stop.rs`.
+`tests/fixtures/pi/jev_scope.cjs` and a fifth test in `tests/jev_pi.rs` cover a
+docs-only scope with an installer edit, valid work, missing/invalid claims,
+stale/empty/oversized input, and provider failure. Scratch 26.4→26.5 project and
+global upgrade/backup/refresh probes pass.
+
 ## Verified commands (slice 26.2)
 
 - `cargo fmt --check`

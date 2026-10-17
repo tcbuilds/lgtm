@@ -95,11 +95,11 @@ async function invoke(p = params, signal = context.signal) {
 (async () => {
   loadExtension(sourcePath)(pi);
   await emit("session_start", {}, context);
-  assert.equal(registrations, 2);
+  assert.equal(registrations, 3);
   const tool = tools.get("lgtm_jev_files");
   assert.equal(tool.exposure, "codemode");
   assert.deepEqual(tool.reachesTools(), ["read"], "Jev may only reach the governed read tool");
-  assert.deepEqual([...tools.keys()].sort(), ["lgtm_jev_files", "lgtm_jev_review"], "unexpected Jev tool set");
+  assert.deepEqual([...tools.keys()].sort(), ["lgtm_jev_files", "lgtm_jev_review", "lgtm_jev_scope"], "unexpected Jev tool set");
   assert.equal(requests.length, 0, "startup made a paid request");
 
   const readsBefore = reads;

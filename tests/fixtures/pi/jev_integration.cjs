@@ -66,8 +66,8 @@ async function invoke(p = params, signal = context.signal) {
   loadExtension(sourcePath)(pi);
   if (process.argv[3]) loadExtension(process.argv[3])(pi);
   await emit("session_start", {}, context);
-  assert.equal(registrations, 2, "project/global loading registered duplicate Jev tools");
-  assert.ok(tools.has("lgtm_jev_files") && tools.has("lgtm_jev_review"), "both Jev tools must register once");
+  assert.equal(registrations, 3, "project/global loading registered duplicate Jev tools");
+  assert.deepEqual([...tools.keys()].sort(), ["lgtm_jev_files", "lgtm_jev_review", "lgtm_jev_scope"], "every Jev tool must register once");
   assert.equal(requests.length, 0, "startup made a paid request");
   assert.equal(tools.get("lgtm_jev_files").exposure, "codemode");
   let r = await invoke();

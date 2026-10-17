@@ -355,6 +355,30 @@ other than the fixed read-only diff, and never creates command evidence or
 changes a gate. Use ordinary review and the deterministic gates for decisions;
 this only focuses attention.
 
+## Jev scope and claim advice
+
+`lgtm_jev_scope` compares a declared scope and final claims against the current
+changed paths at an explicit completed-slice check. It reads the revision and
+paths with fixed read-only `git` calls, bounds the inputs (512-character scope,
+one to eight claims, 200 paths), and returns an advisory verdict per claim:
+`supported`, `unsupported`, `contradicted`, `unclear`, `missing`, or `invalid`.
+
+```js
+const advice = await tools.lgtm_jev_scope({
+  scope: "documentation only, no production code",
+  claims: ["Only markdown changed"],
+  revision: "<40-hex HEAD>",
+});
+text(advice);
+```
+
+A revision that does not match `HEAD` is `stale`; no changes is `empty`; both
+make no classifier call. Advice is not verification. This tool never creates
+`Passed` command evidence, never changes `lgtm` gate decisions, and never edits
+`src/checks/claims.rs` or `src/hooks/stop.rs` behavior. The deterministic Stop
+claims check remains authoritative, and a missing answer stays `missing` rather
+than becoming a clean or contradicted result.
+
 ## Finding approval capability
 
 The canonical extension advertises the strictly versioned
