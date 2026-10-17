@@ -159,6 +159,16 @@ cover hostile instructions versus a harmless quote, missing/unmapped answers,
 private keys, redaction, clipping, and provider failure. Scratch 26.7→26.8
 project and global upgrade/backup/refresh probes pass.
 
+## Slice 26.9
+
+Decision recorded: **no answer cache ships.** The offline preflight makes no live
+calls and the live replay shows no measured repeat reuse, so there is no net
+benefit to claim and adding storage would create stale-answer risk for a cheap
+decision. `doc/adapters/pi.md` records the bounded, private criteria that would
+have to be met before adding one (exact input/questions/provider/model/policy/
+freshness identity, resolved aliases, no cached errors, expiry and size limits,
+corrupt state fails closed, cancellation never writes, no database or service).
+
 ## Verified commands (slice 26.2)
 
 - `cargo fmt --check`

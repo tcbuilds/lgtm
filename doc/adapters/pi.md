@@ -446,6 +446,23 @@ files, and never runs commands. A private-key block is `rejected`; missing answe
 stay `partial` or `unavailable`. A harmless quoted or test example is
 `benign_quoting`, not an injection.
 
+## Answer caching: not needed
+
+No bounded answer cache ships. The decision rule is measurement first: caching is
+only justified when repeat queries of the same identity actually reuse answers
+enough to beat the cost and risk it adds. The offline preflight makes no live
+calls by design, and the live replay has no measured repeat reuse, so there is no
+net benefit to claim. Adding storage now would create stale-answer risk for a
+cheap decision without evidence.
+
+If a future live replay shows real reuse, a cache may be added only with a
+bounded, private design: identity covers the exact input, questions, provider and
+model, policy, and source freshness; a moving alias like `~typesafe/jev-latest`
+must resolve to a concrete version before reuse; errors are never cached as
+negative judgments; expiry and size limits are enforced; corrupt state fails
+closed; and cancellation never writes. Do not add a database or service to cache
+these decisions.
+
 ## Finding approval capability
 
 The canonical extension advertises the strictly versioned
