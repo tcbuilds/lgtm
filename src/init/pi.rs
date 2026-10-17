@@ -13,6 +13,8 @@ const OWNED_END: &str = "// lgtm-pi-extension: end";
 // upgrade. The b45c/ed0f entries are the v0.10.1 Pi 0.84.2 project/global
 // templates.
 const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
+    "23c1852ff08ed3441e7c8f3f90219135b1ba316025e8dc6f811c4802c62c8f55",
+    "b030a8b6d3abfd438249526df3b2348585963daa13a9c77a2f8dd7a72669c2ac",
     "ca4ba7eacae8b1f138933e6a4c7e7d443ac4880018c7faa429eae6c5b650ed18",
     "1b823a8b1b6b847ebc970652afd2c30d67a70abc04796514765d878ae76a70e5",
     "524b3d58c2f839420c14f8ec081855ea3499d4e219d1f5c4c131fe4051d28c2c",
@@ -27,6 +29,7 @@ const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
     "f479f973d8a69973cc1fe77a304c24d871d6b1497f6ff82c3b16a5e13bf4a4cc",
     "79c6df8037cb89d0df8992204df8d34de9d547952a14a528b0954fc054b66473",
 ];
+const JEV_TEMPLATE: &str = include_str!("../../templates/pi/jev.js");
 const EXTENSION_TEMPLATE: &str = r#"// lgtm-pi-extension: v1
 // lgtm-pi-scope: __LGTM_SCOPE__
 
@@ -155,9 +158,13 @@ function projectBinaryIsRunnable() {
   }
 }
 
+function extensionLocation() {
+  return new URL(import.meta.url);
+}
+
 function projectTemplateIsCanonical() {
   try {
-    const extensionUrl = new URL(import.meta.url);
+    const extensionUrl = extensionLocation();
     const metadata = lstatSync(extensionUrl);
     if (!metadata.isFile()) return false;
     return canonicalTemplateDigest(readFileSync(extensionUrl, "utf8")) === TEMPLATE_DIGEST;
@@ -904,6 +911,8 @@ async function handle(pi, eventType, event, ctx, approvalState) {
   }
 }
 
+__LGTM_JEV__
+
 export default function lgtm(pi) {
   if (SCOPE === "project" && projectBinaryIsRunnable() && projectTemplateIsCanonical()) {
     globalThis[PROJECT_SCOPE_LOADED] = true;
@@ -914,8 +923,10 @@ export default function lgtm(pi) {
     controller: new AbortController(),
     notifiedFailures: new Set(),
   };
-  pi.on("session_start", (event, ctx) =>
-    handle(pi, "session_start", event, ctx, approvalState));
+  pi.on("session_start", (event, ctx) => {
+    registerLgtmJev(pi, () => approvalState.controller.signal);
+    return handle(pi, "session_start", event, ctx, approvalState);
+  });
   pi.on("session_shutdown", () => {
     approvalState.controller.abort();
     approvalState.generation += 1;
@@ -985,6 +996,7 @@ pub(crate) fn render(binary: &str, scope: ExtensionScope) -> Result<Vec<u8>, Ini
     let project_digest = expected_template_digest(ExtensionScope::Project);
     let scope_digest = expected_template_digest(scope);
     Ok(EXTENSION_TEMPLATE
+        .replace("__LGTM_JEV__", JEV_TEMPLATE)
         .replace("__LGTM_BINARY__", &binary)
         .replace("__LGTM_SCOPE__", scope.as_str())
         .replace("__LGTM_TEMPLATE_DIGEST__", &scope_digest)
@@ -994,7 +1006,9 @@ pub(crate) fn render(binary: &str, scope: ExtensionScope) -> Result<Vec<u8>, Ini
 }
 
 pub(crate) fn expected_template_digest(scope: ExtensionScope) -> String {
-    let canonical = EXTENSION_TEMPLATE.replace("__LGTM_SCOPE__", scope.as_str());
+    let canonical = EXTENSION_TEMPLATE
+        .replace("__LGTM_JEV__", JEV_TEMPLATE)
+        .replace("__LGTM_SCOPE__", scope.as_str());
     digest(&normalize_template(&canonical))
 }
 

@@ -1,187 +1,96 @@
-# Handoff — Jev v2 belongs in LGTM init
+# Handoff — M26 implementation in progress
 
-> Updated: 2026-10-17T14:56:18.736Z
-> Branch: `docs/jev-v2-file-reads`; latest observed code: `f833bf3`.
-> Jev research originally compared enforcement code base `29af281`.
-> Revalidate after code/global-hook changes or a branch change.
-> Local main was five commits behind `origin/main` (`75124a5`); no merge or
-> source update was performed for this docs-only checkpoint.
+> Updated: 2026-10-17T15:39:09.897Z
+> Branch: `docs/jev-v2-file-reads`
+> M26 review baseline: `56d70055ea3ff21275fa3c9ec77c792f328cc54f`
 
-## Mission context
+## Current authority
 
-The owner wants a simple Jev file-question capability **shipped by LGTM's
-Pi init flow**, building on the existing native `jev-auto.ts` approach.
-This is not a standalone package project. **Do not revive jev-classify.**
+The owner authorized **all M26**, commits in verified slices, and Pi review
+**once over the whole phase at the end**, not per slice. Implementation is
+direct; no writer subagents were launched.
 
-Read [jev_v2.md](jev_v2.md) first. It is the short explanation of the idea.
-This request authorized documentation only, not implementation, installation,
-global settings changes, or another paid benchmark.
+Jev is on by default and must fail gracefully without Jev/API/auth/provider.
+Normal tools and deterministic LGTM enforcement keep working. Existing global
+`~/.pi/agent/extensions/jev-auto.ts` stays unchanged. Do not revive jev-classify.
 
-## What changed
+The owner approved a live replay budget of **$1 maximum, at most 64 calls,
+16 KiB of reviewed public LGTM source per call**. Do not send credentials,
+private logs, or user transcripts. Stop if cost cannot be bounded. No actual
+global deployment, release, model switch, or package install is authorized.
 
-- Added `jev_v2.md` in this LGTM repository; the owner then approved adding
-  the ranked follow-on recommendations from the repo comparison.
-- Recorded the 13-repo survey in `research.md`. The owner then approved adding
-  its top three candidates and four useful refinements to `jev_v2.md`.
-- Replaced the stale August issue-41 handoff with this current direction.
-- Preserved its exact contents in
-  [HANDOFF.2026-08-13.md](HANDOFF.2026-08-13.md). That file is historical,
-  not current branch/worktree/release guidance.
-- Added M26 to the local, gitignored `implementation_plan.md` from the latest
-  `/roadmap jev_v2.md` request; prior milestones were preserved. The owner chose
-  default-on Jev availability with graceful fallback, not session opt-in.
-- This planning checkpoint changes no production source, templates, manifests,
-  or enforcement behavior.
-- Documentation is on a separate branch so unrelated upstream code changes
-  and local untracked files are not mixed into this checkpoint.
+## Scope and plan
 
-## Intended behavior
+Read `jev_v2.md`, `research.md`, and local `implementation_plan.md` **M26**.
+The detailed plan is gitignored; do not force-add it. Older M20/M22 work is
+unrelated. Old M23 checkboxes are stale; the Pi adapter already exists.
 
-- A small Pi operation reads selected files, calls Pi's native classifier
-  API, and returns typed answers/probabilities instead of raw file contents.
-- The operation is callable from native codemode. No new provider client,
-  secret store, sandbox, or general-purpose tool router is needed.
-- Normal reads remain available. Read actual code before edits, quotes,
-  or correctness claims.
-- Init installs/updates the helper without requiring authentication or
-  making classifier requests. Runtime failures must not break ordinary
-  reads or LGTM enforcement.
-- Existing automatic tool routing is a separate concern. Do not silently
-  change its default, model alias, or the owner's installed global hook.
-- Preserve workspace boundaries, reject credentials, bound work, and report
-  truncated/skipped files. Uncertain results must not hide needed files.
+Nine slices:
+1. Managed single-file questions.
+2. Bounded multi-file preview/scouting.
+3. Question preflight and real replay.
+4. Separate review-risk flags.
+5. Scope/evidence consistency advice.
+6. Diagnostic triage.
+7. Optional compaction advice.
+8. Lower-priority suspicious-output advice.
+9. Measured cache decision; no cache unless justified.
 
-## Approved follow-on recommendations
+## Completed setup
 
-Earlier requests added these to the proposal. The latest `/roadmap` request
-now plans them in local `implementation_plan.md` M26. Full scope is in
-[jev_v2.md](jev_v2.md#follow-on-recommendations).
+- Owner approved merging upstream. The five upstream fixes merged cleanly.
+- Review baseline is the merge above, after compatibility change `f833bf3`.
+- Baseline: 68 Pi/init/refresh integration tests passed.
+- Context7 is unavailable; installed Pi 1.3.0 docs/source were inspected.
+- Native classifier: OpenRouter `~typesafe/jev-latest`; catalog input price
+  observed as $0.042/M tokens. This is not a guarantee of future pricing.
+- Pi-subagents 0.50.0 and executable reviewer profile are available.
+  No final review has been launched. Apply the governing model-routing policy
+  at dispatch and report any skill/global policy mismatch explicitly.
 
-1. Level 4: explicit uncertainty and safe normal-inspection fallbacks.
-2. Level 3: separate diff-risk questions to focus review, never waive checks.
-3. Level 7: optional task-boundary advice using Pi's existing compaction.
-4. Level 6, lower priority: suspicious external-output warnings only;
-   report inspected coverage and do not imply that unflagged text is safe.
+## Slice 26.1
 
-The owner also approved adding these from the wider survey:
+Implementation is present; final phase review is still pending.
 
-1. Question preflight and replay evaluation, first strengthening uncertainty.
-2. Advisory scope/evidence consistency checks, never execution proof.
-3. Diagnostic triage over approved, minimized excerpts using governed tools.
+- `templates/pi/jev.js`: rendered fragment, not another installed extension.
+  Registers `lgtm_jev_files` through existing session startup, with codemode
+  exposure and no startup inference. Uses native classifier and governed reads.
+- `src/init/pi.rs`: expands the fragment before hashing/rendering, retains
+  previous project/global canonical digests, and uses one extension-location
+  accessor. Existing fake-runtime tests still work.
+- Single-file boolean question: 16 KiB, 1,500 lines, five-second deadline.
+  Trusted workspace, file identity, prohibited paths, credential guards,
+  stale snapshots, cancellation, provider errors, and metadata privacy checked.
+- Native read filters remain authoritative. Only a surviving original source
+  block is classified; appended LGTM guidance is not treated as file content.
+- `tests/jev_pi.rs` and `tests/fixtures/pi/jev_integration.cjs` exercise the
+  generated extension with actual file IO and a fake paid-provider boundary.
+  No new unit tests or live-code mock data.
+- User guide updated in `doc/adapters/pi.md`.
 
-The approved refinements are outbound-work previews, source-snapshot
-identity, recommendation-versus-action records, and bounded caching only
-when measurements justify it. See
-[the expanded recommendations](jev_v2.md#recommendations-from-the-wider-survey)
-and [refinements](jev_v2.md#useful-refinements).
+Verified:
+- Regression first failed because the operation did not exist.
+- 61 focused integration checks passed after implementation.
+- Project, global, and combined loading exercise one effective registration.
+- Native Pi argument validation accepted the generated schema.
+- Scratch pre-Jev upgrades preserved exact backups and refresh idempotence.
+- Rust/JS diagnostics passed; Markdown has no supported LSP route.
+- Whole-suite tests, Clippy, live replay, mutation probes, and final phase
+  review remain pending. No paid replay calls have been launched yet.
 
-[research.md](research.md) keeps the source matrix and limits of the survey.
-It records the research-time candidate assessment; this handoff and the
-proposal record the later approval to include those candidates in the doc.
-Selective context pruning and the SQL/browser package stacks were not added.
+## Continue
 
-Levels 8–9 remain the planned file-question capability. Native codemode
-already provides much of Level 10's general typed-question capability;
-do not add a duplicate client or private command runner. Do not add
-automatic model switching, classifier-based permission overrides, or
-classifier verdicts as proof of test success.
+Commit verified 26.1 paths only, then implement 26.2. Keep plan checkboxes
+unchecked until the whole-phase gate is complete; record slice-local evidence.
+Reuse native codemode for general state classification; add no second client,
+private command runner, database, browser stack, or universal per-turn hook.
 
-This expands the documentation only. No implementation, rollout, paid
-evaluation, or global configuration change was authorized.
+Use Pi session metadata for safe decisions/usage, never source/question bodies.
+Keep malformed, unavailable, no-match, and stale outcomes distinct.
+No semantic judgment creates command proof or overrides a deterministic gate.
 
-## Existing code to inspect before implementation
+Unrelated untracked paths: `.killer-whale/`, `.pi/`, `triage.md`. Preserve them.
+Task scratch directory: `/tmp/lgtm-m26.w7q1OW` (baseline binary/source and upgrade
+probes). Clean it after review unless it is needed as retained failure evidence.
 
-CodeGraph was used to locate these seams:
-
-- `src/init/pi.rs` — embedded Pi extension, rendering, ownership checks,
-  collision preservation, and backups.
-- `src/init/pi_config.rs` and `templates/pi/` — managed Pi settings.
-- `src/init/global.rs` and `src/init/runner.rs` — global/project init paths.
-- `src/init/managed_refresh.rs` and `src/init/pi_installations.rs` —
-  tracked installation refresh.
-- `src/pi_state.rs` — existing Pi enforcement/attestation boundaries.
-
-No Jev-specific implementation was found in the relevant local init source
-or the checked `origin/main` source/templates/docs. The live reference is
-`~/.pi/agent/extensions/jev-auto.ts`, which currently routes tools, not files.
-Future code must use LGTM's managed install/refresh rules and must not
-overwrite a user's unrelated extension or change hard-stop enforcement.
-
-## Evidence and rejected directions
-
-- Instruction-only classifier use was inconsistent.
-- The separate fixed-vocabulary router produced bad live recommendations
-  and was removed. Do not restart that design or its old roadmap.
-- Routing evidence was mixed: deferred-tool preloading saved round trips,
-  while directly declared tools and small real builds showed no reliable gain.
-- None of those experiments measured selective Jev file reads.
-- CodeGraph `explore` already returns source. Do not load that source into
-  the main context and then claim Jev avoided reading it.
-- Author code for Levels 3–4 and 6–10 was inspected in
-  [disler/ten-levels-of-jev](https://github.com/disler/ten-levels-of-jev).
-  Direct video retrieval was unavailable; do not claim it was watched.
-- Do not copy the demo's cost ratios as measurements of this server.
-
-Local evidence remains outside this repository:
-`~/jev-benchmark/hard-report.md`,
-`~/jev-benchmark/build/REPORT.md`, and
-`~/jev-benchmark/nemotron-report.md`.
-Do not commit raw benchmark artifacts or treat their old task scores as
-evidence that file reads already work.
-
-## State and checks
-
-At roadmap start, unrelated Pi source/tests/docs edits were present; they
-landed separately during planning. Preserve the unrelated untracked
-`.killer-whale/`, `.pi/`, and `triage.md`.
-
-Concurrent Pi compatibility work was committed separately as `f833bf3`
-(`src/init/pi.rs`, `tests/init_pi.rs`, and `doc/adapters/pi.md`). It was not
-implemented by this planning task. Re-read it before M26 production edits;
-CodeGraph reported index drift. Older source observations refer to their
-recorded base, not an acceptance review of that change.
-
-- `cargo fmt --check`: passed, exit 0, after the compatibility commit landed.
-- `cargo build --locked --offline`: passed, exit 0; this is not a full review
-  of the separate compatibility change.
-- Document structure, nine unchecked M26 slices, spec coverage, source/test
-  references, local links, and ignored-plan status: checked.
-- Full Rust tests/Clippy: not rerun for this docs-only change.
-- Markdown LSP: unavailable; no configured server supports these files.
-- This checkpoint adds documentation only. Review concurrent source edits
-  before claiming that any Jev capability is implemented.
-
-## Open decisions
-
-- Resolved: on by default; missing Jev/API/auth/provider must leave ordinary
-  tools and deterministic LGTM checks usable. Init makes no classifier calls.
-- Plan: reuse the existing managed `lgtm.ts` install/refresh path; verify one
-  effective operation when project and global extensions coexist.
-- Still open before paid evaluation: owner-approved corpus/data handling and
-  budget. No paid replay or global install was authorized by `/roadmap`.
-
-These decisions do not authorize new work by themselves.
-
-## Continue here
-
-1. Read `jev_v2.md`, this handoff, and local `implementation_plan.md` **M26**.
-2. M26 has nine unchecked slices: managed single-file questions; bounded batch
-   preview/scouting; preflight/replay; review focus; scope/evidence checks;
-   diagnostic triage; compaction advice; lower-priority output warnings; and a
-   conditional cache decision. M20/M22 remain unrelated retained work; M23's
-   older status is stale. None is the target of this request.
-3. Keep all work in LGTM. Before code work, reconcile upstream and `f833bf3`,
-   re-read changed files, and recheck init/refresh callers and Pi compatibility.
-4. Wait for an explicit implementation request. Start with M26.1 if approved.
-   Default-on means the capability is available, not automatic scanning or
-   per-turn calls. Paid replay needs separate data/budget approval.
-5. The detailed plan is intentionally local/gitignored; do not force-add it.
-   This tracked handoff summarizes its scope, and `jev_v2.md` remains the spec.
-
-## Resume bootstrap
-
-```text
-/warmup
-Read /home/ubuntu/lgtm/jev_v2.md
-Read /home/ubuntu/lgtm/HANDOFF.md
-```
+The historical August handoff is `HANDOFF.2026-08-13.md`.

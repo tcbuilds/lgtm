@@ -243,6 +243,44 @@ still reports an unverified hook, check its runtime evidence. Do not remove the
 warning or mark the hook verified without that check. In particular, codemode
 calls are not a new claim of verified LGTM enforcement.
 
+## Jev file questions
+
+Managed project/global init includes `lgtm_jev_files`, available by default
+through native codemode. Init makes no classifier call and requires no key.
+The operation uses Pi's native OpenRouter `~typesafe/jev-latest` classifier;
+there is no separate client or credential store. Older Pi versions without
+the native classifier/nested-tool API return `unavailable`. Ordinary tools and
+LGTM enforcement continue working when Jev, authentication, or the provider
+is unavailable.
+
+```js
+const result = await tools.lgtm_jev_files({
+  paths: ["src/checks/auth.rs"],
+  questions: {
+    lexical_check: {
+      type: "bool",
+      instructions: "Does this file check lexical signals rather than prove runtime authorization?",
+      criteria: { true: "Lexical review signals", false: "No such check" },
+    },
+  },
+});
+text(result);
+```
+
+The initial operation accepts one file up to 16 KiB and 1,500 lines, one
+bounded boolean question, and a five-second request deadline. It rejects
+workspace escapes, symlinks/hardlinks, prohibited paths, common credential
+paths/content, non-text input, and oversized input. Content checks reduce
+risk; they do not prove that arbitrary source has no secrets. The file read
+passes through Pi's normal tool handlers. A filtered source block is not
+silently replaced with raw bytes. Source changes make the answer stale.
+
+Results contain judgments, source hashes, coverage/status, and reported usage,
+not file text. They are advisory; probabilities are not correctness proofs.
+Use ordinary reads before editing or quoting. Failure diagnostics and session
+metadata omit raw provider errors, question bodies, and source. Your existing
+`jev-auto.ts`, active tools, chat model, and deterministic checks are unchanged.
+
 ## Finding approval capability
 
 The canonical extension advertises the strictly versioned
