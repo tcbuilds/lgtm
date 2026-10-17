@@ -77,6 +77,22 @@ the `TEMPLATE_DIGEST` a 26.1 install embeds, and the probe now passes. Get futur
 digests the same way, from an installed previous revision, or reproduce Rust’s
 normalization exactly (drop the trailing newline after split).
 
+## Slice 26.3
+
+Offline preflight is implemented in `tests/fixtures/pi/jev_replay_corpus.json`,
+`tests/fixtures/pi/jev_replay_hostile.txt`, and
+`tests/fixtures/pi/jev_replay.cjs`, with a third integration test in
+`tests/jev_pi.rs`. It validates the versioned 14-case hand-labeled corpus and
+drives the generated tool with a scripted provider. It proves contracts only and
+prints `semanticQuality: "not-evaluated"`. The docs define the bounded live
+procedure (≤64 calls, ≤16 KiB public committed source per call, hard cost cap).
+
+The live tool-level replay has not been run. This Pi session started before the
+Jev tool existed, so `tools.lgtm_jev_files` is not callable here. One native
+classifier probe was validated live (`~typesafe/jev-latest`, answer 0.03,
+$0.000293) via the read tool, which is not the governed raw-byte path, so it is
+not the tool replay and must not be reported as semantic evidence.
+
 ## Verified commands (slice 26.2)
 
 - `cargo fmt --check`

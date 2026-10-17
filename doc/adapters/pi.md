@@ -302,6 +302,30 @@ const judged = await tools.lgtm_jev_files({
 text(judged);
 ```
 
+### Replay procedure
+
+`tests/fixtures/pi/jev_replay_corpus.json` is a versioned, hand-labeled corpus of
+real public LGTM source. It records the rubric (`lgtm-pi-jev-replay-v1`), model
+identity, byte bound, questions, and per-case labels for useful, irrelevant,
+negation, held-out, and hostile text.
+
+`tests/fixtures/pi/jev_replay.cjs` runs the offline preflight. It validates the
+corpus, then drives the generated tool with a **scripted** provider to prove
+transport and validation contracts: one call per case, raw source never returns,
+preview makes zero calls, unmapped choices become explicit no-match, out-of-range
+scores become `unavailable`, changed inputs become `stale`, hostile text is
+carried as data only, and denied paths never reach the provider. It prints a JSON
+report marked `semanticQuality: "not-evaluated"`. Offline preflight needs no key
+and makes no classifier call. Run it with the other Pi integration checks.
+
+Only a **live** replay measures semantic quality. Ask the owner first, then run a
+small, bounded set: at most 64 calls, 16 KiB of public committed source per call,
+and a hard cost cap. Record the question and policy version, source identities,
+reported model (an unresolved alias is not a pin), failures, misses, false
+positives, abstentions, main-model context, elapsed time, and total cost. Compare
+against CodeGraph or grep alone. Unknown cost stays unknown, and publishing no
+benefit is the expected outcome when Jev adds nothing.
+
 Results contain judgments, source hashes, coverage/status, and reported usage,
 not file text. They are advisory; probabilities are not correctness proofs.
 Use ordinary reads before editing or quoting. Failure diagnostics and session

@@ -91,3 +91,28 @@ fn generated_jev_scout_previews_batches_and_never_invents_matches() {
         "generated Jev scouting failed"
     );
 }
+
+#[test]
+fn generated_jev_replay_preflight_covers_versioned_real_cases() {
+    let home = TempRepo::new();
+    let binary = env!("CARGO_BIN_EXE_lgtm");
+    let mut init = Command::new(binary);
+    init.args(["init", "--global"])
+        .env("HOME", home.path())
+        .current_dir(home.path());
+    assert!(run_bounded(&mut init).success());
+    let extension = home.path().join(".pi/agent/extensions/lgtm.ts");
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let harness = manifest.join("tests/fixtures/pi/jev_replay.cjs");
+    let corpus = manifest.join("tests/fixtures/pi/jev_replay_corpus.json");
+    let mut node = Command::new("node");
+    node.arg(harness)
+        .arg(&extension)
+        .arg(&corpus)
+        .current_dir(manifest)
+        .env("HOME", home.path());
+    assert!(
+        run_bounded(&mut node).success(),
+        "generated Jev replay preflight failed"
+    );
+}
