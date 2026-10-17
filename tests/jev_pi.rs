@@ -116,3 +116,26 @@ fn generated_jev_replay_preflight_covers_versioned_real_cases() {
         "generated Jev replay preflight failed"
     );
 }
+
+#[test]
+fn generated_jev_review_flags_are_independent_and_advisory() {
+    let home = TempRepo::new();
+    let binary = env!("CARGO_BIN_EXE_lgtm");
+    let mut init = Command::new(binary);
+    init.args(["init", "--global"])
+        .env("HOME", home.path())
+        .current_dir(home.path());
+    assert!(run_bounded(&mut init).success());
+    let extension = home.path().join(".pi/agent/extensions/lgtm.ts");
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let harness = manifest.join("tests/fixtures/pi/jev_review.cjs");
+    let mut node = Command::new("node");
+    node.arg(harness)
+        .arg(&extension)
+        .current_dir(manifest)
+        .env("HOME", home.path());
+    assert!(
+        run_bounded(&mut node).success(),
+        "generated Jev review failed"
+    );
+}

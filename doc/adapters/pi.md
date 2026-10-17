@@ -332,6 +332,29 @@ Use ordinary reads before editing or quoting. Failure diagnostics and session
 metadata omit raw provider errors, question bodies, and source. Your existing
 `jev-auto.ts`, active tools, chat model, and deterministic checks are unchanged.
 
+## Jev diff review flags
+
+Managed init also registers `lgtm_jev_review`, available by default through
+native codemode. It obtains the current diff with a fixed read-only
+`git diff` call through Pi's own bash tool, bounds the patch to 48 KiB and 200
+files, and returns **four independent** boolean flags: authentication and
+permissions, data loss, public interfaces, and state or concurrency complexity.
+
+```js
+const review = await tools.lgtm_jev_review({});
+text(review);
+```
+
+There is no aggregate risk score, because one cannot cancel a security flag.
+Each flag carries its own probability, an `unknown` marker, and the same evidence
+ID. A missing or malformed answer leaves that flag `unknown` and the rest intact;
+the overall status is `partial` or `unavailable`, never a clean result. Empty,
+oversized, credential-bearing, or private-path diffs are `empty`/`rejected` and
+make no classifier call. The tool never writes, never runs a repository command
+other than the fixed read-only diff, and never creates command evidence or
+changes a gate. Use ordinary review and the deterministic gates for decisions;
+this only focuses attention.
+
 ## Finding approval capability
 
 The canonical extension advertises the strictly versioned

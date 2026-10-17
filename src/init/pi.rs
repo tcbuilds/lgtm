@@ -30,8 +30,11 @@ const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
     "79c6df8037cb89d0df8992204df8d34de9d547952a14a528b0954fc054b66473",
     "9088869510d83eac68780e9f96290b692384907f310088e3734bb77cd543889e",
     "2df34d5ff7811cd79d643abcb070240b8a4da9dd5be23d2802e08c23b25ee804",
+    "9266761d4afcae5543ddf964ef46271421f0fde5935c2fc4e70fcd1966c9a32b",
+    "68e46acf24556ed72ac3d72b07354e61cc12048f5af079d967928d3cf1b93b02",
 ];
 const JEV_TEMPLATE: &str = include_str!("../../templates/pi/jev.js");
+const JEV_REVIEW_TEMPLATE: &str = include_str!("../../templates/pi/jev_review.js");
 const EXTENSION_TEMPLATE: &str = r#"// lgtm-pi-extension: v1
 // lgtm-pi-scope: __LGTM_SCOPE__
 
@@ -915,6 +918,8 @@ async function handle(pi, eventType, event, ctx, approvalState) {
 
 __LGTM_JEV__
 
+__LGTM_JEV_REVIEW__
+
 export default function lgtm(pi) {
   if (SCOPE === "project" && projectBinaryIsRunnable() && projectTemplateIsCanonical()) {
     globalThis[PROJECT_SCOPE_LOADED] = true;
@@ -927,6 +932,7 @@ export default function lgtm(pi) {
   };
   pi.on("session_start", (event, ctx) => {
     registerLgtmJev(pi, () => approvalState.controller.signal);
+    registerLgtmJevReview(pi, () => approvalState.controller.signal);
     return handle(pi, "session_start", event, ctx, approvalState);
   });
   pi.on("session_shutdown", () => {
@@ -999,6 +1005,7 @@ pub(crate) fn render(binary: &str, scope: ExtensionScope) -> Result<Vec<u8>, Ini
     let scope_digest = expected_template_digest(scope);
     Ok(EXTENSION_TEMPLATE
         .replace("__LGTM_JEV__", JEV_TEMPLATE)
+        .replace("__LGTM_JEV_REVIEW__", JEV_REVIEW_TEMPLATE)
         .replace("__LGTM_BINARY__", &binary)
         .replace("__LGTM_SCOPE__", scope.as_str())
         .replace("__LGTM_TEMPLATE_DIGEST__", &scope_digest)
@@ -1010,6 +1017,7 @@ pub(crate) fn render(binary: &str, scope: ExtensionScope) -> Result<Vec<u8>, Ini
 pub(crate) fn expected_template_digest(scope: ExtensionScope) -> String {
     let canonical = EXTENSION_TEMPLATE
         .replace("__LGTM_JEV__", JEV_TEMPLATE)
+        .replace("__LGTM_JEV_REVIEW__", JEV_REVIEW_TEMPLATE)
         .replace("__LGTM_SCOPE__", scope.as_str());
     digest(&normalize_template(&canonical))
 }

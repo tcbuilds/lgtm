@@ -93,6 +93,19 @@ classifier probe was validated live (`~typesafe/jev-latest`, answer 0.03,
 $0.000293) via the read tool, which is not the governed raw-byte path, so it is
 not the tool replay and must not be reported as semantic evidence.
 
+## Slice 26.4
+
+`templates/pi/jev_review.js` is a second rendered fragment (split to keep each
+template under the size limit) registering `lgtm_jev_review`. It obtains the
+diff with one fixed read-only `git diff` through Pi's bash tool, bounds the patch
+(48 KiB, 200 files), and asks four independent bools: auth/permissions, data
+loss, public interfaces, and state/complexity. No aggregate score exists; an
+invalid answer makes only that flag `unknown`; empty/oversized/credential/private
+diffs make no classifier call. `tests/fixtures/pi/jev_review.cjs` and a fourth
+test in `tests/jev_pi.rs` cover risky/harmless diffs, partial/unknown flags,
+provider failure/timeout/cancel, and evidence filtering. Scratch 26.2→26.4
+project and global upgrade/backup/refresh probes pass with the recorded digests.
+
 ## Verified commands (slice 26.2)
 
 - `cargo fmt --check`
