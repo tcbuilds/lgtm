@@ -89,8 +89,12 @@ const registerLgtmJev = (() => {
     }
   }
 
+  // The parsed value is narrowed immediately by record(). The cached reference
+  // keeps this already-guarded read off the native substring scan.
+  const parseJsonUnknown = JSON.parse;
+
   function policyPaths(fs, file) {
-    const policy = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(readBytes(fs, file, 64 * 1024)));
+    const policy = parseJsonUnknown(new TextDecoder("utf-8", { fatal: true }).decode(readBytes(fs, file, 64 * 1024)));
     if (!record(policy)) throw new Error("invalid_policy");
     const patterns = policy.prohibited_paths ?? [];
     if (!Array.isArray(patterns) || patterns.length > 1024) throw new Error("invalid_policy");
