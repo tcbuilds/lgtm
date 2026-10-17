@@ -71,7 +71,7 @@ async function invoke(params = base, signal = context.signal) {
   const tool = tools.get("lgtm_jev_scope");
   assert.equal(tool.exposure, "codemode");
   assert.deepEqual(tool.reachesTools(), ["bash"]);
-  assert.deepEqual([...tools.keys()].sort(), ["lgtm_jev_compaction", "lgtm_jev_files", "lgtm_jev_review", "lgtm_jev_scope", "lgtm_jev_triage"]);
+  assert.deepEqual([...tools.keys()].sort(), ["lgtm_jev_compaction", "lgtm_jev_files", "lgtm_jev_review", "lgtm_jev_scope", "lgtm_jev_triage", "lgtm_jev_untrusted"]);
   assert.equal(calls, 0, "startup made a paid request");
 
   let before = calls;

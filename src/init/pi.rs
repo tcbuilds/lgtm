@@ -38,12 +38,15 @@ const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
     "45896a7fc24d1c7ece746d3fd63055c0dac591f51de00e11139c01085a9b2266",
     "aeeca057a8cf4e768318d996d9abf8cb15332e220c5813c4469420cf33b5d405",
     "b7ed808b9b7c0a7c4861734c710f7d1cda627832c7a4830cd24b44eb4a9dbd03",
+    "5c8ca58c8552b0ab499d6d9d27c609bdc928a9b95181e250fa919b9ee16aceb0",
+    "fb7abda05c353b6f867767ffb24e7abaa582df0e7ab041f1a64739523ac5641d",
 ];
 const JEV_TEMPLATE: &str = include_str!("../../templates/pi/jev.js");
 const JEV_REVIEW_TEMPLATE: &str = include_str!("../../templates/pi/jev_review.js");
 const JEV_SCOPE_TEMPLATE: &str = include_str!("../../templates/pi/jev_scope.js");
 const JEV_TRIAGE_TEMPLATE: &str = include_str!("../../templates/pi/jev_triage.js");
 const JEV_COMPACTION_TEMPLATE: &str = include_str!("../../templates/pi/jev_compaction.js");
+const JEV_UNTRUSTED_TEMPLATE: &str = include_str!("../../templates/pi/jev_untrusted.js");
 const EXTENSION_TEMPLATE: &str = r#"// lgtm-pi-extension: v1
 // lgtm-pi-scope: __LGTM_SCOPE__
 
@@ -935,6 +938,8 @@ __LGTM_JEV_TRIAGE__
 
 __LGTM_JEV_COMPACTION__
 
+__LGTM_JEV_UNTRUSTED__
+
 export default function lgtm(pi) {
   if (SCOPE === "project" && projectBinaryIsRunnable() && projectTemplateIsCanonical()) {
     globalThis[PROJECT_SCOPE_LOADED] = true;
@@ -951,6 +956,7 @@ export default function lgtm(pi) {
     registerLgtmJevScope(pi, () => approvalState.controller.signal);
     registerLgtmJevTriage(pi, () => approvalState.controller.signal);
     registerLgtmJevCompaction(pi, () => approvalState.controller.signal);
+    registerLgtmJevUntrusted(pi, () => approvalState.controller.signal);
     return handle(pi, "session_start", event, ctx, approvalState);
   });
   pi.on("session_shutdown", () => {
@@ -1027,6 +1033,7 @@ pub(crate) fn render(binary: &str, scope: ExtensionScope) -> Result<Vec<u8>, Ini
         .replace("__LGTM_JEV_SCOPE__", JEV_SCOPE_TEMPLATE)
         .replace("__LGTM_JEV_TRIAGE__", JEV_TRIAGE_TEMPLATE)
         .replace("__LGTM_JEV_COMPACTION__", JEV_COMPACTION_TEMPLATE)
+        .replace("__LGTM_JEV_UNTRUSTED__", JEV_UNTRUSTED_TEMPLATE)
         .replace("__LGTM_BINARY__", &binary)
         .replace("__LGTM_SCOPE__", scope.as_str())
         .replace("__LGTM_TEMPLATE_DIGEST__", &scope_digest)
@@ -1042,6 +1049,7 @@ pub(crate) fn expected_template_digest(scope: ExtensionScope) -> String {
         .replace("__LGTM_JEV_SCOPE__", JEV_SCOPE_TEMPLATE)
         .replace("__LGTM_JEV_TRIAGE__", JEV_TRIAGE_TEMPLATE)
         .replace("__LGTM_JEV_COMPACTION__", JEV_COMPACTION_TEMPLATE)
+        .replace("__LGTM_JEV_UNTRUSTED__", JEV_UNTRUSTED_TEMPLATE)
         .replace("__LGTM_SCOPE__", scope.as_str());
     digest(&normalize_template(&canonical))
 }

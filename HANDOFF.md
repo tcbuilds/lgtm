@@ -146,6 +146,19 @@ cover half-done task switches, complete boundaries, unmapped and missing answers
 and provider failure. Scratch 26.6→26.7 project and global upgrade/backup/refresh
 probes pass.
 
+## Slice 26.8
+
+`templates/pi/jev_untrusted.js` registers `lgtm_jev_untrusted`. It warns whether
+an approved, bounded external excerpt tries to redirect an agent or leak data,
+returning `suspicious` plus `kind` (`instruction_injection`,
+`exfiltration_attempt`, `benign_quoting`, `unclear`). Redaction precedes clipping;
+inspected/provided coverage and clipping are reported as partial. It is explicitly
+not a security boundary and never overrides instructions, permissions, or checks.
+`tests/fixtures/pi/jev_untrusted.cjs` and an eighth test in `tests/jev_pi.rs`
+cover hostile instructions versus a harmless quote, missing/unmapped answers,
+private keys, redaction, clipping, and provider failure. Scratch 26.7→26.8
+project and global upgrade/backup/refresh probes pass.
+
 ## Verified commands (slice 26.2)
 
 - `cargo fmt --check`

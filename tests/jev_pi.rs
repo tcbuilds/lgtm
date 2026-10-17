@@ -208,3 +208,26 @@ fn generated_jev_compaction_advice_cannot_compact() {
         "generated Jev compaction advice failed"
     );
 }
+
+#[test]
+fn generated_jev_untrusted_advice_is_not_a_boundary() {
+    let home = TempRepo::new();
+    let binary = env!("CARGO_BIN_EXE_lgtm");
+    let mut init = Command::new(binary);
+    init.args(["init", "--global"])
+        .env("HOME", home.path())
+        .current_dir(home.path());
+    assert!(run_bounded(&mut init).success());
+    let extension = home.path().join(".pi/agent/extensions/lgtm.ts");
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let harness = manifest.join("tests/fixtures/pi/jev_untrusted.cjs");
+    let mut node = Command::new("node");
+    node.arg(harness)
+        .arg(&extension)
+        .current_dir(manifest)
+        .env("HOME", home.path());
+    assert!(
+        run_bounded(&mut node).success(),
+        "generated Jev untrusted advice failed"
+    );
+}

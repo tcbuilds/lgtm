@@ -424,6 +424,28 @@ change Pi compaction settings, delete transcript, or drop a tool/result pair;
 Pi's native summary format and cut safety stay in control. When Jev is
 unavailable, `/compact` works exactly as before.
 
+## Jev untrusted-output advice
+
+`lgtm_jev_untrusted` warns when an approved, bounded external excerpt tries to
+redirect an agent or leak data. The caller supplies the excerpt and its source;
+the tool redacts then clips, reports inspected versus provided coverage, and
+returns a `suspicious` flag plus a `kind` (`instruction_injection`,
+`exfiltration_attempt`, `benign_quoting`, `unclear`).
+
+```js
+const preview = await tools.lgtm_jev_untrusted({ source: "issue comment", excerpt });
+text(preview); // redaction/coverage plan; no classifier call
+const warning = await tools.lgtm_jev_untrusted({ source: "issue comment", excerpt, allowSend: true });
+text(warning);
+```
+
+This is **not a security boundary**. A clean inspected span never proves unseen
+text is safe, and clipping is always reported as partial coverage. It never
+overrides trusted instructions, permissions, or deterministic checks, never reads
+files, and never runs commands. A private-key block is `rejected`; missing answers
+stay `partial` or `unavailable`. A harmless quoted or test example is
+`benign_quoting`, not an injection.
+
 ## Finding approval capability
 
 The canonical extension advertises the strictly versioned
