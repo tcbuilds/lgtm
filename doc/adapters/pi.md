@@ -379,6 +379,28 @@ make no classifier call. Advice is not verification. This tool never creates
 claims check remains authoritative, and a missing answer stays `missing` rather
 than becoming a clean or contradicted result.
 
+## Jev diagnostic triage
+
+`lgtm_jev_triage` returns one bounded cause category for a caller-minimized
+diagnostic excerpt: `code`, `tool`, `environment`, or `unknown`. The caller
+supplies the excerpt; the tool never reads a log, runs a command, stores
+evidence, installs anything, or suggests a repair.
+
+```js
+const preview = await tools.lgtm_jev_triage({ command: "cargo test", exitCode: 101, excerpt });
+text(preview); // redaction and clipping plan only; no classifier call
+const triage = await tools.lgtm_jev_triage({ command: "cargo test", exitCode: 101, excerpt, allowSend: true });
+text(triage);
+```
+
+Redaction runs before the 8 KiB clip, and clipping is always reported. Regex
+redaction is not permission to upload: without `allowSend: true` the tool returns
+a `preview` with zero calls. Home paths, emails, IPs, and credential-like tokens
+become markers; a private-key block is `rejected` outright and never transported
+or logged. Command, cwd, exit code, and an existing LGTM finding remain facts.
+When Jev is unavailable, inspect the raw log normally; the tool never replaces
+that.
+
 ## Finding approval capability
 
 The canonical extension advertises the strictly versioned

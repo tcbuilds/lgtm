@@ -119,6 +119,19 @@ docs-only scope with an installer edit, valid work, missing/invalid claims,
 stale/empty/oversized input, and provider failure. Scratch 26.4→26.5 project and
 global upgrade/backup/refresh probes pass.
 
+## Slice 26.6
+
+`templates/pi/jev_triage.js` registers `lgtm_jev_triage`. The caller supplies an
+already-minimized excerpt; the tool redacts then clips to 8 KiB and always
+reports redaction count and clipping. A private-key block is rejected; home
+paths, emails, IPs, and credential-like tokens become markers. Transport needs
+`allowSend: true`; otherwise it returns a zero-call `preview`. Command, cwd, exit
+code, and an existing LGTM finding stay facts. It never reads logs, runs
+commands, stores evidence, or proposes repairs. `tests/fixtures/pi/jev_triage.cjs`
+and a sixth test in `tests/jev_pi.rs` cover preview, redaction, clipping, private
+keys, malformed/unmapped categories, and provider failure. Scratch 26.5→26.6
+project and global upgrade/backup/refresh probes pass.
+
 ## Verified commands (slice 26.2)
 
 - `cargo fmt --check`
