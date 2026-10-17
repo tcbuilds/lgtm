@@ -69,8 +69,8 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
         .expect("supported tools require provenance");
     assert!(supported_tool_check < provenance_check);
     assert!(
-        extension.contains("hasDescription ? [\"type\", \"items\", \"description\"]")
-            && extension.contains("primitivePropertyMatches(property.items.properties[key], type)")
+        extension.contains("SCHEMA_ANNOTATIONS")
+            && extension.contains("objectSchemaMatches(property.items, expected.itemRequired, expected.itemProperties)")
             && extension.contains("tool_provenance_unverified")
     );
     assert!(extension.contains("mergeToolResult"));
@@ -94,6 +94,174 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
     let second_output = run_init(&repo, Some(binary), false);
     assert!(second_output.status.success());
     assert_eq!(repo.read(".pi/extensions/lgtm.ts"), first);
+}
+
+#[cfg(unix)]
+#[test]
+fn generated_hook_accepts_compatible_pi_changes_without_hiding_failures() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = TempRepo::new();
+    let fake = repo.path().join("compatible-lgtm.cjs");
+    fs::write(
+        &fake,
+        "#!/usr/bin/env node\nconst fs = require('node:fs');\nprocess.stdin.resume();\nprocess.stdin.on('end', () => fs.appendFileSync('invocations', '1'));\n",
+    )
+    .expect("write hook executable");
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("make hook executable");
+    assert!(run_init(&repo, fake.to_str(), false).status.success());
+    let harness = repo.path().join("compatible-runtime.cjs");
+    fs::write(
+        &harness,
+        r#"const fs = require("node:fs");
+const assert = require("node:assert/strict");
+setTimeout(() => process.exit(124), 20_000).unref();
+const source = fs.readFileSync(process.argv[2], "utf8");
+const extension = source
+  .replace('import { dirname, join, resolve } from "node:path";', 'const { dirname, join, resolve } = require("node:path");')
+  .replace('import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";', 'const { existsSync, lstatSync, readFileSync, statSync } = require("node:fs");')
+  .replace('new URL(import.meta.url)', 'process.argv[2]')
+  .replace('import { spawn } from "node:child_process";', 'const { spawn } = require("node:child_process");')
+  .replace('import { createHash, randomUUID } from "node:crypto";', 'const { createHash, randomUUID } = require("node:crypto");')
+  .replace('export default function lgtm', 'function lgtm');
+const lgtm = new Function("require", "process", extension + "\nreturn lgtm;")(require, process);
+const handlers = {};
+const failures = [];
+const notifications = [];
+let currentSession = "compatibility-session";
+let currentTools;
+const pi = {
+  on: (name, handler) => { handlers[name] = handler; },
+  appendEntry: (type, data) => failures.push({ type, data }),
+  getAllTools: () => currentTools,
+};
+const ctx = {
+  cwd: process.cwd(),
+  isProjectTrusted: () => true,
+  sessionManager: { getSessionId: () => currentSession },
+  ui: { notify: (message) => notifications.push(message) },
+};
+lgtm(pi);
+const contracts = {
+  bash: { required: ["command"], properties: { command: { type: "string" }, timeout: { type: "number" } } },
+  edit: { required: ["path", "edits"], properties: { path: { type: "string" }, edits: {
+    type: "array", items: { type: "object", required: ["oldText", "newText"], properties: {
+      oldText: { type: "string" }, newText: { type: "string" },
+    } },
+  } } },
+  write: { required: ["path", "content"], properties: { path: { type: "string" }, content: { type: "string" } } },
+  read: { required: ["path"], properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } } },
+};
+const events = {
+  bash: { toolName: "bash", input: { command: "printf safe" } },
+  edit: { toolName: "edit", input: { path: "file", edits: [{ oldText: "old", newText: "new" }] } },
+  write: { toolName: "write", input: { path: "file", content: "new" } },
+  read: { toolName: "read", input: { path: "file" }, content: [], isError: false },
+};
+function tool(name, path = `builtin:${name}`) {
+  return { name, sourceInfo: { source: "builtin", path }, parameters: { type: "object", ...structuredClone(contracts[name]) } };
+}
+function countInvocations() {
+  return fs.existsSync("invocations") ? fs.readFileSync("invocations", "utf8").length : 0;
+}
+async function invokeCase(label, candidate, accepted) {
+  currentTools = [candidate];
+  const before = countInvocations();
+  const beforeFailures = failures.length;
+  await handlers[candidate.name === "read" ? "tool_result" : "tool_call"](events[candidate.name], ctx);
+  assert.equal(countInvocations() - before, accepted ? 1 : 0, label);
+  assert.equal(failures.length - beforeFailures, accepted ? 0 : 1, label);
+}
+(async () => {
+  for (const name of Object.keys(contracts)) {
+    await invokeCase(`${name}: current source path`, tool(name), true);
+    await invokeCase(`${name}: legacy source path`, tool(name, `<builtin:${name}>`), true);
+    const annotated = tool(name);
+    annotated.parameters.title = "Builtin input";
+    annotated.parameters.description = "New wording";
+    annotated.parameters.required.reverse();
+    for (const property of Object.values(annotated.parameters.properties)) {
+      property.title = "Input";
+      property.description = "New wording";
+      property.examples = [];
+    }
+    annotated.parameters.properties.futureOption = { type: "boolean" };
+    if (name === "edit") {
+      annotated.parameters.properties.edits.items.title = "Replacement";
+      annotated.parameters.properties.edits.items.required.reverse();
+    }
+    await invokeCase(`${name}: annotations and optional addition`, annotated, true);
+    for (const origin of ["extension", "sdk", "mcp"]) {
+      const replaced = tool(name);
+      replaced.sourceInfo.source = origin;
+      await invokeCase(`${name}: ${origin} override`, replaced, false);
+    }
+    await invokeCase(`${name}: forged path`, tool(name, `builtin:${name}-override`), false);
+    const missingOrigin = tool(name);
+    delete missingOrigin.sourceInfo;
+    await invokeCase(`${name}: absent origin`, missingOrigin, false);
+    const wrongType = tool(name);
+    wrongType.parameters.properties[contracts[name].required[0]].type = "number";
+    await invokeCase(`${name}: changed required type`, wrongType, false);
+    const newRequired = tool(name);
+    newRequired.parameters.required.push("futureOption");
+    newRequired.parameters.properties.futureOption = { type: "boolean" };
+    await invokeCase(`${name}: new required input`, newRequired, false);
+    const missingRequired = tool(name);
+    missingRequired.parameters.required.pop();
+    await invokeCase(`${name}: missing required input`, missingRequired, false);
+    const structuralChange = tool(name);
+    structuralChange.parameters.anyOf = [{ type: "object" }];
+    await invokeCase(`${name}: unknown structural change`, structuralChange, false);
+  }
+  const wrongItem = tool("edit");
+  wrongItem.parameters.properties.edits.items.properties.newText.type = "number";
+  await invokeCase("edit: changed replacement type", wrongItem, false);
+  assert.equal(notifications.length, 1, "one warning for repeated provenance failures");
+  assert.match(notifications[0], /tool_provenance_unverified/);
+  assert.match(notifications[0], /reload/i);
+  const persisted = failures.length;
+  currentTools = [tool("bash")];
+  ctx.isProjectTrusted = () => false;
+  await handlers.tool_call(events.bash, ctx);
+  await handlers.tool_call(events.bash, ctx);
+  assert.equal(failures.length, persisted + 2, "every failure remains recorded");
+  assert.equal(notifications.length, 2, "a different reason gets its own warning");
+  currentSession = "next-session";
+  await handlers.tool_call(events.bash, ctx);
+  assert.equal(notifications.length, 3, "new sessions reset warning deduplication");
+  ctx.isProjectTrusted = () => true;
+  const oldSession = currentSession;
+  const staleNotifications = [];
+  const oldCtx = {
+    ...ctx,
+    sessionManager: { getSessionId: () => oldSession },
+    ui: { notify: (message) => staleNotifications.push(message) },
+  };
+  const pending = handlers.tool_call(events.bash, oldCtx);
+  currentSession = "race-next-session";
+  await handlers.session_start({}, ctx);
+  await pending;
+  assert.equal(staleNotifications.length, 0, "late failures must not notify a stale context");
+  const beforeNewFailure = notifications.length;
+  ctx.signal = AbortSignal.abort();
+  await handlers.tool_call(events.bash, ctx);
+  assert.equal(notifications.length, beforeNewFailure + 1, "old failures cannot consume new-session warnings");
+  assert.match(notifications.at(-1), /aborted/);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"#,
+    )
+    .expect("write compatibility harness");
+    let output = Command::new("node")
+        .arg(&harness)
+        .arg(repo.path().join(".pi/extensions/lgtm.ts"))
+        .current_dir(repo.path())
+        .output()
+        .expect("execute compatibility harness");
+    assert!(
+        output.status.success(),
+        "compatibility check failed: {output:?}"
+    );
 }
 
 #[test]

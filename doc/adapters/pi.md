@@ -56,15 +56,56 @@ built-in `read`, `bash`, `edit`, and `write` (`builtin-read-provenance`,
 `builtin-write-provenance`; fixtures `live-sdk-builtins-001` and
 `live-sdk-builtins-0.84.3-001`). Pi 0.84.3 added a human-readable `description`
 to the `edit.edits` array without changing its type, required fields, item schema,
-or built-in provenance. LGTM accepts that optional descriptive field while still
-rejecting every other unrecognized structural key. A project extension replacing
-`read` reports non-builtin
+or built-in provenance. The current matcher checks the capabilities LGTM uses,
+not the exact captured schema. It accepts these compatible changes:
+
+- Built-in paths in either `builtin:read` or legacy `<builtin:read>` form, with
+  the matching tool name and `sourceInfo.source` equal to `builtin`.
+- A different order for required fields.
+- Schema annotations: `description`, `title`, `$comment`, `examples`, `default`,
+  `deprecated`, `readOnly`, and `writeOnly`.
+- Added optional inputs, or removal of a known optional input. A known optional
+  input must keep its expected type if it is present.
+
+Required fields, their types, and the `edit.edits` item contract must still match.
+Unknown structural schema keys, new required inputs, and non-built-in origins
+remain unverified. This does not promise support for every future Pi change.
+The `PI_VERSION` wire label remains the legacy attestation profile; the extension
+does not compare it to the installed Pi package version as an eligibility test.
+
+A live SDK probe against installed Pi 1.1.0 confirmed that all four built-ins
+pass with the `builtin:` path form. A same-name SDK `read` replacement reported
+`sourceInfo.source: sdk` and failed verification. The integration test
+`generated_hook_accepts_compatible_pi_changes_without_hiding_failures` also
+checks compatible schema changes, rejected origins and structural changes, and
+warning deduplication.
+
+A project extension replacing `read` reports non-builtin
 project source metadata (`same-name-read-override`; fixture
 `live-sdk-override-001`). The override is deliberately **unverified** for built-in
 enforcement. Custom, MCP, provider, and schema-mismatched tools remain
 unverified (`custom-tool-provenance`; fixture
 `unverified-custom-tool-provenance`). Tool names alone do not establish
 provenance.
+
+## Repeated unverified warnings
+
+An unverified warning means that LGTM could not prove a check ran correctly. It
+is not a policy violation or a successful check. The warning includes a bounded
+reason code, such as `tool_provenance_unverified`. LGTM records every failure in
+Pi session entries with custom type `lgtm`.
+
+Each loaded extension shows a warning once per reason per session. A new session,
+`session_start`, or shutdown resets this limit. Warning state holds at most 32
+reason codes. Repeated warnings are suppressed; failure records and enforcement
+decisions are not suppressed.
+
+For `tool_provenance_unverified`, check whether another extension replaced a
+built-in tool. If Pi changed its API, update LGTM, run `lgtm refresh`, then use
+`/reload` or restart Pi. `project_untrusted` requires a project trust decision;
+`policy_unverified` requires valid `.lgtm` policy files. Refresh does not grant
+trust or repair invalid owner policy. A direct commit still requires current
+runtime evidence and the existing commit-gate checks.
 
 ## Installation and rollback
 

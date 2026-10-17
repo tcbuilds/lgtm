@@ -13,6 +13,8 @@ const OWNED_END: &str = "// lgtm-pi-extension: end";
 // upgrade. The b45c/ed0f entries are the v0.10.1 Pi 0.84.2 project/global
 // templates.
 const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
+    "ca4ba7eacae8b1f138933e6a4c7e7d443ac4880018c7faa429eae6c5b650ed18",
+    "1b823a8b1b6b847ebc970652afd2c30d67a70abc04796514765d878ae76a70e5",
     "524b3d58c2f839420c14f8ec081855ea3499d4e219d1f5c4c131fe4051d28c2c",
     "a6719ad16be1e48543acb3ae7014afa6b1361d4b85110cd56350807798cb2caa",
     "b45c8c6756955338325fd4d80386523b846b14cc6066a07dc506ce71219079ca",
@@ -56,6 +58,8 @@ const MAX_APPROVAL_FINDINGS = 32;
 const MAX_APPROVAL_TEXT_BYTES = 512;
 const MAX_APPROVAL_COORDINATE = 1_000_000_000;
 const FAILURE_ENTRY = "lgtm";
+const MAX_NOTIFIED_FAILURES = 32;
+const SCHEMA_ANNOTATIONS = ["description", "title", "$comment", "examples", "default", "deprecated", "readOnly", "writeOnly"];
 const TOOL_CONTRACTS = {
   read: { required: ["path"], properties: { path: "string", offset: "number", limit: "number" } },
   bash: { required: ["command"], properties: { command: "string", timeout: "number" } },
@@ -248,51 +252,43 @@ function verifiedToolContract(pi, event) {
   }
   const tool = tools.find((candidate) => candidate?.name === event.toolName);
   if (!tool || tool.sourceInfo?.source !== "builtin"
-      || tool.sourceInfo?.path !== `<builtin:${event.toolName}` + ">") return false;
-  const parameters = tool.parameters;
-  if (!parameters || !sameKeys(parameters, ["type", "required", "properties"])
-      || parameters.type !== "object"
-      || !sameValues(parameters.required, contract.required)
-      || !parameters.properties || !sameKeys(parameters.properties, Object.keys(contract.properties))) {
+      || ![`builtin:${event.toolName}`, `<builtin:${event.toolName}>`].includes(tool.sourceInfo.path)) {
     return false;
   }
-  return Object.entries(contract.properties).every(([key, expected]) =>
-    propertyMatches(parameters.properties[key], expected));
+  return objectSchemaMatches(tool.parameters, contract.required, contract.properties);
 }
 
-function sameKeys(value, expected) {
+function schemaKeysMatch(value, structuralKeys) {
   return value && typeof value === "object" && !Array.isArray(value)
-    && Object.keys(value).sort().join("\u0000") === expected.slice().sort().join("\u0000");
+    && Object.keys(value).every((key) => structuralKeys.includes(key) || SCHEMA_ANNOTATIONS.includes(key));
 }
 
 function sameValues(actual, expected) {
   return Array.isArray(actual) && actual.length === expected.length
-    && actual.every((value, index) => value === expected[index]);
+    && expected.every((value) => actual.includes(value));
+}
+
+function objectSchemaMatches(schema, required, properties) {
+  if (!schemaKeysMatch(schema, ["type", "required", "properties"])
+      || schema.type !== "object" || !sameValues(schema.required, required)
+      || !schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties)) {
+    return false;
+  }
+  // Extra optional inputs belong to the verified built-in; required policy inputs must not change.
+  return Object.entries(properties).every(([key, expected]) =>
+    (!Object.prototype.hasOwnProperty.call(schema.properties, key) && !required.includes(key))
+      || propertyMatches(schema.properties[key], expected));
 }
 
 function primitivePropertyMatches(property, expectedType) {
-  if (!property || typeof property !== "object" || Array.isArray(property)) return false;
-  const hasDescription = Object.prototype.hasOwnProperty.call(property, "description");
-  return sameKeys(property, hasDescription ? ["type", "description"] : ["type"])
-    && property.type === expectedType
-    && (!hasDescription || typeof property.description === "string");
+  return schemaKeysMatch(property, ["type"]) && property.type === expectedType;
 }
 
 function propertyMatches(property, expected) {
   if (typeof expected === "string") return primitivePropertyMatches(property, expected);
-  if (!property || typeof property !== "object" || Array.isArray(property)) return false;
-  const hasDescription = Object.prototype.hasOwnProperty.call(property, "description");
-  if (!sameKeys(property, hasDescription ? ["type", "items", "description"] : ["type", "items"])
-      || (hasDescription && typeof property.description !== "string")
-      || property.type !== expected.type || !property.items
-      || !sameKeys(property.items, ["type", "required", "properties"])
-      || property.items.type !== expected.itemType
-      || !sameValues(property.items.required, expected.itemRequired)
-      || !sameKeys(property.items.properties, Object.keys(expected.itemProperties))) {
-    return false;
-  }
-  return Object.entries(expected.itemProperties).every(([key, type]) =>
-    primitivePropertyMatches(property.items.properties[key], type));
+  return schemaKeysMatch(property, ["type", "items"])
+    && property.type === expected.type
+    && objectSchemaMatches(property.items, expected.itemRequired, expected.itemProperties);
 }
 
 function verifiedAllToolContracts(pi) {
@@ -412,7 +408,7 @@ function buildPayload(eventType, event, ctx, pi) {
   return payload;
 }
 
-function appendFailure(pi, ctx, eventType, reason) {
+function appendFailure(pi, ctx, eventType, reason, approvalState, generation) {
   const entry = {
     extensionVersion: 1,
     protocolVersion: 1,
@@ -427,8 +423,16 @@ function appendFailure(pi, ctx, eventType, reason) {
   } catch {
     // The original hook failure remains fail-open even if Pi cannot persist it.
   }
+  if (generation !== approvalState.generation) return;
+  const warningKey = entry.reason;
+  if (approvalState.notifiedFailures.has(warningKey)
+      || approvalState.notifiedFailures.size >= MAX_NOTIFIED_FAILURES) return;
+  approvalState.notifiedFailures.add(warningKey);
   try {
-    ctx.ui?.notify("LGTM Pi hook is unverified", "warning");
+    ctx.ui?.notify(
+      `LGTM Pi hook is unverified (${warningKey}). Check LGTM session entries; after updating LGTM, run lgtm refresh and /reload.`,
+      "warning",
+    );
   } catch {
     // UI notification is optional and must not change the hook decision.
   }
@@ -790,6 +794,7 @@ async function confirmAndRevalidateApproval(
 }
 
 async function handle(pi, eventType, event, ctx, approvalState) {
+  let generation = approvalState.generation;
   try {
     const currentSessionId = sessionId(ctx);
     if (eventType === "session_start"
@@ -797,8 +802,10 @@ async function handle(pi, eventType, event, ctx, approvalState) {
       approvalState.generation += 1;
       approvalState.controller.abort();
       approvalState.controller = new AbortController();
+      approvalState.notifiedFailures.clear();
     }
     approvalState.sessionId = currentSessionId;
+    generation = approvalState.generation;
     const hasOperationSignal = ctx.signal instanceof AbortSignal;
     const signal = hasOperationSignal
       ? AbortSignal.any([ctx.signal, approvalState.controller.signal])
@@ -811,12 +818,12 @@ async function handle(pi, eventType, event, ctx, approvalState) {
       let trusted = false;
       try { trusted = ctx.isProjectTrusted?.() === true; } catch {}
       if (!trusted) {
-        appendFailure(pi, ctx, eventType, "project_untrusted");
+        appendFailure(pi, ctx, eventType, "project_untrusted", approvalState, generation);
         return undefined;
       }
     }
     if (!policyFilesPresent(root)) {
-      appendFailure(pi, ctx, eventType, "policy_unverified");
+      appendFailure(pi, ctx, eventType, "policy_unverified", approvalState, generation);
       return undefined;
     }
     if (policyEvent) {
@@ -825,16 +832,16 @@ async function handle(pi, eventType, event, ctx, approvalState) {
         : ["read", "edit", "write"].includes(event.toolName);
       if (!supported) return undefined;
       if (!verifiedToolContract(pi, event)) {
-        appendFailure(pi, ctx, eventType, "tool_provenance_unverified");
+        appendFailure(pi, ctx, eventType, "tool_provenance_unverified", approvalState, generation);
         return undefined;
       }
       if (eventType === "tool_result" && !validToolResultEvent(event)) {
-        appendFailure(pi, ctx, eventType, "tool_result_unverified");
+        appendFailure(pi, ctx, eventType, "tool_result_unverified", approvalState, generation);
         return undefined;
       }
     }
     if (settledEvent && !verifiedAllToolContracts(pi)) {
-      appendFailure(pi, ctx, eventType, "tool_provenance_unverified");
+      appendFailure(pi, ctx, eventType, "tool_provenance_unverified", approvalState, generation);
       return undefined;
     }
     if (eventType === "tool_call" && isDirectCommitCandidate(event)) {
@@ -851,7 +858,7 @@ async function handle(pi, eventType, event, ctx, approvalState) {
     const payload = buildPayload(eventType, event, ctx, pi);
     const result = await invoke(LGTM_BINARY, root, eventType, payload, signal);
     if (result.failure) {
-      appendFailure(pi, ctx, eventType, result.failure);
+      appendFailure(pi, ctx, eventType, result.failure, approvalState, generation);
       if (result.failure === "aborted" && eventType === "tool_call") {
         return blocked("LGTM check was cancelled; tool execution denied");
       }
@@ -864,7 +871,7 @@ async function handle(pi, eventType, event, ctx, approvalState) {
       return undefined;
     }
     if (result.diagnostics) {
-      appendFailure(pi, ctx, eventType, "child_diagnostics");
+      appendFailure(pi, ctx, eventType, "child_diagnostics", approvalState, generation);
       if (eventType === "tool_call"
           && (isDirectCommitCandidate(event) || approvalChallenge(result.response))) {
         return blocked("LGTM diagnostics made staged commit approval unverified; commit denied");
@@ -890,7 +897,7 @@ async function handle(pi, eventType, event, ctx, approvalState) {
     }
     return eventType === "tool_result" ? mergeToolResult(event, result.response) : result.response;
   } catch {
-    appendFailure(pi, ctx, eventType, "handler");
+    appendFailure(pi, ctx, eventType, "handler", approvalState, generation);
     return undefined;
   }
 }
@@ -899,13 +906,19 @@ export default function lgtm(pi) {
   if (SCOPE === "project" && projectBinaryIsRunnable() && projectTemplateIsCanonical()) {
     globalThis[PROJECT_SCOPE_LOADED] = true;
   }
-  const approvalState = { sessionId: undefined, generation: 0, controller: new AbortController() };
+  const approvalState = {
+    sessionId: undefined,
+    generation: 0,
+    controller: new AbortController(),
+    notifiedFailures: new Set(),
+  };
   pi.on("session_start", (event, ctx) =>
     handle(pi, "session_start", event, ctx, approvalState));
   pi.on("session_shutdown", () => {
     approvalState.controller.abort();
     approvalState.generation += 1;
     approvalState.sessionId = undefined;
+    approvalState.notifiedFailures.clear();
   });
   pi.on("tool_call", (event, ctx) =>
     handle(pi, "tool_call", event, ctx, approvalState));
