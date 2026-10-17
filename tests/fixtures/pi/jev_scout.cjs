@@ -165,6 +165,19 @@ async function invoke(p = params, signal = context.signal) {
   assert.equal(result.counts.unavailable, 1, "the excess file was not skipped");
   assert.equal(result.files.at(-1).reason, "volume_limit");
 
+  // A file that grows after the size estimate must not bypass the aggregate budget.
+  const grow = Array.from({ length: 5 }, (_, i) => `g${i}.rs`);
+  for (const name of grow) fs.writeFileSync(name, "a");
+  const originalRead = context.executeTool;
+  context.executeTool = async (name, args) => { fs.appendFileSync(args.path, "z".repeat(16_383)); return originalRead(name, args); };
+  classify = answer;
+  const beforeGrow = requests.length;
+  result = await invoke({ paths: grow, questions });
+  const grownBytes = requests.slice(beforeGrow).reduce((total, input) => total + Buffer.byteLength(input.state.file.content, "utf8"), 0);
+  assert.ok(grownBytes <= 65_536, `grown batch transmitted ${grownBytes} bytes`);
+  assert.ok(result.files.some((item) => item.reason === "volume_limit"), "growth bypassed the byte budget");
+  context.executeTool = originalRead;
+
   classify = (_model, input) => ({ ...answer(_model, input), answers: {
     risky: { type: "bool", probability: 0.5 },
     layer: { type: "choice", choice: "other", probabilities: { domain: 0.4 }, confidence: 0.4 },

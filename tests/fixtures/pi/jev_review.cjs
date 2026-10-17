@@ -143,6 +143,14 @@ async function invoke(signal = context.signal) {
   assert.ok(!requests.some((input) => JSON.stringify(input).includes("private_canary")), "private hunk content was transmitted");
   assert.ok(!requests.some((input) => JSON.stringify(input).includes(".env")), "private path was transmitted");
 
+  // Git-quoted paths with spaces or escapes must still be rejected.
+  before = calls;
+  diff = ["diff --git \"a/private dir/.env\" \"b/private dir/.env\"", "--- \"a/private dir/.env\"", "+++ \"b/private dir/.env\"", "@@ -1 +1 @@", "-x", "+private_canary", "diff --git \"a/dir/signing\\t.key\" \"b/dir/signing\\t.key\"", "--- \"a/dir/signing\\t.key\"", "+++ \"b/dir/signing\\t.key\"", "@@ -1 +1 @@", "-a", "+b", ""].join("\n");
+  result = await invoke();
+  assert.equal(result.status, "rejected", "a quoted private diff was accepted");
+  assert.equal(result.reason, "diff_private");
+  assert.equal(calls, before, "a quoted private diff reached the provider");
+
   diff = RISKY;
   classify = () => new Promise(() => {});
   result = await invoke();

@@ -197,7 +197,19 @@ by AGENTS.md). Parent-verified findings and fixes:
 - Medium: `.unref()` watchdogs could let harnesses exit 0 before assertions.
   Fixed to a referenced watchdog cleared on completion in all eight fixtures.
 
-Full gates re-ran clean after the fixes. Reviewer re-verification is the next step.
+Reviewer re-verification confirmed the triage, score, UTF-16, late-cancel, and
+watchdog fixes, and found two remaining precision gaps; both are now fixed:
+
+- `jev_review` `headerPaths` parsed by whitespace, so a Git-quoted path with a
+  space or `\t` escape (for example `"a/private dir/.env"`) could slip past the
+  private check. Now quoted tokens are decoded (C-style escapes, octal, unknown
+  escapes rejected conservatively as `diff_unparsed`) before the private test. A
+  quoted-path fixture case is added.
+- `jev.js` charged a preliminary `lstat` size, so a file that grew during the
+  governed read could exceed 64 KiB. Now the actual snapshot byte length is
+  charged before each classifier call; a read-growth fixture case is added.
+
+Full gates re-ran clean after the fixes. Final reviewer re-verification follows.
 
 ## Verified commands (slice 26.2)
 

@@ -293,7 +293,7 @@ const registerLgtmJev = (() => {
     return "unavailable";
   }
 
-  async function classifyOne(ctx, root, model, questions, id, name, signal) {
+  async function classifyOne(ctx, root, model, questions, id, name, signal, budget) {
     signal.throwIfAborted();
     let file;
     try {
@@ -301,6 +301,10 @@ const registerLgtmJev = (() => {
     } catch (error) {
       return { item: unknownItem(id, name, safeReason(error)), usage: null };
     }
+    // Charge the bytes actually read, so a file that grows after the preview
+    // estimate cannot exceed the aggregate budget on the transport path.
+    if (budget && file.bytes > budget.remaining) return { item: unknownItem(id, name, "volume_limit"), usage: null };
+    if (budget) budget.remaining -= file.bytes;
     const outbound = Object.fromEntries(Object.entries(questions).map(([qid, q]) => [qid, guardedQuestion(q)]));
     let result;
     try {
@@ -316,7 +320,7 @@ const registerLgtmJev = (() => {
     return { item, usage };
   }
 
-  async function classifyBounded(ctx, root, model, request, id, name, signal) {
+  async function classifyBounded(ctx, root, model, request, id, name, signal, budget) {
     const controller = new AbortController();
     const combined = AbortSignal.any([controller.signal, signal]);
     let timer;
@@ -324,7 +328,7 @@ const registerLgtmJev = (() => {
       timer = setTimeout(() => { controller.abort(); reject(new Error("deadline")); }, REQUEST_TIMEOUT_MS);
     });
     try {
-      return await Promise.race([classifyOne(ctx, root, model, request.questions, id, name, combined), deadline]);
+      return await Promise.race([classifyOne(ctx, root, model, request.questions, id, name, combined, budget), deadline]);
     } catch {
       return { item: unknownItem(id, name, "cancelled_or_timeout"), usage: null };
     } finally {
@@ -333,35 +337,18 @@ const registerLgtmJev = (() => {
     }
   }
 
-  async function eligibleSize(root, name) {
-    try {
-      const full = await candidatePath(root, name);
-      const fs = await import("node:fs");
-      return fs.lstatSync(full).size;
-    } catch {
-      return undefined;
-    }
-  }
-
   async function classifyFiles(ctx, root, model, request, signal) {
     const started = Date.now();
     const files = [];
     const usages = [];
-    let bytes = 0;
+    const budget = { remaining: MAX_TOTAL_BYTES };
     for (const [index, name] of request.paths.entries()) {
       const id = `f${index}`;
       if (Date.now() - started >= AGGREGATE_TIMEOUT_MS) {
         files.push(unknownItem(id, name, "deadline"));
         continue;
       }
-      // Enforce the aggregate byte budget on the transport path, not only in preview.
-      const size = await eligibleSize(root, name);
-      if (size !== undefined && bytes + size > MAX_TOTAL_BYTES) {
-        files.push(unknownItem(id, name, "volume_limit"));
-        continue;
-      }
-      if (size !== undefined) bytes += size;
-      const outcome = await classifyBounded(ctx, root, model, request, id, name, signal);
+      const outcome = await classifyBounded(ctx, root, model, request, id, name, signal, budget);
       files.push(outcome.item);
       if (outcome.usage) usages.push(outcome.usage);
     }

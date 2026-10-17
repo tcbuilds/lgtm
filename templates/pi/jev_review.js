@@ -28,11 +28,53 @@ const registerLgtmJevReview = (() => {
     return { input: u.input, output: u.output, totalTokens: u.totalTokens, ...(cost ? { cost } : {}) };
   }
 
+  const GIT_ESCAPES = { t: "\t", n: "\n", r: "\r", "\\": "\\", '"': '"' };
+
+  function readOctal(raw, index) {
+    let octal = raw[index];
+    let cursor = index;
+    for (let count = 0; count < 2 && raw[cursor + 1] >= "0" && raw[cursor + 1] <= "7"; count += 1) {
+      cursor += 1;
+      octal += raw[cursor];
+    }
+    return { value: String.fromCharCode(parseInt(octal, 8)), cursor };
+  }
+
+  function decodeGitQuote(raw) {
+    let out = "";
+    for (let index = 0; index < raw.length; index += 1) {
+      const character = raw[index];
+      if (character !== "\\") { out += character; continue; }
+      index += 1;
+      const next = raw[index];
+      if (next === undefined) return undefined;
+      if (Object.hasOwn(GIT_ESCAPES, next)) { out += GIT_ESCAPES[next]; continue; }
+      if (next >= "0" && next <= "7") {
+        const octal = readOctal(raw, index);
+        out += octal.value;
+        index = octal.cursor;
+        continue;
+      }
+      return undefined;
+    }
+    return out;
+  }
+
+  function headerTokens(line) {
+    const tokens = [];
+    const pattern = /"((?:[^"\\]|\\.)*)"|([^\s]+)/g;
+    let match;
+    while ((match = pattern.exec(line)) !== null) {
+      if (match[1] === undefined) { tokens.push(match[2]); continue; }
+      const decoded = decodeGitQuote(match[1]);
+      if (decoded === undefined) return undefined;
+      tokens.push(decoded);
+    }
+    return tokens;
+  }
+
   function stripPath(token) {
     let name = token;
-    if (name.startsWith('"') && name.endsWith('"')) {
-      try { name = JSON.parse(name); } catch { name = name.slice(1, -1); }
-    }
     if (name === "/dev/null") return undefined;
     if (name.startsWith("a/") || name.startsWith("b/")) name = name.slice(2);
     return name.length > 0 ? name : undefined;
@@ -43,7 +85,10 @@ const registerLgtmJevReview = (() => {
     for (const line of patch.split("\n")) {
       const match = /^(?:diff --git |\+\+\+ |--- |rename from |rename to |copy from |copy to )(.*)$/.exec(line);
       if (!match) continue;
-      for (const token of match[1].split(/\s+/)) {
+      const tokens = headerTokens(match[1]);
+      // An undecodable header cannot be proven safe, so it is rejected.
+      if (!tokens) throw new Error("diff_unparsed");
+      for (const token of tokens) {
         const name = stripPath(token);
         if (name) names.add(name);
       }
@@ -153,7 +198,7 @@ const registerLgtmJevReview = (() => {
     return { status: statusFor(flags), advisory: true, flags, evidence, provider: "openrouter", model: MODEL, rubric: FLAG_IDS.length, usage };
   }
 
-  const DIFF_REASONS = new Set(["diff_empty", "diff_too_large", "diff_ineligible", "diff_private", "diff_unavailable"]);
+  const DIFF_REASONS = new Set(["diff_empty", "diff_too_large", "diff_ineligible", "diff_private", "diff_unparsed", "diff_unavailable"]);
 
   function diffFailure(error) {
     const reason = error?.message;
