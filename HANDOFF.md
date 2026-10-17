@@ -132,6 +132,20 @@ and a sixth test in `tests/jev_pi.rs` cover preview, redaction, clipping, privat
 keys, malformed/unmapped categories, and provider failure. Scratch 26.5→26.6
 project and global upgrade/backup/refresh probes pass.
 
+## Slice 26.7
+
+`templates/pi/jev_compaction.js` registers `lgtm_jev_compaction`. It reads no
+transcript and compacts nothing. It accepts bounded caller state (paths,
+unfinished work, constraints) and returns a recommendation
+(`compact_now`/`compact_after_finishing`/`stay_put`/`unclear`), a separate
+unfinished flag, and a preservation checklist echoing the caller's own items.
+Invalid answers leave advice `partial` or `unavailable`; the result states it
+cannot compact. Pi's native summary format and cut safety stay untouched.
+`tests/fixtures/pi/jev_compaction.cjs` and a seventh test in `tests/jev_pi.rs`
+cover half-done task switches, complete boundaries, unmapped and missing answers,
+and provider failure. Scratch 26.6→26.7 project and global upgrade/backup/refresh
+probes pass.
+
 ## Verified commands (slice 26.2)
 
 - `cargo fmt --check`

@@ -401,6 +401,29 @@ or logged. Command, cwd, exit code, and an existing LGTM finding remain facts.
 When Jev is unavailable, inspect the raw log normally; the tool never replaces
 that.
 
+## Jev compaction advice
+
+`lgtm_jev_compaction` advises whether the current point is a task boundary and
+lists what to preserve before Pi's **own** `/compact`. It reads no transcript and
+compacts nothing; it only accepts bounded caller state and returns advice.
+
+```js
+const advice = await tools.lgtm_jev_compaction({
+  changedPaths: ["src/init/pi.rs"],
+  unfinished: ["wire refresh path"],
+  constraints: ["keep owner edits"],
+});
+text(advice);
+```
+
+The recommendation is `compact_now`, `compact_after_finishing`, `stay_put`, or
+`unclear`; unfinished state is a separate flag. The result echoes the caller's
+paths, unfinished work, and constraints as a preservation checklist. Missing
+answers leave advice `partial` or `unavailable`, never a clean result. It cannot
+change Pi compaction settings, delete transcript, or drop a tool/result pair;
+Pi's native summary format and cut safety stay in control. When Jev is
+unavailable, `/compact` works exactly as before.
+
 ## Finding approval capability
 
 The canonical extension advertises the strictly versioned
