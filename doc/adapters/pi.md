@@ -267,13 +267,40 @@ const result = await tools.lgtm_jev_files({
 text(result);
 ```
 
-The initial operation accepts one file up to 16 KiB and 1,500 lines, one
-bounded boolean question, and a five-second request deadline. It rejects
-workspace escapes, symlinks/hardlinks, prohibited paths, common credential
-paths/content, non-text input, and oversized input. Content checks reduce
+The operation accepts one to eight files, each up to 16 KiB and 1,500 lines, one
+to four boolean/choice/score questions, and a five-second request deadline
+inside a twenty-second aggregate budget. It reads files one at a time, so a
+batch makes at most one classifier call per judged file and never carries more
+than one file in a request. It rejects workspace escapes, symlinks/hardlinks,
+prohibited paths, common credential paths/content, non-text input, duplicate
+paths, oversized input, and total volume above 64 KiB. Content checks reduce
 risk; they do not prove that arbitrary source has no secrets. The file read
 passes through Pi's normal tool handlers. A filtered source block is not
 silently replaced with raw bytes. Source changes make the answer stale.
+
+Set `preview: true` to inspect the scope with **zero classifier calls**: it
+reports eligible and skipped paths, stable item IDs, planned questions, the
+declared bounds, and labeled call/byte estimates. Preview does not read file
+content, so content-level rejection surfaces during classification. Every
+answer is validated against the offered criteria: a choice label outside the
+criteria is an explicit no-match, an out-of-range score or missing answer is
+`unavailable`, and failed or unread files are `unavailable`, never negative
+matches. Batch results keep per-file coverage, content hashes, and a
+`partial` status when only some files were judged.
+
+```js
+const preview = await tools.lgtm_jev_files({ paths: ["src/a.rs", "src/b.rs"], questions, preview: true });
+text(preview);
+const judged = await tools.lgtm_jev_files({
+  paths: ["src/a.rs", "src/b.rs"],
+  questions: {
+    risky: { type: "bool", instructions: "Does this file touch auth?", criteria: { true: "Auth", false: "No auth" } },
+    layer: { type: "choice", instructions: "Which layer?", criteria: { domain: "Domain", api: "API" } },
+    quality: { type: "score", instructions: "Rate validation.", criteria: ["none", "partial", "strong"] },
+  },
+});
+text(judged);
+```
 
 Results contain judgments, source hashes, coverage/status, and reported usage,
 not file text. They are advisory; probabilities are not correctness proofs.

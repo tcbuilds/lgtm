@@ -68,3 +68,26 @@ fn generated_jev_tool_is_default_on_private_bounded_and_optional() {
         );
     }
 }
+
+#[test]
+fn generated_jev_scout_previews_batches_and_never_invents_matches() {
+    let repo = TempRepo::new();
+    let binary = env!("CARGO_BIN_EXE_lgtm");
+    let mut init = Command::new(binary);
+    init.args(["init", "--agent", "pi", "--accept-guesses"])
+        .env("HOME", repo.path())
+        .current_dir(repo.path());
+    assert!(run_bounded(&mut init).success());
+    let extension = repo.path().join(".pi/extensions/lgtm.ts");
+    let harness =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pi/jev_scout.cjs");
+    let mut node = Command::new("node");
+    node.arg(harness)
+        .arg(&extension)
+        .current_dir(repo.path())
+        .env("HOME", repo.path());
+    assert!(
+        run_bounded(&mut node).success(),
+        "generated Jev scouting failed"
+    );
+}

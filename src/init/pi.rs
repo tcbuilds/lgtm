@@ -28,6 +28,8 @@ const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
     "ec19a05c2caef1c3f0a18c149642c0df1617b0645782f905de87ec007320384b",
     "f479f973d8a69973cc1fe77a304c24d871d6b1497f6ff82c3b16a5e13bf4a4cc",
     "79c6df8037cb89d0df8992204df8d34de9d547952a14a528b0954fc054b66473",
+    "9088869510d83eac68780e9f96290b692384907f310088e3734bb77cd543889e",
+    "2df34d5ff7811cd79d643abcb070240b8a4da9dd5be23d2802e08c23b25ee804",
 ];
 const JEV_TEMPLATE: &str = include_str!("../../templates/pi/jev.js");
 const EXTENSION_TEMPLATE: &str = r#"// lgtm-pi-extension: v1

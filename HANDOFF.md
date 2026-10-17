@@ -1,6 +1,6 @@
 # Handoff — M26 implementation in progress
 
-> Updated: 2026-10-17T15:39:09.897Z
+> Updated: 2026-10-17 after slice 26.2
 > Branch: `docs/jev-v2-file-reads`
 > M26 review baseline: `56d70055ea3ff21275fa3c9ec77c792f328cc54f`
 
@@ -8,89 +8,107 @@
 
 The owner authorized **all M26**, commits in verified slices, and Pi review
 **once over the whole phase at the end**, not per slice. Implementation is
-direct; no writer subagents were launched.
+direct; no writer subagents were launched. Two slices are committed:
 
-Jev is on by default and must fail gracefully without Jev/API/auth/provider.
-Normal tools and deterministic LGTM enforcement keep working. Existing global
+- `50303cb` — slice 26.1, one-file Jev questions.
+- Slice 26.2 (bounded preview/scouting) is implemented, gated, and pending the
+  commit that follows this handoff update.
+
+Jev is on by default and fails gracefully without Jev/API/auth/provider. Normal
+tools and deterministic LGTM enforcement keep working. Existing global
 `~/.pi/agent/extensions/jev-auto.ts` stays unchanged. Do not revive jev-classify.
 
-The owner approved a live replay budget of **$1 maximum, at most 64 calls,
-16 KiB of reviewed public LGTM source per call**. Do not send credentials,
-private logs, or user transcripts. Stop if cost cannot be bounded. No actual
-global deployment, release, model switch, or package install is authorized.
+Live replay budget is approved at **$1 maximum, at most 64 calls, 16 KiB of
+reviewed public LGTM source per call**. Do not send credentials, private logs,
+or user transcripts. Stop if cost cannot be bounded. No global deployment,
+release, model switch, or package install is authorized.
+
+Global Pi settings now enable auto-compaction; `openai-codex/gpt-6.1-sol` keeps
+its 550,000 reserve, so it compacts above 500,000 tokens.
 
 ## Scope and plan
 
 Read `jev_v2.md`, `research.md`, and local `implementation_plan.md` **M26**.
-The detailed plan is gitignored; do not force-add it. Older M20/M22 work is
-unrelated. Old M23 checkboxes are stale; the Pi adapter already exists.
+The detailed plan is gitignored; do not force-add it.
 
-Nine slices:
-1. Managed single-file questions.
-2. Bounded multi-file preview/scouting.
-3. Question preflight and real replay.
-4. Separate review-risk flags.
-5. Scope/evidence consistency advice.
-6. Diagnostic triage.
-7. Optional compaction advice.
-8. Lower-priority suspicious-output advice.
-9. Measured cache decision; no cache unless justified.
-
-## Completed setup
-
-- Owner approved merging upstream. The five upstream fixes merged cleanly.
-- Review baseline is the merge above, after compatibility change `f833bf3`.
-- Baseline: 68 Pi/init/refresh integration tests passed.
-- Context7 is unavailable; installed Pi 1.3.0 docs/source were inspected.
-- Native classifier: OpenRouter `~typesafe/jev-latest`; catalog input price
-  observed as $0.042/M tokens. This is not a guarantee of future pricing.
-- Pi-subagents 0.50.0 and executable reviewer profile are available.
-  No final review has been launched. Apply the governing model-routing policy
-  at dispatch and report any skill/global policy mismatch explicitly.
+Nine slices: 1 single-file questions; 2 bounded preview/scouting; 3 preflight and
+real replay; 4 separate review-risk flags; 5 scope/evidence consistency advice;
+6 diagnostic triage; 7 compaction advice; 8 suspicious-output advice; 9 measured
+cache decision. Work in order, one commit per slice.
 
 ## Slice 26.1
 
-Implementation is present; final phase review is still pending.
+- `templates/pi/jev.js` renders into the owned extension and registers
+  `lgtm_jev_files` from session startup. Codemode exposure, no startup inference.
+- Single-file boolean question, 16 KiB, 1,500 lines, five-second deadline,
+  governed read, prohibited/credential/symlink checks, stale detection, and
+  privacy-preserving fixed error codes.
+- Proof: project/global/dual-scope integration; native Pi schema validation;
+  scratch pre-Jev upgrade/backup/refresh probes.
 
-- `templates/pi/jev.js`: rendered fragment, not another installed extension.
-  Registers `lgtm_jev_files` through existing session startup, with codemode
-  exposure and no startup inference. Uses native classifier and governed reads.
-- `src/init/pi.rs`: expands the fragment before hashing/rendering, retains
-  previous project/global canonical digests, and uses one extension-location
-  accessor. Existing fake-runtime tests still work.
-- Single-file boolean question: 16 KiB, 1,500 lines, five-second deadline.
-  Trusted workspace, file identity, prohibited paths, credential guards,
-  stale snapshots, cancellation, provider errors, and metadata privacy checked.
-- Native read filters remain authoritative. Only a surviving original source
-  block is classified; appended LGTM guidance is not treated as file content.
-- `tests/jev_pi.rs` and `tests/fixtures/pi/jev_integration.cjs` exercise the
-  generated extension with actual file IO and a fake paid-provider boundary.
-  No new unit tests or live-code mock data.
-- User guide updated in `doc/adapters/pi.md`.
+## Slice 26.2
 
-Verified:
-- Regression first failed because the operation did not exist.
-- 61 focused integration checks passed after implementation.
-- Project, global, and combined loading exercise one effective registration.
-- Native Pi argument validation accepted the generated schema.
-- Scratch pre-Jev upgrades preserved exact backups and refresh idempotence.
-- Rust/JS diagnostics passed; Markdown has no supported LSP route.
-- Whole-suite tests, Clippy, live replay, mutation probes, and final phase
-  review remain pending. No paid replay calls have been launched yet.
+- Same tool, bounded batch: 1..8 files, 1..4 `bool`/`choice`/`score` questions,
+  16 KiB/file, 64 KiB total, five-second per request inside a twenty-second
+  aggregate budget, sequential so each request carries exactly one file.
+- `preview: true` returns eligible/skipped paths, stable IDs, planned questions,
+  declared bounds, and labeled call/byte estimates with **zero classifier calls
+  and zero content reads**. Content-level rejection surfaces at classification.
+- Answers are validated: a choice outside the criteria is an explicit no-match,
+  an out-of-range score or missing answer is `unavailable`, and failed/unread
+  files are `unavailable`, never negative matches. Per-file coverage, content
+  hashes, and `partial` status are preserved.
+- `tests/fixtures/pi/jev_scout.cjs` and `tests/jev_pi.rs` cover preview
+  zero-calls, byte/file limits, no-match, out-of-range, stale, cancel, hung and
+  erroring providers, source secrecy, and unchanged tool permissions.
+
+### Digest upgrade fix (important)
+
+When a template revision changes, the *previous* canonical digest must be added
+to `KNOWN_TEMPLATE_DIGESTS` in `src/init/pi.rs`. Slice 26.2 added the 26.1 pair:
+
+- project `9088869510d83eac68780e9f96290b692384907f310088e3734bb77cd543889e`
+- global `2df34d5ff7811cd79d643abcb070240b8a4da9dd5be23d2802e08c23b25ee804`
+
+An earlier attempt recorded digests computed by a helper that did not match
+Rust `str::lines()` normalization; the real upgrade probe failed with
+“incomplete or mismatched LGTM ownership markers”. The values above come from
+the `TEMPLATE_DIGEST` a 26.1 install embeds, and the probe now passes. Get future
+digests the same way, from an installed previous revision, or reproduce Rust’s
+normalization exactly (drop the trailing newline after split).
+
+## Verified commands (slice 26.2)
+
+- `cargo fmt --check`
+- `node --check templates/pi/jev.js tests/fixtures/pi/jev_scout.cjs`
+- `cargo clippy --locked --offline --all-targets --all-features -- -D warnings`
+- `cargo test --locked --offline --all-targets --all-features` (one unrelated
+  `update.rs` “Text file busy” flake passed on isolated rerun)
+- `cargo build --locked --offline`
+- `cargo run --locked --offline -q -- compile --validate` (71 rules)
+- Focused: `jev_pi` (2), `init_pi` (14), `init_global` (6), `pi_upgrade` (12),
+  `pi_state` (21), `managed_upgrade` (7) all pass.
+- Scratch probes: 26.1→26.2 project and global upgrade preserve an exact backup
+  and refresh is idempotent.
+
+## Incident to disclose
+
+While probing, an init command was accidentally run against this repository with
+`HOME` pointed elsewhere, so it rewrote tracked `.claude/rules/security.md` and
+created three untracked rule files plus a backup. Those were reverted/removed
+(`git status` is clean apart from M26 files). It also overwrote the untracked
+local `.pi/extensions/lgtm.ts`, whose previous bytes were not recoverable; it was
+regenerated with the installed release binary `/home/ubuntu/.local/bin/lgtm`
+(0.12.2, pre-Jev template) so it no longer points at a deleted worktree. Local Pi
+setup still loads; the Jev tool is absent from that 0.12.2 extension by design.
+Run init only inside scratch `HOME`/repo pairs.
 
 ## Continue
 
-Commit verified 26.1 paths only, then implement 26.2. Keep plan checkboxes
-unchecked until the whole-phase gate is complete; record slice-local evidence.
-Reuse native codemode for general state classification; add no second client,
-private command runner, database, browser stack, or universal per-turn hook.
+Commit verified 26.2 paths, then re-read the plan for slice 26.3 (offline
+preflight now; live replay only under the approved budget). Keep plan checkboxes
+unchecked until the whole-phase gate completes. Do not spawn a review agent until
+the phase is done.
 
-Use Pi session metadata for safe decisions/usage, never source/question bodies.
-Keep malformed, unavailable, no-match, and stale outcomes distinct.
-No semantic judgment creates command proof or overrides a deterministic gate.
-
-Unrelated untracked paths: `.killer-whale/`, `.pi/`, `triage.md`. Preserve them.
-Task scratch directory: `/tmp/lgtm-m26.w7q1OW` (baseline binary/source and upgrade
-probes). Clean it after review unless it is needed as retained failure evidence.
-
-The historical August handoff is `HANDOFF.2026-08-13.md`.
+Unrelated untracked paths to leave untouched: `.killer-whale/`, `.pi/`,
+`triage.md`. The historical August handoff is `HANDOFF.2026-08-13.md`.
