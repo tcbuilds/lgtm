@@ -1,6 +1,6 @@
 # Handoff — Jev v2 belongs in LGTM init
 
-> Updated: 2026-10-17T13:50:12.339Z
+> Updated: 2026-10-17T14:14:42.368Z
 > Branch: `docs/jev-v2-file-reads`; code base: `29af281`.
 > Revalidate after code/global-hook changes or a branch change.
 > Local main was five commits behind `origin/main` (`75124a5`); no merge or
@@ -18,7 +18,8 @@ global settings changes, or another paid benchmark.
 
 ## What changed
 
-- Added `jev_v2.md` in this LGTM repository.
+- Added `jev_v2.md` in this LGTM repository; the owner then approved adding
+  the ranked follow-on recommendations from the repo comparison.
 - Replaced the stale August issue-41 handoff with this current direction.
 - Preserved its exact contents in
   [HANDOFF.2026-08-13.md](HANDOFF.2026-08-13.md). That file is historical,
@@ -42,6 +43,27 @@ global settings changes, or another paid benchmark.
   change its default, model alias, or the owner's installed global hook.
 - Preserve workspace boundaries, reject credentials, bound work, and report
   truncated/skipped files. Uncertain results must not hide needed files.
+
+## Approved follow-on recommendations
+
+The owner asked to add these to the Jev proposal, not the local
+`implementation_plan.md`. Full scope and verification checks are in
+[jev_v2.md](jev_v2.md#follow-on-recommendations).
+
+1. Level 4: explicit uncertainty and safe normal-inspection fallbacks.
+2. Level 3: separate diff-risk questions to focus review, never waive checks.
+3. Level 7: optional task-boundary advice using Pi's existing compaction.
+4. Level 6, lower priority: suspicious external-output warnings only;
+   report inspected coverage and do not imply that unflagged text is safe.
+
+Levels 8–9 remain the planned file-question capability. Native codemode
+already provides much of Level 10's general typed-question capability;
+do not add a duplicate client or private command runner. Do not add
+automatic model switching, classifier-based permission overrides, or
+classifier verdicts as proof of test success.
+
+This expands the documentation only. No implementation, rollout, paid
+evaluation, or global configuration change was authorized.
 
 ## Existing code to inspect before implementation
 
@@ -71,7 +93,7 @@ overwrite a user's unrelated extension or change hard-stop enforcement.
 - None of those experiments measured selective Jev file reads.
 - CodeGraph `explore` already returns source. Do not load that source into
   the main context and then claim Jev avoided reading it.
-- Author code for Levels 8–9 was inspected in
+- Author code for Levels 3–4 and 6–10 was inspected in
   [disler/ten-levels-of-jev](https://github.com/disler/ten-levels-of-jev).
   Direct video retrieval was unavailable; do not claim it was watched.
 - Do not copy the demo's cost ratios as measurements of this server.
