@@ -75,6 +75,61 @@ Keep using Pi's native API and existing LGTM controls.
 Measure each addition against the existing harness before making it
 automatic. These benefits are not verified yet.
 
+## Recommendations from the wider survey
+
+Add these three priorities from the [13-repo research](research.md).
+They extend the proposal; they do not authorize implementation or paid runs.
+
+1. **Question checks and replay evaluation.** Reuse Pi's validation before
+   a paid call. Check question shapes, usable labels, no-match outcomes,
+   and clear score levels. Rerun labeled LGTM cases in shadow mode, without
+   changing permissions or execution. Include ambiguous, irrelevant, hostile,
+   and changed-source cases, with separate held-out examples. Record errors,
+   abstentions, failures, latency, and total cost; unknown cost stays unknown.
+   Version the questions, policy, and model identity.
+   **Check:** bad shapes fail before a request, and replay results show the
+   remaining errors and trade-offs. This strengthens uncertainty handling.
+
+2. **Scope and evidence consistency.** Compare the user-approved scope,
+   actual changed paths, tool receipts, and final claims at a completed slice.
+   Warn about unrequested changes or unsupported claims. Match evidence to
+   the same subject and revision; missing evidence is not automatically a
+   contradiction. Keep invalid replies separate from genuine judgments.
+   This only advises: current command evidence still decides verification,
+   and no Jev answer may create a passed check or weaken a hard stop.
+   **Check:** known scope drift is flagged, while valid work and unrelated
+   evidence are not wrongly called contradictions.
+
+3. **Diagnostic triage.** Keep command name, working directory, exit status,
+   and LGTM findings as facts. For ambiguous failures, classify only an
+   approved, minimized excerpt and return a small failure category plus
+   pointers to the original diagnostic. Exclude sensitive content first;
+   redact before truncating when redaction is needed. A regex alone does not
+   prove that arbitrary logs are safe to upload. Use governed tools through
+   native codemode, not a new runner, daemon, automatic install, or guessed fix.
+   **Check:** failures remain failures, useful errors stay available, and
+   triage does not expose private input. This is a use of Level 10.
+
+## Useful refinements
+
+Borrow these patterns, not the research projects' package stacks.
+
+- **Preview outbound work.** Show candidate scope/count, skipped files,
+  planned questions, and bounded input size before classification. Label
+  estimates and unknown prices. The preview makes no classifier call.
+- **Bind answers to source snapshots.** Return stable file/evidence IDs,
+  content identity, and inspected coverage. Re-read changed files before
+  trusting an answer; an answer about old bytes does not cover new bytes.
+- **Record recommendations versus actions.** Use Pi's existing session
+  records for the suggestion, actual action or refusal, fallback reason,
+  model/question version, and reported usage. Do not add another telemetry
+  service, duplicate accounting, or log raw prompts/source by default.
+- **Cache only when measurements justify it.** Bound storage and lifetime.
+  Include input, questions, provider/model, and policy in cache identity.
+  Handle changed files and moving aliases explicitly. A failed request is
+  not a negative answer and must not be cached as one. Check that edits and
+  changed questions cannot reuse an old answer.
+
 ## Do not add
 
 - Another standalone router/client or automatic model-switching layer.

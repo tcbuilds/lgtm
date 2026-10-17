@@ -1,6 +1,6 @@
 # Handoff — Jev v2 belongs in LGTM init
 
-> Updated: 2026-10-17T14:14:42.368Z
+> Updated: 2026-10-17T14:35:08.987Z
 > Branch: `docs/jev-v2-file-reads`; code base: `29af281`.
 > Revalidate after code/global-hook changes or a branch change.
 > Local main was five commits behind `origin/main` (`75124a5`); no merge or
@@ -20,6 +20,8 @@ global settings changes, or another paid benchmark.
 
 - Added `jev_v2.md` in this LGTM repository; the owner then approved adding
   the ranked follow-on recommendations from the repo comparison.
+- Recorded the 13-repo survey in `research.md`. The owner then approved adding
+  its top three candidates and four useful refinements to `jev_v2.md`.
 - Replaced the stale August issue-41 handoff with this current direction.
 - Preserved its exact contents in
   [HANDOFF.2026-08-13.md](HANDOFF.2026-08-13.md). That file is historical,
@@ -55,6 +57,23 @@ The owner asked to add these to the Jev proposal, not the local
 3. Level 7: optional task-boundary advice using Pi's existing compaction.
 4. Level 6, lower priority: suspicious external-output warnings only;
    report inspected coverage and do not imply that unflagged text is safe.
+
+The owner also approved adding these from the wider survey:
+
+1. Question preflight and replay evaluation, first strengthening uncertainty.
+2. Advisory scope/evidence consistency checks, never execution proof.
+3. Diagnostic triage over approved, minimized excerpts using governed tools.
+
+The approved refinements are outbound-work previews, source-snapshot
+identity, recommendation-versus-action records, and bounded caching only
+when measurements justify it. See
+[the expanded recommendations](jev_v2.md#recommendations-from-the-wider-survey)
+and [refinements](jev_v2.md#useful-refinements).
+
+[research.md](research.md) keeps the source matrix and limits of the survey.
+It records the research-time candidate assessment; this handoff and the
+proposal record the later approval to include those candidates in the doc.
+Selective context pruning and the SQL/browser package stacks were not added.
 
 Levels 8–9 remain the planned file-question capability. Native codemode
 already provides much of Level 10's general typed-question capability;
@@ -110,11 +129,19 @@ evidence that file reads already work.
 Before this docs change: tracked tree clean; no stashes. Preserve the
 unrelated untracked `.killer-whale/`, `.pi/`, and `triage.md`.
 
-- `cargo fmt --check`: passed, exit 0.
-- `cargo build --locked --offline`: passed, exit 0.
+During the update, unrelated edits appeared in `src/init/pi.rs` and
+`tests/init_pi.rs`. They were not reviewed or included in this docs checkpoint.
+The source observations above refer to the committed code base, not those edits.
+
+- `cargo fmt --check`: latest attempt failed on unrelated formatting in
+  `tests/init_pi.rs`; that file was left untouched.
+- `cargo build --locked --offline`: completed successfully during the update;
+  this is not a validation of the concurrent edits.
+- Document structure, recommendation coverage, and local links: checked.
 - Full Rust tests/Clippy: not rerun for this docs-only change.
 - Markdown LSP: unavailable; no configured server supports these files.
-- No Jev file-question implementation or file-read benchmark exists yet.
+- This checkpoint adds documentation only. Review concurrent source edits
+  before claiming that any Jev capability is implemented.
 
 ## Open decisions
 
