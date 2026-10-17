@@ -6,6 +6,11 @@ Ship a small Pi helper through `lgtm init --agent pi`, built on the
 existing `jev-auto.ts` approach. Use Pi's built-in Jev support and the
 user's configured OpenRouter credentials—not a separate router package.
 
+**Default: on.** Init installs the capability without a key or a classifier
+call. If Jev, API support, credentials, or the provider are unavailable, report
+that clearly and continue with normal tools and LGTM checks. Availability
+by default is not automatic file upload or a new per-turn network hook.
+
 ## The simple idea
 
 A normal read puts file text in the main model's context. A Jev file

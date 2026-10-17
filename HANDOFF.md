@@ -1,7 +1,8 @@
 # Handoff — Jev v2 belongs in LGTM init
 
-> Updated: 2026-10-17T14:35:08.987Z
-> Branch: `docs/jev-v2-file-reads`; code base: `29af281`.
+> Updated: 2026-10-17T14:56:18.736Z
+> Branch: `docs/jev-v2-file-reads`; latest observed code: `f833bf3`.
+> Jev research originally compared enforcement code base `29af281`.
 > Revalidate after code/global-hook changes or a branch change.
 > Local main was five commits behind `origin/main` (`75124a5`); no merge or
 > source update was performed for this docs-only checkpoint.
@@ -26,7 +27,11 @@ global settings changes, or another paid benchmark.
 - Preserved its exact contents in
   [HANDOFF.2026-08-13.md](HANDOFF.2026-08-13.md). That file is historical,
   not current branch/worktree/release guidance.
-- No production source, templates, manifests, or enforcement behavior changed.
+- Added M26 to the local, gitignored `implementation_plan.md` from the latest
+  `/roadmap jev_v2.md` request; prior milestones were preserved. The owner chose
+  default-on Jev availability with graceful fallback, not session opt-in.
+- This planning checkpoint changes no production source, templates, manifests,
+  or enforcement behavior.
 - Documentation is on a separate branch so unrelated upstream code changes
   and local untracked files are not mixed into this checkpoint.
 
@@ -48,8 +53,8 @@ global settings changes, or another paid benchmark.
 
 ## Approved follow-on recommendations
 
-The owner asked to add these to the Jev proposal, not the local
-`implementation_plan.md`. Full scope and verification checks are in
+Earlier requests added these to the proposal. The latest `/roadmap` request
+now plans them in local `implementation_plan.md` M26. Full scope is in
 [jev_v2.md](jev_v2.md#follow-on-recommendations).
 
 1. Level 4: explicit uncertainty and safe normal-inspection fallbacks.
@@ -126,18 +131,21 @@ evidence that file reads already work.
 
 ## State and checks
 
-Before this docs change: tracked tree clean; no stashes. Preserve the
-unrelated untracked `.killer-whale/`, `.pi/`, and `triage.md`.
+At roadmap start, unrelated Pi source/tests/docs edits were present; they
+landed separately during planning. Preserve the unrelated untracked
+`.killer-whale/`, `.pi/`, and `triage.md`.
 
-During the update, unrelated edits appeared in `src/init/pi.rs` and
-`tests/init_pi.rs`. They were not reviewed or included in this docs checkpoint.
-The source observations above refer to the committed code base, not those edits.
+Concurrent Pi compatibility work was committed separately as `f833bf3`
+(`src/init/pi.rs`, `tests/init_pi.rs`, and `doc/adapters/pi.md`). It was not
+implemented by this planning task. Re-read it before M26 production edits;
+CodeGraph reported index drift. Older source observations refer to their
+recorded base, not an acceptance review of that change.
 
-- `cargo fmt --check`: latest attempt failed on unrelated formatting in
-  `tests/init_pi.rs`; that file was left untouched.
-- `cargo build --locked --offline`: completed successfully during the update;
-  this is not a validation of the concurrent edits.
-- Document structure, recommendation coverage, and local links: checked.
+- `cargo fmt --check`: passed, exit 0, after the compatibility commit landed.
+- `cargo build --locked --offline`: passed, exit 0; this is not a full review
+  of the separate compatibility change.
+- Document structure, nine unchecked M26 slices, spec coverage, source/test
+  references, local links, and ignored-plan status: checked.
 - Full Rust tests/Clippy: not rerun for this docs-only change.
 - Markdown LSP: unavailable; no configured server supports these files.
 - This checkpoint adds documentation only. Review concurrent source edits
@@ -145,21 +153,30 @@ The source observations above refer to the committed code base, not those edits.
 
 ## Open decisions
 
-- Decide how the helper is owned/updated within LGTM's Pi installation.
-- Decide enablement and private-file consent before any default-on rollout.
-- Choose one real file question/corpus to validate before expanding scope.
+- Resolved: on by default; missing Jev/API/auth/provider must leave ordinary
+  tools and deterministic LGTM checks usable. Init makes no classifier calls.
+- Plan: reuse the existing managed `lgtm.ts` install/refresh path; verify one
+  effective operation when project and global extensions coexist.
+- Still open before paid evaluation: owner-approved corpus/data handling and
+  budget. No paid replay or global install was authorized by `/roadmap`.
 
 These decisions do not authorize new work by themselves.
 
 ## Continue here
 
-1. Read `jev_v2.md` and this handoff.
-2. Keep all work in LGTM; do not work in the shelved standalone router.
-3. Before code work, reconcile the branch with current upstream and inspect
-   the init/refresh seams through CodeGraph.
-4. Wait for an explicit implementation or benchmark request. If approved,
-   start with one bounded file-question operation using Pi's native API,
-   not automatic whole-repository scanning or read interception.
+1. Read `jev_v2.md`, this handoff, and local `implementation_plan.md` **M26**.
+2. M26 has nine unchecked slices: managed single-file questions; bounded batch
+   preview/scouting; preflight/replay; review focus; scope/evidence checks;
+   diagnostic triage; compaction advice; lower-priority output warnings; and a
+   conditional cache decision. M20/M22 remain unrelated retained work; M23's
+   older status is stale. None is the target of this request.
+3. Keep all work in LGTM. Before code work, reconcile upstream and `f833bf3`,
+   re-read changed files, and recheck init/refresh callers and Pi compatibility.
+4. Wait for an explicit implementation request. Start with M26.1 if approved.
+   Default-on means the capability is available, not automatic scanning or
+   per-turn calls. Paid replay needs separate data/budget approval.
+5. The detailed plan is intentionally local/gitignored; do not force-add it.
+   This tracked handoff summarizes its scope, and `jev_v2.md` remains the spec.
 
 ## Resume bootstrap
 
