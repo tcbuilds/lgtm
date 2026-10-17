@@ -58,8 +58,8 @@ const context = {
   signal: new AbortController().signal,
   executeTool: async (name, args) => {
     assert.equal(name, "read");
-    return { content: [{ type: "text", text: fs.readFileSync(path.resolve(args.path), "utf8") },
-      { type: "text", text: "Appended LGTM guidance." }] };
+    return { result: { content: [{ type: "text", text: fs.readFileSync(path.resolve(args.path), "utf8") },
+      { type: "text", text: "Appended LGTM guidance." }] }, isError: false };
   },
   modelRegistry: {
     findOfType: (type, provider, id) => {

@@ -29,9 +29,9 @@ const context = {
   signal: new AbortController().signal,
   executeTool: async (name, args) => {
     assert.equal(name, "bash");
-    if (args.command === "git rev-parse HEAD") return { content: [{ type: "text", text: `${REVISION}\n` }] };
+    if (args.command === "git rev-parse HEAD") return { result: { content: [{ type: "text", text: `${REVISION}\n` }] }, isError: false };
     assert.equal(args.command, "git diff --name-only HEAD");
-    return { content: [{ type: "text", text: paths.join("\n") }] };
+    return { result: { content: [{ type: "text", text: paths.join("\n") }] }, isError: false };
   },
   modelRegistry: {
     findOfType: (type, provider, id) => {

@@ -24,7 +24,7 @@ const pi = {
 };
 const body = "pub fn validate_policy(input: &str) -> bool { !input.is_empty() }\n";
 fs.writeFileSync("app.rs", body);
-let requests = [], reads = 0, classify, readTransform = (text) => text;
+let requests = [], reads = 0, classify, readTransform = (text) => text, readBlocks;
 const context = {
   cwd: process.cwd(), isProjectTrusted: () => true,
   signal: new AbortController().signal,
@@ -32,8 +32,10 @@ const context = {
   ui: { notify: () => {} },
   executeTool: async (name, args) => {
     assert.equal(name, "read"); reads++;
-    return { content: [{ type: "text", text: readTransform(fs.readFileSync(path.resolve(args.path), "utf8")) },
-      { type: "text", text: "Appended LGTM path-scoped guidance is not file content." }] };
+    const text = fs.readFileSync(path.resolve(args.path), "utf8");
+    if (readBlocks) return { result: { content: readBlocks(readTransform(text)) }, isError: false };
+    return { result: { content: [{ type: "text", text: readTransform(text) },
+      { type: "text", text: "Appended LGTM path-scoped guidance is not file content." }] }, isError: false };
   },
   modelRegistry: {
     findOfType: (type, provider, id) => {
@@ -112,9 +114,18 @@ async function invoke(p = params, signal = context.signal) {
   assert.notEqual((await invoke()).status, "ok");
   assert.equal(requests.length, before, "a tool-result redaction was bypassed");
   readTransform = (text) => "Trusted tool guidance\n\n" + text;
-  assert.equal((await invoke()).status, "ok", "governed source suffix was not recognized");
+  assert.equal((await invoke()).status, "ok", "governed source preceded by guidance was not recognized");
+  assert.equal(requests.at(-1).state.file.content, body);
+  readTransform = (text) => text + "\n\nAppended LGTM guidance";
+  assert.equal((await invoke()).status, "ok", "governed source wrapped by trailing guidance was not recognized");
   assert.equal(requests.at(-1).state.file.content, body);
   readTransform = (text) => text;
+  readBlocks = (text) => [{ type: "text", text: "Leading LGTM guidance" }, { type: "text", text }, { type: "text", text: "Trailing LGTM guidance" }];
+  assert.equal((await invoke()).status, "ok", "multi-block governed read was not recognized");
+  assert.equal(requests.at(-1).state.file.content, body);
+  readBlocks = () => [{ type: "text", text: "Leading guidance" }, { type: "text", text: "[REDACTED]" }];
+  assert.notEqual((await invoke()).status, "ok", "multi-block redaction was bypassed");
+  readBlocks = undefined;
   classify = () => { throw new Error("provider message must not escape"); };
   r = await invoke();
   assert.equal(r.status, "unavailable");

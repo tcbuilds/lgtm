@@ -37,8 +37,9 @@ const registerLgtmJevScope = (() => {
 
   async function bash(ctx, command, signal) {
     const result = await ctx.executeTool("bash", { command }, { signal });
-    if (result?.isError) throw new Error("git_unavailable");
-    const text = Array.isArray(result?.content) ? result.content.find((block) => block.type === "text")?.text : undefined;
+    if (result?.isError || result?.result?.isError) throw new Error("git_unavailable");
+    const blocks = result?.result?.content ?? result?.content;
+    const text = typeof blocks === "string" ? blocks : (Array.isArray(blocks) ? blocks.find((block) => block.type === "text")?.text : undefined);
     if (typeof text !== "string") throw new Error("git_unavailable");
     return text;
   }

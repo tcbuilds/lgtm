@@ -60,8 +60,8 @@ const context = {
   ui: { notify: () => {} },
   executeTool: async (name, args) => {
     assert.equal(name, "read"); reads++;
-    return { content: [{ type: "text", text: fs.readFileSync(path.resolve(args.path), "utf8") },
-      { type: "text", text: "Appended LGTM path-scoped guidance is not file content." }] };
+    return { result: { content: [{ type: "text", text: fs.readFileSync(path.resolve(args.path), "utf8") },
+      { type: "text", text: "Appended LGTM path-scoped guidance is not file content." }] }, isError: false };
   },
   modelRegistry: {
     findOfType: (type, provider, id) => {

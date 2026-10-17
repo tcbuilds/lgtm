@@ -216,6 +216,25 @@ growth fixture asserts exactly four provider calls, exactly 65,536 transmitted
 bytes, and exactly one `volume_limit` skip. All nine M26 checkboxes are marked
 complete. All M26 work is committed and pushed on `docs/jev-v2-file-reads`.
 
+## Live replay (option 1) and its finding
+
+The approved live tool-level replay ran in a fresh headless Pi session that
+loaded the generated project extension and called `lgtm_jev_files` once per
+corpus case through codemode. Result: 14/14 agreement, 0 false positives, 0 false
+negatives, 0 abstentions; classifier $0.001498, main model $0.02065, total about
+$0.022 under the $1 cap. Published in `doc/jev-replay-results.md`, including the
+honest caveat that no advantage over grep was demonstrated.
+
+The live run found a real defect the offline fixtures missed: Pi's
+`ctx.executeTool` returns `{ toolCall, result: { content }, isError }`, and the
+governed read wraps file text in separate guidance blocks. The Jev file/review/
+scope tools read `result.content` at the wrong level and checked the wrong block
+boundary, so every real read failed as `read_filtered`. Fixed: read the nested
+result, join all text blocks, and require the source to be present (`includes`
+now instead of `endsWith`). Fixtures now use the real result shape, appended
+guidance, and a multi-block read. The previous canonical template digests
+(`acd4d16`, `3b3f171`, `f3fbcf1`/`28db2c6`) were added to `KNOWN_TEMPLATE_DIGESTS`.
+
 ## Verified commands (slice 26.2)
 
 - `cargo fmt --check`

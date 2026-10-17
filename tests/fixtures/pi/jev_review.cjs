@@ -48,7 +48,7 @@ const context = {
   executeTool: async (name, args) => {
     assert.equal(name, "bash");
     assert.equal(args.command, "git diff --no-ext-diff --no-color --unified=3 HEAD");
-    return { content: [{ type: "text", text: diff }] };
+    return { result: { content: [{ type: "text", text: diff }] }, isError: false };
   },
   modelRegistry: {
     findOfType: (type, provider, id) => {

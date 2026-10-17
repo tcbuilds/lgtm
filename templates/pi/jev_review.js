@@ -129,8 +129,9 @@ const registerLgtmJevReview = (() => {
   async function obtainDiff(ctx, signal) {
     if (typeof ctx.executeTool !== "function") throw new Error("native_api_unavailable");
     const result = await ctx.executeTool("bash", { command: "git diff --no-ext-diff --no-color --unified=3 HEAD" }, { signal });
-    if (result?.isError) throw new Error("diff_unavailable");
-    const text = Array.isArray(result?.content) ? result.content.find((block) => block.type === "text")?.text : undefined;
+    if (result?.isError || result?.result?.isError) throw new Error("diff_unavailable");
+    const blocks = result?.result?.content ?? result?.content;
+    const text = typeof blocks === "string" ? blocks : (Array.isArray(blocks) ? blocks.find((block) => block.type === "text")?.text : undefined);
     return parseDiff(text);
   }
 

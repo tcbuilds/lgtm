@@ -254,12 +254,16 @@ const registerLgtmJev = (() => {
   async function governedFile(ctx, root, name, signal) {
     const full = await candidatePath(root, name);
     const read = await ctx.executeTool("read", { path: full }, { signal });
-    if (read?.isError) throw new Error("read_denied");
+    if (read?.isError || read?.result?.isError) throw new Error("read_denied");
     const file = await snapshot(root, name);
-    const visible = Array.isArray(read?.content)
-      ? read.content.find((b) => b.type === "text")?.text : undefined;
-    // LGTM appends guidance blocks. The original source block must survive filters.
-    if (typeof visible !== "string" || visible.length > 128 * 1024 || !visible.endsWith(file.content)) throw new Error("read_filtered");
+    // Pi's executeTool returns { toolCall, result: { content }, isError }; older
+    // shapes return { content }. LGTM wraps the file text in one or more
+    // separate guidance blocks, so join every text block and require the
+    // original source to survive, which also proves the read was not redacted.
+    const blocks = read?.result?.content ?? read?.content;
+    const visible = Array.isArray(blocks)
+      ? blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n") : undefined;
+    if (typeof visible !== "string" || visible.length > 256 * 1024 || !visible.includes(file.content)) throw new Error("read_filtered");
     if ((await snapshot(root, file.path)).sha256 !== file.sha256) throw new Error("source_changed");
     return file;
   }
