@@ -174,8 +174,9 @@ async function invoke(p = params, signal = context.signal) {
   const beforeGrow = requests.length;
   result = await invoke({ paths: grow, questions });
   const grownBytes = requests.slice(beforeGrow).reduce((total, input) => total + Buffer.byteLength(input.state.file.content, "utf8"), 0);
-  assert.ok(grownBytes <= 65_536, `grown batch transmitted ${grownBytes} bytes`);
-  assert.ok(result.files.some((item) => item.reason === "volume_limit"), "growth bypassed the byte budget");
+  assert.equal(requests.length - beforeGrow, 4, "growth did not limit the provider calls");
+  assert.equal(grownBytes, 65_536, `grown batch transmitted ${grownBytes} bytes`);
+  assert.equal(result.files.filter((item) => item.reason === "volume_limit").length, 1, "growth bypassed the byte budget");
   context.executeTool = originalRead;
 
   classify = (_model, input) => ({ ...answer(_model, input), answers: {

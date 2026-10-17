@@ -209,7 +209,12 @@ watchdog fixes, and found two remaining precision gaps; both are now fixed:
   governed read could exceed 64 KiB. Now the actual snapshot byte length is
   charged before each classifier call; a read-growth fixture case is added.
 
-Full gates re-ran clean after the fixes. Final reviewer re-verification follows.
+Final reviewer re-verification confirmed both remaining fingerprints fixed, and the
+reviewers' residual test-gap notes are closed: quoted private paths are now tested
+as three independent cases (space, tab escape, and space-plus-tab), and the
+growth fixture asserts exactly four provider calls, exactly 65,536 transmitted
+bytes, and exactly one `volume_limit` skip. All nine M26 checkboxes are marked
+complete. All M26 work is committed and pushed on `docs/jev-v2-file-reads`.
 
 ## Verified commands (slice 26.2)
 
