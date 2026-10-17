@@ -153,7 +153,21 @@ fn active_waiver_unblocks_violation_and_is_reported() {
     let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
     let record: Value = serde_json::from_str(evidence.lines().last().expect("evidence line"))
         .expect("evidence JSON");
-    assert_eq!(record["rules"]["waived"], 1);
+    // Unsupported production platforms must remain unverified, never waived.
+    if cfg!(target_os = "linux") {
+        assert_eq!(record["rules"]["waived"], 1);
+    } else {
+        assert_eq!(record["rules"]["waived"], 0);
+        assert!(
+            record["results"]
+                .as_array()
+                .expect("results")
+                .iter()
+                .any(|result| {
+                    result["evidence"]["check"] == "ruff.check" && result["status"] == "unverified"
+                })
+        );
+    }
     assert_eq!(record["waivers"][0]["owner"], "platform-team");
     let report = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .arg("report")
@@ -161,7 +175,10 @@ fn active_waiver_unblocks_violation_and_is_reported() {
         .output()
         .expect("report runs");
     let stdout = String::from_utf8(report.stdout).expect("report UTF-8");
-    assert!(stdout.contains("no-broad-exception-handling: waived"));
+    assert_eq!(
+        stdout.contains("no-broad-exception-handling: waived"),
+        cfg!(target_os = "linux")
+    );
     assert!(stdout.contains("platform-team"));
 }
 

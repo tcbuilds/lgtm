@@ -16,6 +16,7 @@ pub(super) fn guidance_paths(root: &Path, agent: InitAgent, is_global: bool) -> 
     let mut paths = rules::target_paths(root, if is_global { InitAgent::Claude } else { agent });
     if is_global {
         paths.push(root.join(".codex/AGENTS.md"));
+        paths.push(root.join(".pi/agent/AGENTS.md"));
     }
     paths
 }
@@ -35,13 +36,7 @@ pub(super) fn refresh(
         plan_codex_guidance(root, codex_digest, &mut writes)?;
     }
     if is_global {
-        let target = root.join(".codex/AGENTS.md");
-        if read_if_exists(&target)?
-            .is_some_and(|text| text.contains("<!-- lgtm-global-guidance:start -->"))
-            && let Some(bytes) = global::render_agents(&target)?
-        {
-            writes.push((target, bytes));
-        }
+        plan_global_guidance(root, known_guidance, &mut writes)?;
     }
     if !rules_only {
         if is_global || agent == InitAgent::Claude {
@@ -61,11 +56,43 @@ pub(super) fn refresh(
         if !is_global && agent == InitAgent::Codex {
             plan_execpolicy(root, &mut writes)?;
         }
+        if is_global && root.join(".pi/agent/extensions/lgtm.ts").is_file() {
+            let path = root.join(".pi/agent/settings.json");
+            let first_migration = !known_guidance.contains(&root.join(".pi/agent/AGENTS.md"));
+            if (path.exists() || first_migration)
+                && let Some(bytes) =
+                    pi_config::render_codemode_settings(pi_config::validate_settings(&path)?)
+            {
+                writes.push((path, bytes));
+            }
+        }
         if !is_global && agent == InitAgent::Pi && root.join(".pi/extensions/lgtm.ts").is_file() {
             plan_pi_settings(root, &mut writes)?;
         }
     }
     write_batch(root, writes)
+}
+
+fn plan_global_guidance(
+    root: &Path,
+    known: &[PathBuf],
+    writes: &mut Vec<(PathBuf, Vec<u8>)>,
+) -> Result<(), InitError> {
+    let pi_agents = root.join(".pi/agent/AGENTS.md");
+    for target in [root.join(".codex/AGENTS.md"), pi_agents.clone()] {
+        let existing = read_if_exists(&target)?;
+        let owned = existing
+            .as_ref()
+            .is_some_and(|text| text.contains("<!-- lgtm-global-guidance:start -->"));
+        // Older registrations predate Pi guidance. Add it once, then respect removal.
+        let first_pi_migration = target == pi_agents && !known.contains(&target);
+        if (owned || first_pi_migration)
+            && let Some(bytes) = global::render_agents(&target)?
+        {
+            writes.push((target, bytes));
+        }
+    }
+    Ok(())
 }
 
 fn plan_guidance(

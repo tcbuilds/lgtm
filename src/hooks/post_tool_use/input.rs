@@ -6,11 +6,15 @@ const EDIT_TOOLS: [&str; 3] = ["Edit", "Write", "MultiEdit"];
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct HookInput {
     #[serde(default)]
+    pub(super) hook_event_name: Option<String>,
+    #[serde(default)]
     pub(super) session_id: Option<String>,
     #[serde(default)]
     pub(super) cwd: Option<String>,
     #[serde(default)]
     pub(super) tool_name: Option<String>,
+    #[serde(default)]
+    pub(super) tool_use_id: Option<String>,
     #[serde(default)]
     pub(super) tool_input: Option<ToolInput>,
 }
@@ -21,6 +25,10 @@ pub(super) struct ToolInput {
     pub(super) file_path: Option<String>,
     #[serde(default)]
     pub(super) path: Option<String>,
+    #[serde(default)]
+    pub(super) command: Option<String>,
+    #[serde(default)]
+    pub(super) cmd: Option<String>,
 }
 
 pub(super) fn parse_input(raw: &str) -> Result<HookInput, serde_json::Error> {

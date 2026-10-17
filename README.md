@@ -49,7 +49,7 @@ For Pi, run:
 lgtm init --agent pi
 ```
 
-Pi init writes the LGTM extension under `.pi/extensions/`, merges the pinned Pi package set into `.pi/settings.json`, and merges the configured language-server routes into `.pi/pi-lsp.json`. Existing package versions, package filters, settings, timeouts, and named server routes win over LGTM defaults. After the project is trusted, Pi loads the extension and installs missing configured packages through its normal package flow. Language-server executables are not installed by LGTM or pi-lsp; use `/lsp` and `lgtm doctor` to identify missing commands.
+Pi init writes the LGTM extension under `.pi/extensions/`, merges unpinned Pi package defaults into `.pi/settings.json`, and merges the configured language-server routes into `.pi/pi-lsp.json`. The defaults include web search, GitHub PR status, and goal support. Init and refresh remove only the exact old version pins shipped by LGTM; other package versions, package filters, settings, timeouts, and named server routes are preserved. Run `pi update --extensions` to download newer packages; `lgtm update` changes declarations, not installed npm packages. After the project is trusted, Pi loads the extension and installs missing configured packages through its normal package flow. Language-server executables are not installed by LGTM or pi-lsp; use `/lsp` and `lgtm doctor` to identify missing commands.
 
 Pi packages and project extensions execute with the user's permissions. Review the generated files before trusting the project. Roll back by removing only LGTM's extension and generated package/server entries; do not delete either JSON file when it also contains user configuration.
 
@@ -167,7 +167,7 @@ The five Claude events have different jobs:
 | `SessionStart` | Detect the repo and provide the permanent contract. | Context injection |
 | `UserPromptSubmit` | Classify intent and inject only relevant policy. | Context injection |
 | `PreToolUse` | Protect paths and baselines; run the full gate before agent commits. | Allow or deny |
-| `PostToolUse` | Give quick feedback after each edit and record findings. | Warning or block |
+| `PostToolUse` | Give quick feedback after edits and matched shell changes; record findings. | Warning or block |
 | `Stop` | Run targeted final checks, inspect the diff, verify claims, and decide completion. | Allow or block |
 
 Evidence is written locally under `.lgtm/evidence/`. It records what ran, its
@@ -211,6 +211,10 @@ lgtm check --tier full
 
 See [the Codex adapter contract](doc/adapters/codex.md) for exit statuses and
 platform limits.
+
+[Shell change tracking](doc/shell-change-tracking.md) records script edits, new files,
+deletions, and renames without claiming unchanged pre-existing user files. Missing
+or ambiguous hook events remain unverified.
 
 PostToolUse hooks run fast, touched-workspace gates. An agent's `git commit`
 attempt runs the full tier, including applicable tests, builds, and coverage;

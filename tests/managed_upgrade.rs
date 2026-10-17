@@ -225,6 +225,75 @@ fn adapters_sharing_guidance_do_not_overwrite_each_others_registration() {
 }
 
 #[test]
+fn pi_package_migration_unpins_shipped_versions_and_preserves_owner_choices() {
+    for operation in ["init", "refresh"] {
+        let home = TempRepo::new();
+        let repo = TempRepo::new();
+        init(&repo, home.path(), "pi", false);
+        let mut packages = json!([
+            "npm:@narumitw/pi-lsp@0.49.4",
+            "npm:@narumitw/pi-worktree@0.51.1",
+            "npm:@the-forge-flow/pi-rules@0.1.0",
+            "npm:pi-ask-user@0.14.0",
+            "npm:pi-mcp-extension@1.5.0",
+            {"source":"npm:pi-subagents@0.50.0", "extensions":[], "skills":["allowed"], "autoload":false},
+            "npm:rtfd-pi@0.1.1",
+            {"source":"npm:pi-web-search@9.9.9", "extensions":["!private"]},
+            "npm:owner-package@1.2.3"
+        ]);
+        repo.write(
+            ".pi/settings.json",
+            &json!({"theme":"dark", "packages":packages}).to_string(),
+        );
+        match operation {
+            "init" => init(&repo, home.path(), "pi", false),
+            _ => refresh(home.path()),
+        }
+        let actual = repo.read_json(".pi/settings.json");
+        let expected = packages.as_array_mut().expect("package array");
+        for package in &mut expected[..7] {
+            let source = package
+                .as_str()
+                .or_else(|| package["source"].as_str())
+                .expect("source");
+            let unpinned = source.rsplit_once('@').expect("version").0.to_string();
+            if package.is_string() {
+                *package = json!(unpinned);
+            } else {
+                package["source"] = json!(unpinned);
+            }
+        }
+        expected.extend([
+            json!("npm:@narumitw/pi-github-pr"),
+            json!("npm:@narumitw/pi-goal"),
+        ]);
+        assert_eq!(actual["packages"], packages, "{operation}");
+        assert_eq!(actual["theme"], "dark");
+        let once = repo.read(".pi/settings.json");
+        refresh(home.path());
+        assert_eq!(repo.read(".pi/settings.json"), once);
+    }
+}
+
+#[test]
+fn pi_package_refresh_keeps_custom_versions_and_filters() {
+    let home = TempRepo::new();
+    let repo = TempRepo::new();
+    init(&repo, home.path(), "pi", false);
+    let owner_package = json!({"source":"npm:@narumitw/pi-lsp@0.49.6", "extensions":[]});
+    repo.write(
+        ".pi/settings.json",
+        &json!({"packages":[owner_package]}).to_string(),
+    );
+    refresh(home.path());
+    let settings = repo.read_json(".pi/settings.json");
+    let packages = settings["packages"].as_array().expect("packages");
+    assert_eq!(packages[0], owner_package);
+    assert_eq!(packages.len(), 10);
+    assert!(packages.contains(&json!("npm:pi-web-search")));
+}
+
+#[test]
 fn rules_only_refresh_never_installs_hooks_or_repo_policy() {
     for agent in ["claude", "codex", "pi"] {
         let home = TempRepo::new();

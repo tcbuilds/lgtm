@@ -10,6 +10,7 @@ pub(super) struct HookInput {
     pub cwd: Option<String>,
     pub session_id: Option<String>,
     pub tool_name: Option<String>,
+    pub tool_use_id: Option<String>,
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub approval_capability: Option<Value>,
@@ -78,6 +79,7 @@ mod tests {
             cwd: None,
             session_id: None,
             tool_name: Some("Edit".to_string()),
+            tool_use_id: None,
             permission_mode: None,
             approval_capability: None,
             tool_input: ToolInput {
@@ -100,6 +102,7 @@ mod tests {
             cwd: None,
             session_id: None,
             tool_name: Some("Bash".to_string()),
+            tool_use_id: None,
             permission_mode: None,
             approval_capability: None,
             tool_input: ToolInput {
@@ -122,6 +125,7 @@ mod tests {
             cwd: None,
             session_id: None,
             tool_name: Some("Bash".to_string()),
+            tool_use_id: None,
             permission_mode: None,
             approval_capability: None,
             tool_input: ToolInput {

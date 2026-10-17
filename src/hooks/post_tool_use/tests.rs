@@ -280,7 +280,7 @@ fn edited_file_only_matches_edit_tools() {
         tool_name: Some("Read".to_string()),
         tool_input: Some(ToolInput {
             file_path: Some("/a.py".to_string()),
-            path: None,
+            ..ToolInput::default()
         }),
         ..HookInput::default()
     };
@@ -294,14 +294,14 @@ fn edited_file_only_matches_edit_tools() {
 
     input.tool_input = Some(ToolInput {
         file_path: Some("   ".to_string()),
-        path: None,
+        ..ToolInput::default()
     });
     assert_eq!(edited_file(&input), None, "a blank path is ignored");
 
     input.tool_name = Some("Read".to_string());
     input.tool_input = Some(ToolInput {
-        file_path: None,
         path: Some("/a.py".to_string()),
+        ..ToolInput::default()
     });
     assert_eq!(read_file(&input), Some("/a.py".to_string()));
 }

@@ -1315,13 +1315,16 @@ fn pi_init_installs_package_and_lsp_configuration_idempotently() {
     assert_eq!(
         settings["packages"],
         json!([
-            "npm:@narumitw/pi-lsp@0.49.4",
-            "npm:@narumitw/pi-worktree@0.51.1",
-            "npm:@the-forge-flow/pi-rules@0.1.0",
-            "npm:pi-ask-user@0.14.0",
-            "npm:pi-mcp-extension@1.5.0",
-            "npm:pi-subagents@0.50.0",
-            "npm:rtfd-pi@0.1.1"
+            "npm:@narumitw/pi-lsp",
+            "npm:@narumitw/pi-worktree",
+            "npm:@the-forge-flow/pi-rules",
+            "npm:pi-ask-user",
+            "npm:pi-mcp-extension",
+            "npm:pi-subagents",
+            "npm:rtfd-pi",
+            "npm:pi-web-search",
+            "npm:@narumitw/pi-github-pr",
+            "npm:@narumitw/pi-goal"
         ])
     );
     let lsp = repo.read_json(".pi/pi-lsp.json");

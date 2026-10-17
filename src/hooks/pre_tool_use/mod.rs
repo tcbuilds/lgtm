@@ -77,8 +77,7 @@ fn run_for_event(
             );
         }
     }
-    // A shell command carries no edit target, so the command policy is the only
-    // gate that applies to it. Both PreToolUse and PermissionRequest reach here:
+    // Both PreToolUse and PermissionRequest enforce command policy here:
     // Claude Code routes shell calls through PreToolUse, Codex through
     // PermissionRequest, and neither may run a prohibited command unchecked.
     if let Some(command) = input::requested_command(&parsed) {
@@ -128,7 +127,9 @@ fn run_for_event(
                     invocation.argv(),
                     approval_capability,
                 ) {
-                    Ok(crate::hooks::stop::PreCommitGateDecision::Allow) => {}
+                    Ok(crate::hooks::stop::PreCommitGateDecision::Allow) => {
+                        return ExitCode::SUCCESS;
+                    }
                     Ok(crate::hooks::stop::PreCommitGateDecision::Deny(reason)) => {
                         return deny(
                             output,
@@ -187,6 +188,14 @@ fn run_for_event(
             Ok(None) => {}
             Err(reason) => return deny(output, adapter, event, &reason),
         }
+        if event == HookEvent::PreToolUse {
+            super::shell_tracking::begin(
+                &root,
+                parsed.session_id.as_deref(),
+                parsed.tool_use_id.as_deref(),
+                command,
+            );
+        }
         return ExitCode::SUCCESS;
     }
     let Some(file) = input::edited_file(&parsed) else {
@@ -216,6 +225,7 @@ fn run_for_event(
             "target matches prohibited_paths policy",
         );
     }
+    super::shell_tracking::observe_edit(&root, parsed.session_id.as_deref());
     if let Err(reason) = capture(&root, &target, parsed.session_id.as_deref()) {
         return policy_failure(
             output,
@@ -469,6 +479,7 @@ mod tests {
                 cwd: None,
                 session_id: None,
                 tool_name: None,
+                tool_use_id: None,
                 permission_mode: None,
                 approval_capability: Some(value),
                 tool_input: input::ToolInput::default(),

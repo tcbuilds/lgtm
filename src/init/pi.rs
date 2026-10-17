@@ -401,9 +401,11 @@ function buildPayload(eventType, event, ctx, pi) {
     payload.toolName = event.toolName;
     payload.input = policyToolInput(event.toolName, event.input);
     payload.approvalCapability = APPROVAL_CAPABILITY;
+    payload.toolCallId = event.toolCallId;
   } else if (eventType === "tool_result") {
     payload.toolName = event.toolName;
     payload.input = policyToolInput(event.toolName, event.input);
+    payload.toolCallId = event.toolCallId;
   }
   return payload;
 }
@@ -829,7 +831,7 @@ async function handle(pi, eventType, event, ctx, approvalState) {
     if (policyEvent) {
       const supported = eventType === "tool_call"
         ? ["bash", "edit", "write"].includes(event.toolName)
-        : ["read", "edit", "write"].includes(event.toolName);
+        : ["read", "bash", "edit", "write"].includes(event.toolName);
       if (!supported) return undefined;
       if (!verifiedToolContract(pi, event)) {
         appendFailure(pi, ctx, eventType, "tool_provenance_unverified", approvalState, generation);

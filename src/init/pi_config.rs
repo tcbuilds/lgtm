@@ -23,6 +23,13 @@ pub(super) fn validate_settings(path: &Path) -> Result<ValidatedPiObject, InitEr
             );
         }
     }
+    if let Some(tools) = object.as_ref().and_then(|value| value.get("defaultTools"))
+        && !tools
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_string))
+    {
+        return malformed(path, "defaultTools must be a string array");
+    }
     Ok(object)
 }
 
@@ -61,6 +68,9 @@ pub(super) fn render_settings(existing: ValidatedPiObject) -> Option<Vec<u8>> {
         .as_array_mut()
         .expect("validated Pi settings packages are an array");
 
+    for package in packages.iter_mut() {
+        migrate_shipped_pin(package);
+    }
     for package in required_packages {
         let required_source = package_source(package).expect("template package has a source");
         let required_identity = package_identity(required_source);
@@ -72,7 +82,42 @@ pub(super) fn render_settings(existing: ValidatedPiObject) -> Option<Vec<u8>> {
             packages.push(package.clone());
         }
     }
+    enable_codemode(&mut merged);
     render_changed(original, merged)
+}
+
+pub(super) fn render_codemode_settings(existing: ValidatedPiObject) -> Option<Vec<u8>> {
+    let original = existing.unwrap_or_default();
+    let mut merged = original.clone();
+    enable_codemode(&mut merged);
+    render_changed(original, merged)
+}
+
+fn enable_codemode(settings: &mut Map<String, Value>) {
+    if settings
+        .get("extensions")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.as_str() == Some("-builtin:codemode"))
+        })
+    {
+        return;
+    }
+    let tools = settings
+        .entry("defaultTools")
+        .or_insert_with(|| serde_json::json!(["+codemode"]));
+    let tools = tools.as_array_mut().expect("validated defaultTools array");
+    // Empty selections and explicit removals are owner opt-outs.
+    if tools.is_empty()
+        || tools
+            .iter()
+            .any(|tool| matches!(tool.as_str(), Some("codemode" | "+codemode" | "-codemode")))
+    {
+        return;
+    }
+    tools.push(Value::String("+codemode".to_string()));
 }
 
 pub(super) fn render_lsp(existing: ValidatedPiObject) -> Option<Vec<u8>> {
@@ -161,6 +206,34 @@ fn validate_servers(path: &Path, servers: &Map<String, Value>) -> Result<(), Ini
         }
     }
     Ok(())
+}
+
+// Only exact specifications shipped by LGTM are migrated. Other pins remain
+// owner-controlled, and object-form resource filters remain unchanged.
+fn migrate_shipped_pin(package: &mut Value) {
+    let Some(source) = package_source(package) else {
+        return;
+    };
+    if !matches!(
+        source,
+        "npm:@narumitw/pi-lsp@0.49.4"
+            | "npm:@narumitw/pi-worktree@0.51.1"
+            | "npm:@the-forge-flow/pi-rules@0.1.0"
+            | "npm:pi-ask-user@0.14.0"
+            | "npm:pi-mcp-extension@1.5.0"
+            | "npm:pi-subagents@0.50.0"
+            | "npm:rtfd-pi@0.1.1"
+    ) {
+        return;
+    }
+    let unpinned = Value::String(package_identity(source));
+    match package {
+        Value::String(_) => *package = unpinned,
+        Value::Object(object) => {
+            object.insert("source".to_string(), unpinned);
+        }
+        _ => unreachable!("validated package source"),
+    }
 }
 
 fn package_source(value: &Value) -> Option<&str> {

@@ -110,10 +110,12 @@ runtime evidence and the existing commit-gate checks.
 ## Installation and rollback
 
 Project setup uses `lgtm init --agent pi`. It writes the owned extension to
-`.pi/extensions/lgtm.ts`, merges the pinned project package set into
+`.pi/extensions/lgtm.ts`, merges unpinned project package defaults into
 `.pi/settings.json`, and merges the configured language-server routes into
-`.pi/pi-lsp.json`. Package identity is compared without its npm version, so an
-existing pin or package filter remains authoritative instead of being duplicated.
+`.pi/pi-lsp.json`. Init and refresh remove only the exact old pins shipped by
+LGTM through v0.12.3. Other version choices and all package filters remain.
+Package identity is compared without its npm version to avoid adding a second
+entry for the same package.
 Existing top-level Pi settings, timeout values, and named LSP server routes are
 also preserved. Pi loads these project resources only after project trust; its
 package manager, not LGTM, installs missing packages. Neither LGTM nor pi-lsp
@@ -148,7 +150,9 @@ files: rules, guidance, installed hooks, generated Codex execpolicy, Pi extensio
 and installed Pi package/LSP configuration. An already-current update also refreshes
 them. Only canonical Pi extensions pointing to that executable are changed;
 customized, repointed, missing, or disabled extensions are preserved. Existing
-hook events are reconciled without re-adding removed events. Repo policy and
+hook events are reconciled without re-adding removed events, except for the
+one-time Claude failure-hook migration described in
+[shell change tracking](../shell-change-tracking.md). Repo policy and
 command configuration, owner settings, and custom files remain untouched. Edited
 shipped rules are backed up using the existing init backup behavior.
 
@@ -156,11 +160,14 @@ Existing backup collisions fail visibly without overwriting owner content. If
 refresh fails after binary installation, repair the reported problem and run
 `lgtm refresh`; the updater reports that the binary was already installed.
 
-**One-time migration:** versions through v0.12.1 have no installation registry or
-post-update refresh. After upgrading from those versions, run
-`lgtm init --agent pi` once in existing project installations (or `lgtm init -g`
-for global setup). Future updates refresh registered extensions automatically.
-A verified session start in the new version also registers its Pi installation.
+**Older installations:** refresh also checks the standard global hook path,
+`~/.pi/agent/extensions/lgtm.ts`. It can adopt a known LGTM template at that path
+if the hook points to the running executable. It replaces the old active hook and
+keeps the existing backup policy. It does not search for other repositories or
+adopt custom hooks. Untracked project installations still need
+`lgtm init --agent pi` once. Versions through v0.12.1 do not run refresh after an
+update; run `lgtm refresh` after that first upgrade. A verified session start also
+registers its Pi installation.
 
 **Running sessions still need `/reload` or a restart.** Updating a file on disk
 cannot replace an extension already loaded in Pi. Automatic refresh does not
@@ -173,6 +180,68 @@ Pi lifecycle hooks use a 10-second transport deadline. Bash pre-tool calls use a
 that gate has a fixed 300-second total budget, including bounded checks and evidence
 persistence, and denies on aggregate exhaustion. Claude and Codex keep their
 existing full-gate budget.
+
+## User guide: package updates
+
+Pi project settings take precedence over global settings for the same package.
+An old project pin can therefore keep a package old even when its global entry
+has no version. LGTM no longer adds these version pins. The default list includes
+`pi-web-search`, `@narumitw/pi-github-pr`, and `@narumitw/pi-goal`.
+
+Run `lgtm update` to update LGTM and refresh registered project declarations.
+Then run `pi update --extensions` in the project to update its installed packages.
+Reload Pi after the update. LGTM does not run npm or download these packages.
+Global init still manages guidance, the hook, and codemode; it does not add the
+project package list to global settings.
+
+Migration uses an exact list of the old LGTM specifications. If you chose the
+same exact version yourself, LGTM cannot tell that choice from its old default
+and removes that pin too. Different custom versions remain. Object-form settings
+keep their resource filters and other fields when their source is migrated.
+
+Unpinned packages can receive breaking changes. Extensions run with your user
+permissions. Review updates before you trust them. Web search needs a supported
+provider and its credentials. Installing goal support does not start a goal.
+To roll back a package, select a tested version in Pi settings and reconcile the
+installation with Pi. An exact old LGTM default will be migrated again on refresh.
+
+## User guide: shared guidance and codemode
+
+Run `lgtm init -g` to set up global guidance. LGTM puts the same engineering
+standards in `~/.codex/AGENTS.md` and `~/.pi/agent/AGENTS.md`. Each file has an
+LGTM-managed section. LGTM changes only that section. It does not copy your
+private Codex instructions into Pi or remove your Pi preferences.
+
+On update, older global installations get the Pi section once. After this step,
+removal of the section is an opt-out. Update does not add it again.
+
+Global setup also adds `+codemode` to `~/.pi/agent/settings.json`. Project Pi setup
+adds it to `.pi/settings.json`. This enables codemode beside the existing tools.
+Codemode lets the agent use a script to find tools and call them. It does not
+change the selected chat model. It does not enable a classifier account or force
+the agent to use a classifier.
+
+LGTM preserves your tool list and codemode mode. An empty tool list,
+`-codemode`, or `-builtin:codemode` is an explicit opt-out. LGTM does not override
+those settings. Existing Pi settings get the same merge on refresh while the
+LGTM hook is present. A removed settings file stays removed after migration.
+
+To check the change:
+
+1. Run `lgtm refresh`.
+2. Open the two global `AGENTS.md` files. Check their managed sections.
+3. Open the Pi settings file. Check `defaultTools` for `+codemode`.
+4. Restart Pi, or use `/reload` to load the changed files.
+
+To disable codemode, add `-codemode` to the tool list. To stop guidance refresh,
+remove the LGTM-managed section after migration. Keep your personal text. To
+restore setup, run `lgtm init -g` again. Explicit codemode opt-outs remain in force;
+remove them yourself before setup if you want codemode enabled again.
+
+A refreshed hook is not proof that every Pi version or tool is supported. If Pi
+still reports an unverified hook, check its runtime evidence. Do not remove the
+warning or mark the hook verified without that check. In particular, codemode
+calls are not a new claim of verified LGTM enforcement.
 
 ## Finding approval capability
 
