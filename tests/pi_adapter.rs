@@ -120,6 +120,7 @@ fn pi_adapter_rejects_invalid_payloads_and_response_pairs() {
 fn init_pi_repo(repo: &TempRepo) {
     let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["init", "--agent", "pi", "--accept-guesses"])
+        .env("HOME", repo.path())
         .current_dir(repo.path())
         .output()
         .expect("Pi init should execute");
@@ -129,6 +130,7 @@ fn init_pi_repo(repo: &TempRepo) {
 fn run_pi_hook(repo: &TempRepo, event: &str, payload: &str) -> std::process::Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["hook", event, "--adapter", "pi"])
+        .env("HOME", repo.path())
         .current_dir(repo.path())
         .env("LGTM_HOOK_BINARY", env!("CARGO_BIN_EXE_lgtm"))
         .stdin(Stdio::piped())
