@@ -7,11 +7,15 @@ mod common;
 use common::TempRepo;
 
 fn run_bounded(command: &mut Command) -> ExitStatus {
+    run_with_budget(command, Duration::from_secs(35))
+}
+
+fn run_with_budget(command: &mut Command, budget: Duration) -> ExitStatus {
     let mut child = command
         .stdout(Stdio::null())
         .spawn()
         .expect("start integration process");
-    let deadline = Instant::now() + Duration::from_secs(35);
+    let deadline = Instant::now() + budget;
     loop {
         if let Some(status) = child.try_wait().expect("observe integration process") {
             return status;
@@ -19,11 +23,40 @@ fn run_bounded(command: &mut Command) -> ExitStatus {
         if Instant::now() >= deadline {
             child.kill().expect("kill timed-out integration process");
             child.wait().expect("reap integration process");
-            panic!("integration process exceeded 35 seconds");
+            panic!("integration process exceeded {budget:?}");
         }
         // This integration-only poll supervises a subprocess, not application timing.
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+#[test]
+fn standalone_jev_auto_routes_each_step_and_filters_only_notices() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut node = Command::new("node");
+    node.arg("--experimental-strip-types")
+        .arg(manifest.join("tests/fixtures/pi/jev_auto.cjs"))
+        .arg(manifest.join("templates/pi/jev-auto.ts"))
+        .current_dir(manifest);
+    assert!(
+        run_bounded(&mut node).success(),
+        "Jev auto integration failed"
+    );
+}
+
+#[test]
+fn real_notice_producer_preserves_hard_and_capability_boundaries() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut node = Command::new("node");
+    node.arg("--experimental-strip-types")
+        .arg(manifest.join("tests/fixtures/pi/notice_producer.cjs"))
+        .arg(env!("CARGO_BIN_EXE_lgtm"))
+        .arg(manifest.join("templates/pi/jev-auto-gates.ts"))
+        .current_dir(manifest);
+    assert!(
+        run_with_budget(&mut node, Duration::from_secs(75)).success(),
+        "real producer integration failed"
+    );
 }
 
 #[test]

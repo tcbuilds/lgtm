@@ -239,6 +239,7 @@ pub(crate) enum PreCommitGateDecision {
     Allow,
     Deny(String),
     FindingApprovalRequired(PiApprovalChallenge),
+    HeuristicNotices(crate::adapter::PiHeuristicNotices),
     ClaudeApprovalRequired {
         identity: String,
         findings: Vec<gitleaks::commit::CommitFinding>,
@@ -275,6 +276,29 @@ pub(crate) fn run_pre_commit_gate_for_adapter(
     match assessment {
         gitleaks::CommitAssessment::Pass { .. } => Ok(PreCommitGateDecision::Allow),
         gitleaks::CommitAssessment::Deny { reason, .. } => Ok(PreCommitGateDecision::Deny(reason)),
+        gitleaks::CommitAssessment::PendingHeuristicApproval { identity, findings }
+            if harness == "pi"
+                && approval_capability == Some(ApprovalCapability::PiHeuristicNoticesV1) =>
+        {
+            let challenge = build_pi_approval_challenge(&identity.digest, &findings)?;
+            let items = challenge
+                .findings
+                .into_iter()
+                .map(|finding| crate::adapter::PiHeuristicNotice {
+                    kind: crate::adapter::PiNoticeKind::GenericSecret,
+                    rule_id: finding.rule_id,
+                    path: Some(finding.path),
+                    line: Some(finding.start_line),
+                    candidate_id: Some(finding.candidate_id),
+                })
+                .collect();
+            Ok(PreCommitGateDecision::HeuristicNotices(
+                crate::adapter::PiHeuristicNotices {
+                    identity: Some(challenge.identity),
+                    items,
+                },
+            ))
+        }
         gitleaks::CommitAssessment::PendingHeuristicApproval { identity, findings }
             if harness == "pi"
                 && approval_capability == Some(ApprovalCapability::PiFindingApprovalV1) =>

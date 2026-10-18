@@ -298,10 +298,10 @@ fn handle_results(
         .iter()
         .filter(|result| result.status == Status::Failed && result.severity == Severity::Error)
         .collect();
-    for result in results
-        .iter()
-        .filter(|result| result.status == Status::Unverified)
-    {
+    for result in results.iter().filter(|result| {
+        result.status == Status::Unverified
+            && (adapter.harness_name() != "pi" || result.severity == Severity::Error)
+    }) {
         diagnostic(
             "scan",
             &result.rule_id,
@@ -310,13 +310,33 @@ fn handle_results(
         );
     }
     for result in results.iter().filter(|result| {
-        result.status == Status::Warning
-            || (result.status == Status::Failed && result.severity != Severity::Error)
+        (adapter.harness_name() != "pi" || result.severity == Severity::Error)
+            && (result.status == Status::Warning
+                || (result.status == Status::Failed && result.severity != Severity::Error))
     }) {
         let reason = review_reason(result);
         diagnostic("review", &result.rule_id, &reason, false);
     }
     if failures.is_empty() {
+        let items = crate::checks::pi_heuristic_notices(results);
+        if adapter.harness_name() == "pi"
+            && !items.is_empty()
+            && !results.iter().any(|result| {
+                result.status == Status::Unverified && result.severity == Severity::Error
+            })
+        {
+            let response = HookResponse::HeuristicNotices(crate::adapter::PiHeuristicNotices {
+                identity: None,
+                items,
+            });
+            return match adapter.encode_response(HookEvent::PostToolUse, response) {
+                Ok(encoded) => match adapter::emit(output, &mut std::io::stderr(), &encoded) {
+                    Ok(()) => ExitCode::from(encoded.exit_code),
+                    Err(_) => fail_open(adapter),
+                },
+                Err(_) => fail_open(adapter),
+            };
+        }
         if adapter.fail_open_on_error()
             && results
                 .iter()

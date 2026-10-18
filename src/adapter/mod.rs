@@ -19,27 +19,32 @@ use std::io::Write;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The only approval capability currently negotiated by the Pi adapter.
+/// Versioned Pi handling capabilities; heuristic notices never grant approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalCapability {
     /// Pi finding approval protocol version 1.
     PiFindingApprovalV1,
+    /// Nonblocking presentation of deterministically eligible heuristic notices.
+    PiHeuristicNoticesV1,
 }
 
 impl ApprovalCapability {
     pub const NAME: &'static str = "lgtm-pi-finding-approval";
     pub const VERSION: u64 = 1;
+    pub const NOTICE_NAME: &'static str = "lgtm-pi-heuristic-notices";
 
     /// Parse the exact wire object; unknown fields and versions are unsupported.
     pub fn from_value(value: &Value) -> Option<Self> {
         let object = value.as_object()?;
-        if object.len() != 2
-            || object.get("name").and_then(Value::as_str) != Some(Self::NAME)
-            || object.get("version").and_then(Value::as_u64) != Some(Self::VERSION)
+        if object.len() != 2 || object.get("version").and_then(Value::as_u64) != Some(Self::VERSION)
         {
             return None;
         }
-        Some(Self::PiFindingApprovalV1)
+        match object.get("name").and_then(Value::as_str)? {
+            Self::NAME => Some(Self::PiFindingApprovalV1),
+            Self::NOTICE_NAME => Some(Self::PiHeuristicNoticesV1),
+            _ => None,
+        }
     }
 
     /// Return the canonical wire representation used by the normalized Pi input.
@@ -49,8 +54,39 @@ impl ApprovalCapability {
                 "name": Self::NAME,
                 "version": Self::VERSION,
             }),
+            Self::PiHeuristicNoticesV1 => serde_json::json!({
+                "name": Self::NOTICE_NAME,
+                "version": Self::VERSION,
+            }),
         }
     }
+}
+
+/// Closed, producer-selected advisory classes. Hard failures cannot enter this channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PiNoticeKind {
+    GenericSecret,
+    Review,
+    Unverified,
+}
+
+/// Secret-free metadata for presentation, never a finding value or approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiHeuristicNotice {
+    pub kind: PiNoticeKind,
+    pub rule_id: String,
+    pub path: Option<String>,
+    pub line: Option<u64>,
+    pub candidate_id: Option<String>,
+}
+
+/// A deterministic allow-with-notices result. Commit identities require revalidation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PiHeuristicNotices {
+    pub identity: Option<String>,
+    pub items: Vec<PiHeuristicNotice>,
 }
 
 /// One redacted candidate shown by the live Pi confirmation UI.
@@ -174,6 +210,8 @@ pub enum HookResponse {
     /// Ask a verified Pi extension to obtain native confirmation for exact
     /// redacted staged-commit findings.
     FindingApprovalRequired(PiApprovalChallenge),
+    /// Present only already-nonblocking, producer-selected heuristic findings.
+    HeuristicNotices(PiHeuristicNotices),
     /// Report a clean completion summary without changing the decision.
     Summary(String),
 }

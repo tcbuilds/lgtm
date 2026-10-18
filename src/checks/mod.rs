@@ -135,6 +135,40 @@ impl EnforcementResult {
     }
 }
 
+/// Select metadata only for findings that already do not block deterministic gates.
+pub(crate) fn pi_heuristic_notices(
+    results: &[EnforcementResult],
+) -> Vec<crate::adapter::PiHeuristicNotice> {
+    use crate::adapter::{PiHeuristicNotice, PiNoticeKind};
+    results
+        .iter()
+        .filter(|result| {
+            result.severity != crate::policy::Severity::Error
+                && matches!(
+                    result.status,
+                    Status::Warning | Status::Failed | Status::Unverified
+                )
+        })
+        .take(32)
+        .map(|result| {
+            let location = result.locations.first();
+            PiHeuristicNotice {
+                kind: if result.status == Status::Unverified {
+                    PiNoticeKind::Unverified
+                } else {
+                    PiNoticeKind::Review
+                },
+                rule_id: result.rule_id.clone(),
+                path: location
+                    .map(|item| item.file.clone())
+                    .filter(|path| path.len() <= 512 && !path.chars().any(char::is_control)),
+                line: location.and_then(|item| item.line),
+                candidate_id: None,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,139 @@
+# Jev auto: routing and quiet gate notices
+
+Jev auto helps select tools before each assistant model request. It also sorts
+LGTM's already-nonblocking heuristic notices. It does not approve an operation,
+change a test result, or create command evidence.
+
+## Per-step routing
+
+The native Pi `context` event runs before each model call. The router uses:
+
+- A short, sanitized user task, with credential-shaped text removed.
+- Recent tool names, error flags, and numeric exit codes.
+- Tool names, bounded descriptions, and exposure settings.
+
+It does not send tool inputs, commands, tool output, file contents, or the full
+conversation. Only the last 32 context messages are inspected. The starting task
+is retained for longer runs. Code fences in the task stop task-text collection.
+Redaction is a heuristic, not proof that arbitrary prose has no private data.
+Do not include private credentials in prompts or tool descriptions.
+
+The router keeps existing active tools. Pi snapshots the tool loadout before the
+`context` hook, so newly enabled direct tools take effect on the **next model
+turn**, not the request being routed. The hint states this limit. Current requests
+must use already-declared tools or an already-callable codemode tool.
+Hidden tools are excluded. Codemode tools
+stay callable through scripts instead of becoming direct tool declarations.
+At most eight suggestions are shown at the initial relevance cutoff of 0.65.
+The score is not a calibrated probability of success or permission to call a tool.
+
+An unchanged sanitized task/result/catalog signature reuses the last hint without
+another classifier call. A changed result can cause a new route during the same
+user task. Old transient Jev hints are replaced, not added to an ever-growing
+context. File classification remains an explicit on-demand tool.
+
+Status notifications show `routed`, `skipped-unchanged`, or `unavailable`, with the
+model, scores, tool counts, activation details, and elapsed time. Use
+`/jev-auto status`, `/jev-auto off`, or `/jev-auto on` for local control.
+
+## Quiet gate notices
+
+The updated LGTM extension advertises `lgtm-pi-heuristic-notices` version 1.
+This is a separate protocol from the old native finding-confirmation protocol.
+It means that deterministic policy permits an operation with review notices.
+It does not mean that Jev approved the operation.
+
+Only these findings can enter this channel:
+
+- A complete staged scan containing only eligible built-in `generic-api-key`
+  findings, after the full deterministic commit gate has run.
+- Existing warning-level review findings from post-tool checks.
+- Presentation-only hook diagnostics. Their original error and gate decision
+  remain unchanged.
+
+Known provider credentials, private keys, custom scanner rules, mixed hard and
+heuristic findings, prohibited actions, required-command failures, and unverified
+required checks cannot be downgraded by a Jev answer. Touched-file secret scans
+still keep their existing hard feedback; the staged scanner's stronger eligibility
+partition is not guessed from a message or a filename.
+
+LGTM sends a typed notice through the in-process `jev-auto:gate` event bus. Jev
+receives only notice kind, safe rule ID, and a broad path class such as `test` or
+`source`. No paths, candidate hashes, source, secret values, command output, or
+scanner descriptions go to the classifier.
+
+- Noise score at least 0.90: record silently.
+- Other valid score: record and show a nonblocking warning.
+- Missing model, timeout, malformed answer, busy provider, or spent budget:
+  record unknown and warn without a confirmation dialog.
+
+The 0.90 cutoff controls display only. It is an initial product setting, not a
+measured accuracy guarantee. A `test` path is not proof of safety. Each outcome is
+recorded as compact metadata in `jev-auto-gate` session entries. Repeated notice
+identities are not sent, recorded, or shown again while retained in the bounded
+session window. At capacity, the oldest identity is evicted; new notices are
+still recorded and warned when their status is unknown.
+Warnings are grouped per batch rather than shown as one dialog per finding.
+
+After awaiting staged notice presentation, LGTM rechecks the live runtime and
+performs one fresh deterministic reassessment. Only the identical notice set or
+a clean result allows the commit. A new hard finding, changed identity, stale
+session, cancelled operation, malformed response, or failed reassessment denies.
+Jev's cached display decision is never cached permission.
+
+The new extension does not fall back to the legacy confirmation dialog. An old
+binary returning a legacy challenge is denied with a refresh instruction. Older
+clients retain their existing v1 behavior. Claude and Codex behavior is unchanged.
+
+## Bounds and failure behavior
+
+- Routing: at most 256 tools, eight suggestions, one unresolved classifier call,
+  64 attempts per session, and a one-second deadline.
+- Gate notices: at most 32 notices per event, 16 classified per batch, one
+  unresolved classifier call, 20 attempts per session, and a one-second deadline.
+- Routing keeps one last hint. Gate deduplication holds at most 256 identities.
+- Session changes clear local decisions. Late replies cannot activate tools or
+  notify a new session. A provider that ignores abort still occupies its slot.
+- There are no retries, persistent answer database, extra model turns, or new
+  requests for human approval. No real model calls run in integration tests.
+
+Jev auto cannot intercept every UI dialog from another extension. LGTM uses the
+explicit notice handoff. A hard denial from any extension remains a hard denial.
+If Jev auto is not loaded, LGTM warns once and preserves deterministic decisions.
+
+## Install and verify without a release
+
+Requirements: Pi 1.3.0, Node 24 for the local checks, and authenticated access to
+`openrouter/~typesafe/jev-latest`. Missing classifier access is nonblocking.
+
+This source is a standalone personal extension, not an automatically installed
+extra extension in every LGTM project. Install both source files together:
+
+1. Save the existing `~/.pi/agent/extensions/jev-auto.ts` outside the extensions
+   directory as a rollback copy, then remove that old entry point.
+2. Create `~/.pi/agent/extensions/jev-auto/`.
+3. Copy `templates/pi/jev-auto.ts` there as `index.ts`.
+4. Copy `templates/pi/jev-auto-gates.ts` beside it, keeping that helper filename.
+5. Build this LGTM branch and refresh a managed LGTM extension with that binary.
+   Do not claim an old installed binary supports the new notice protocol.
+6. Use `/reload`, then `/jev-auto status`.
+
+The directory layout prevents Pi from loading the helper as a second extension.
+Do not keep both the old standalone entry point and the new directory enabled.
+Rollback removes the new directory and restores the saved standalone entry point.
+An older LGTM binary and its matching generated extension retain old behavior.
+
+Run the offline checks from the repository:
+
+```sh
+node --experimental-strip-types tests/fixtures/pi/jev_auto.cjs templates/pi/jev-auto.ts
+cargo test --test jev_pi --test init_pi --test pi_adapter --test commit_secret_scope
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build
+```
+
+Verify in a throwaway trusted project: a second assistant step routes, an unchanged
+step skips, a heuristic notice does not call native confirmation, and a hard
+finding still blocks. Check session entries for silent outcomes. This change does
+not cut a release, create a tag, bump a version, or install a new production binary.

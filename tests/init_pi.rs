@@ -87,8 +87,9 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
     assert!(extension.contains("function approvalContextIsCurrent"));
     assert!(extension.contains("approvalState.generation += 1"));
     assert!(extension.contains("pi.on(\"session_shutdown\""));
-    assert!(extension.contains("return await confirmAndRevalidateApproval"));
-    assert!(extension.contains("Pi approval revalidation failed; staged commit denied"));
+    assert!(extension.contains("presentAndRevalidateNotices"));
+    assert!(extension.contains("lgtm-pi-heuristic-notices"));
+    assert!(!extension.contains("ctx.ui.confirm("));
     assert!(extension.contains("child.unref()"));
     assert!(!extension.contains("console.log"));
 
@@ -808,212 +809,129 @@ fn generated_scope_guard_covers_root_nested_and_unrelated_projects() {
 
 #[cfg(unix)]
 #[test]
-fn generated_approval_lifecycle_requires_one_live_revalidation() {
+fn generated_notices_never_prompt_and_require_live_revalidation() {
     use std::os::unix::fs::PermissionsExt;
-
     for case in [
-        "yes",
+        "notice",
         "clean",
-        "no",
-        "cancel",
-        "timeout",
-        "throw",
-        "malformed",
-        "error",
         "changed",
-        "late-session",
-        "mutate-template",
-        "mutate-binary",
+        "hard",
+        "malformed",
+        "legacy",
         "rpc",
         "no-ui",
         "no-signal",
-        "replay",
-        "recover",
-        "refresh-failed",
-        "same-session-start",
+        "cancel",
+        "session",
         "shutdown",
+        "mutate-template",
+        "mutate-binary",
+        "refresh-failed",
+        "capacity",
+        "cancel-retry",
+        "cancel-after-delivery",
     ] {
         let repo = TempRepo::new();
-        let fake = repo.path().join("approval-lgtm.cjs");
-        fs::write(
-            &fake,
-            r##"#!/usr/bin/env node
+        let fake = repo.path().join("notice-lgtm.cjs");
+        fs::write(&fake, r##"#!/usr/bin/env node
 const fs = require("node:fs");
-const caseName = process.env.APPROVAL_CASE;
-const argumentsList = process.argv.slice(2);
-if (argumentsList.includes("session-start")) process.exit(caseName === "refresh-failed" ? 7 : 0);
-let input = "";
-process.stdin.on("data", (chunk) => { input += chunk; });
+const which = process.env.NOTICE_CASE;
+if (process.argv.includes("session-start")) process.exit(which === "refresh-failed" ? 7 : 0);
+process.stdin.resume();
 process.stdin.on("end", () => {
-  const countPath = ".approval-count";
-  const count = Number(fs.existsSync(countPath) ? fs.readFileSync(countPath, "utf8") : "0") + 1;
-  fs.writeFileSync(countPath, String(count));
-  if (caseName === "error" && count === 2) process.exit(7);
-  const identity = caseName === "changed" && count === 2 ? "c".repeat(64) : "a".repeat(64);
-  const response = {
-    block: true,
-    reason: "staged commit contains redacted heuristic findings requiring confirmation",
-    approval: {
-      findings: [{
-        candidateId: "b".repeat(64),
-        endColumn: 9,
-        endLine: 4,
-        path: "src/app.rs",
-        ruleId: "generic-api-key",
-        startColumn: 2,
-        startLine: 4,
-      }],
-      identity,
-      protocol: "lgtm-pi-finding-approval",
-      version: 1,
-    },
-  };
-  if (caseName === "malformed" && count === 1) {
-    process.stdout.write(JSON.stringify({ block: true, reason: "malformed", approval: {} }));
-  } else if (caseName === "clean" && count === 2) {
-    process.stdout.write("");
-  } else {
-    process.stdout.write(JSON.stringify(response));
+  const count = Number(fs.existsSync(".count") ? fs.readFileSync(".count", "utf8") : "0") + 1;
+  fs.writeFileSync(".count", String(count));
+  if (which === "clean" && count === 2) return;
+  if (which === "hard" && count === 2) {
+    process.stdout.write(JSON.stringify({ block: true, reason: "known credential remains blocked" }));
+    return;
   }
+  if (which === "legacy") {
+    process.stdout.write(JSON.stringify({ block: true, reason: "legacy", approval: {
+      identity: "a".repeat(64), protocol: "lgtm-pi-finding-approval", version: 1,
+      findings: [{ruleId:"generic-api-key",path:"src/app.rs",startLine:4,startColumn:2,endLine:4,endColumn:9,candidateId:"b".repeat(64)}],
+    }}));
+    return;
+  }
+  const notices = {protocol:"lgtm-pi-heuristic-notices",version:1,
+    identity:which === "capacity" ? Math.ceil(count/2).toString(16).padStart(64,"0") : which === "changed" && count === 2 ? "c".repeat(64) : "a".repeat(64),
+    items:[{kind:"generic-secret",ruleId:"generic-api-key",path:"src/app.rs",line:4,candidateId:"b".repeat(64)}]};
+  if (which === "malformed") notices.identity = ["a".repeat(64)];
+  process.stdout.write(JSON.stringify({notices}));
 });
-"##,
-        )
-        .expect("approval binary writes");
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755))
-            .expect("approval binary mode");
-        assert!(
-            run_init(
-                &repo,
-                Some(fake.to_str().expect("approval binary path")),
-                false
-            )
-            .status
-            .success(),
-            "Pi init failed for {case}"
-        );
-
-        let harness = repo.path().join("approval-extension.cjs");
-        fs::write(
-            &harness,
-            r##"const fs = require("node:fs");
-const sourcePath = process.argv[2];
-const binaryPath = process.argv[3];
-const caseName = process.env.APPROVAL_CASE;
-const source = fs.readFileSync(sourcePath, "utf8");
-const handlers = {};
-const entries = [];
-const sessionFile = process.cwd() + "/pi-session.jsonl";
+"##).expect("notice binary writes");
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("binary mode");
+        assert!(run_init(&repo, fake.to_str(), false).status.success());
+        let harness = repo.path().join("notice-harness.cjs");
+        fs::write(&harness, r##"const fs = require("node:fs"), assert = require("node:assert/strict");
+const file = process.argv[2], binary = process.argv[3], which = process.env.NOTICE_CASE;
+const source = fs.readFileSync(file, "utf8")
+  .replace(/^import \{([^\n]+)\} from "([^"]+)";$/gm, 'const {$1} = require("$2");')
+  .replaceAll("new URL(import.meta.url)", JSON.stringify(file))
+  .replace("export default function lgtm", "function lgtm");
+const install = new Function("require", "process", source + "\nreturn lgtm;")(require, process);
+const handlers = {}, entries = [], controller = new AbortController();
+const sessionFile = process.cwd() + "/notice-session.jsonl";
 fs.writeFileSync(sessionFile, "");
-let currentSessionId = "tool-session";
-let confirmationCalls = 0;
-let promptMessage = "";
-const extension = source
-  .replace('import { dirname, join, resolve } from "node:path";', 'const { dirname, join, resolve } = require("node:path");')
-  .replace('import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";', 'const { existsSync, lstatSync, readFileSync, statSync } = require("node:fs");')
-  .replace('new URL(import.meta.url)', 'process.argv[2]')
-  .replace('import { spawn } from "node:child_process";', 'const { spawn } = require("node:child_process");')
-  .replace('import { createHash, randomUUID } from "node:crypto";', 'const { createHash, randomUUID } = require("node:crypto");')
-  .replace('export default function lgtm', 'function lgtm') + "\nmodule.exports = lgtm;";
-const lgtm = (() => { const module = { exports: {} }; eval(extension); return module.exports; })();
+let session = "notice-session", confirms = 0, deliveries = 0;
+const definitions = [
+  {name:"bash",properties:{command:{type:"string"},timeout:{type:"number"}},required:["command"]},
+  {name:"read",properties:{path:{type:"string"},offset:{type:"number"},limit:{type:"number"}},required:["path"]},
+  {name:"write",properties:{path:{type:"string"},content:{type:"string"}},required:["path","content"]},
+  {name:"edit",properties:{path:{type:"string"},edits:{type:"array",items:{type:"object",required:["oldText","newText"],properties:{oldText:{type:"string"},newText:{type:"string"}}}}},required:["path","edits"]},
+];
 const pi = {
-  on: (event, handler) => { handlers[event] = handler; },
-  appendEntry: (customType, data) => {
-    const entry = { type: "custom", id: "entry-" + entries.length, customType, data };
-    entries.push(entry);
-    fs.appendFileSync(sessionFile, JSON.stringify(entry) + "\n");
-  },
-  getAllTools: () => [{
-    name: "bash",
-    sourceInfo: { source: "builtin", path: "<builtin:bash>" },
-    parameters: {
-      type: "object",
-      required: ["command"],
-      properties: {
-        command: { type: "string", description: "Bash command" },
-        timeout: { type: "number", description: "Timeout" },
-      },
-    },
-  },
-  { name: "read", sourceInfo: { source: "builtin", path: "<builtin:read>" }, parameters: { type: "object", required: ["path"], properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } } } },
-  { name: "write", sourceInfo: { source: "builtin", path: "<builtin:write>" }, parameters: { type: "object", required: ["path", "content"], properties: { path: { type: "string" }, content: { type: "string" } } } },
-  { name: "edit", sourceInfo: { source: "builtin", path: "<builtin:edit>" }, parameters: { type: "object", required: ["path", "edits"], properties: { path: { type: "string" }, edits: { type: "array", items: { type: "object", required: ["oldText", "newText"], properties: { oldText: { type: "string" }, newText: { type: "string" } } } } } } },
-  ],
+ on(name, fn) {handlers[name]=fn;},
+ appendEntry(customType,data) {
+   const entry={type:"custom",id:"e"+entries.length,customType,data};
+   entries.push(entry); fs.appendFileSync(sessionFile,JSON.stringify(entry)+"\n");
+ },
+ getAllTools() {return definitions.map((d)=>({name:d.name,sourceInfo:{source:"builtin",path:"builtin:"+d.name},parameters:{type:"object",required:d.required,properties:d.properties}}));},
+ events:{emit(_name, request) {
+   request.handled=true;
+   deliveries++;
+   if(which==="cancel" || (which==="cancel-retry" && deliveries===1)) { controller.abort(); request.done(false); return; }
+   if(which==="cancel-after-delivery" && deliveries===1) { request.done(true); controller.abort(); return; }
+   if(which==="session") {session="changed"; void handlers.session_start({},ctx);}
+   if(which==="shutdown") handlers.session_shutdown();
+   if(which==="mutate-template") fs.appendFileSync(file,"\n// mutation");
+   if(which==="mutate-binary") fs.appendFileSync(binary,"\n// mutation");
+   request.done();
+ }},
 };
-const context = {
-  cwd: process.cwd(),
-  mode: caseName === "rpc" ? "rpc" : "tui",
-  hasUI: caseName !== "no-ui",
-  signal: caseName === "no-signal" ? undefined : new AbortController().signal,
-  isProjectTrusted: () => true,
-  sessionManager: {
-    getSessionId: () => currentSessionId,
-    getSessionFile: () => sessionFile,
-    getEntries: () => entries,
-  },
-  ui: {
-    confirm: async (_title, message) => {
-      confirmationCalls += 1;
-      promptMessage = message;
-      if (caseName === "no" || caseName === "cancel") return false;
-      if (caseName === "timeout") return undefined;
-      if (caseName === "throw") throw new Error("confirmation failed");
-      if (caseName === "late-session") {
-        currentSessionId = "new-session";
-        Promise.resolve(handlers.session_start({}, context)).catch(() => {});
-      }
-      if (caseName === "same-session-start") await handlers.session_start({}, context);
-      if (caseName === "shutdown") handlers.session_shutdown();
-      if (caseName === "mutate-template") {
-        fs.writeFileSync(sourcePath, fs.readFileSync(sourcePath, "utf8").replace(
-          "const MAX_INPUT_BYTES = 1024 * 1024;",
-          "const MAX_INPUT_BYTES = 1024 * 1024; // mutated",
-        ));
-      }
-      if (caseName === "mutate-binary") fs.appendFileSync(binaryPath, "\\n// mutated\\n");
-      if (caseName === "replay" && confirmationCalls === 2) return false;
-      return true;
-    },
-  },
-};
-lgtm(pi);
-const toolCall = { toolName: "bash", input: { command: "git commit -m test" } };
-const expectBlocked = (result) => result && result.block === true;
-(async () => {
-  if (caseName === "recover") pi.appendEntry("lgtm", { reason: "previous hook failure" });
-  const first = await handlers.tool_call(toolCall, context);
-  if (caseName === "recover" && entries.at(-1)?.customType !== "lgtm-runtime") process.exit(9);
-  if (confirmationCalls > 0
-      && (!promptMessage.includes("generic-api-key")
-        || !promptMessage.includes("src/app.rs:4:2")
-        || promptMessage.includes("super-secret"))) process.exit(2);
-  if (caseName === "yes" || caseName === "clean" || caseName === "recover") {
-    if (first !== undefined || confirmationCalls !== 1) process.exit(3);
-  } else if (caseName === "replay") {
-    if (first !== undefined) process.exit(4);
-    const replay = await handlers.tool_call(toolCall, context);
-    if (!expectBlocked(replay) || confirmationCalls !== 2) process.exit(5);
-  } else if (!expectBlocked(first)) {
-    process.exit(6);
-  }
-  if (["rpc", "no-ui", "no-signal", "malformed"].includes(caseName) && confirmationCalls !== 0) {
-    process.exit(7);
-  }
-})().catch(() => process.exit(8));
-"##,
-        )
-        .expect("approval harness writes");
+const ctx = {cwd:process.cwd(),mode:which==="rpc"?"rpc":"tui",hasUI:which!=="no-ui",
+ signal:which==="no-signal"?undefined:controller.signal,isProjectTrusted:()=>true,
+ sessionManager:{getSessionId:()=>session,getSessionFile:()=>sessionFile,getEntries:()=>entries},
+ ui:{confirm:async()=>{confirms++;return true;},notify:()=>{}}};
+install(pi);
+(async()=>{
+ const result=await handlers.tool_call({toolName:"bash",input:{command:"git commit -m test"}},ctx);
+ assert.equal(confirms,0,"noise requested human confirmation");
+ const allows=["notice","clean","rpc","no-ui","capacity"].includes(which);
+ if(allows) {assert.equal(result,undefined);assert.equal(fs.readFileSync(".count","utf8"),"2");}
+ else assert.equal(result?.block,true,"unsafe or stale response was allowed: "+which);
+ if(which==="capacity") {
+   for(let i=0;i<256;i++) assert.equal(await handlers.tool_call({toolName:"bash",input:{command:"git commit -m test"}},ctx),undefined);
+   assert.equal(deliveries,257,"capacity silently dropped a new notice");
+ }
+ if(which==="cancel-retry" || which==="cancel-after-delivery") {
+   ctx.signal=new AbortController().signal;
+   assert.equal(await handlers.tool_call({toolName:"bash",input:{command:"git commit -m test"}},ctx),undefined);
+   assert.equal(deliveries,which==="cancel-retry"?2:1,"incorrect presentation reservation after cancellation");
+ }
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"##).expect("notice harness writes");
         let output = Command::new("node")
             .arg(&harness)
             .arg(repo.path().join(".pi/extensions/lgtm.ts"))
             .arg(&fake)
-            .env("APPROVAL_CASE", case)
+            .env("NOTICE_CASE", case)
             .current_dir(repo.path())
             .output()
-            .expect("approval harness executes");
+            .expect("notice harness");
         assert!(
             output.status.success(),
-            "approval case {case} failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
+            "{case}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
