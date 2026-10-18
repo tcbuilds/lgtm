@@ -395,12 +395,15 @@ is not classifier accuracy. The older live result in
 [the replay record](../jev-replay-results.md) is historical evidence, not a fresh
 live verification of the reference-input API.
 
-Run `cargo test --test jev_pi` for generated-extension integration checks. Run
-`node scripts/jev-coverage.cjs` with Node 24 and Rust installed to measure their
-execution against the original JS fragments. The loader verifies each rendered
-fragment byte-for-byte, then executes it under its original source filename.
-Pinned c8 writes real LCOV to `target/jev-coverage/lcov.info`. Coverage
-includes every Jev template, including unexecuted files. CI imports that report
+Run `cargo test --test jev_pi` for generated-extension and standalone-router
+integration checks. Run `node scripts/jev-coverage.cjs` with Node 24 and Rust
+installed to measure the original JS fragments and standalone TS sources, plus
+checkpoint integration. The loader verifies each rendered fragment byte-for-byte,
+then executes it under its original source filename. Node type stripping retains
+the TS source filenames for measurement. Pinned c8 writes real LCOV to
+`target/jev-coverage/lcov.info`. Coverage includes matching Jev JS/TS sources and
+the checkpoint template, including unexecuted files. The 80% line and branch
+thresholds remain unchanged. CI imports that report
 into SonarCloud; fixture files are classified as tests, not production sources.
 No coverage exclusions or fabricated counts replace missing execution.
 

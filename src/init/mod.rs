@@ -25,6 +25,7 @@ use crate::detect::{Detection, detect};
 use crate::discovery::{DiscoveryError, Workspace};
 use crate::fsutil::open_regular_file;
 
+pub mod checkpoint;
 mod codex;
 mod config;
 pub(crate) mod execpolicy;
