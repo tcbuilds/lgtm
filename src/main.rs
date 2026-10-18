@@ -289,13 +289,40 @@ fn run(command: Command) -> ExitCode {
             global,
             rules_only,
         } => {
+            let home = match init::checkpoint::home() {
+                Ok(home) => home,
+                Err(error) => {
+                    eprintln!("init failed: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            // Check the global destination before any repository scaffolding.
+            if let Err(error) = init::checkpoint::install(&home, true) {
+                eprintln!("init failed: {error}");
+                return ExitCode::FAILURE;
+            }
             let agent = agent.unwrap_or(InitAgentKind::Claude);
-            if global {
+            let result = if global {
                 run_init_global(dry_run)
             } else if rules_only {
                 run_init_rules_only(agent)
             } else {
                 run_init(dry_run, migrate_config, accept_guesses, agent)
+            };
+            if result != ExitCode::SUCCESS {
+                return result;
+            }
+            match init::checkpoint::install(&home, dry_run) {
+                Ok(note) => {
+                    println!("  note: {note}");
+                    result
+                }
+                Err(error) => {
+                    eprintln!(
+                        "init failed: global Pi checkpoint ({error}); earlier init outputs remain installed"
+                    );
+                    ExitCode::FAILURE
+                }
             }
         }
         Command::Hook { event, adapter } => run_hook(event, adapter),
