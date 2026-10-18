@@ -254,7 +254,7 @@ LGTM enforcement remains authoritative.
 
 ### Breaking draft API change: file references
 
-The repaired API targets **v13.0.0**, which is not yet released. Earlier PR drafts
+The repaired API ships in **v13.0.0**. Earlier PR drafts
 accepted inline excerpts, questions, claims, and state. These inputs now use a
 bounded JSON request file. Only `requestPath` and the documented boolean controls
 belong in tool arguments. Review flags still use an empty argument object.

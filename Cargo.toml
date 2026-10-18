@@ -1,6 +1,6 @@
 [package]
 name = "lgtm"
-version = "0.12.6"
+version = "13.0.0"
 edition = "2024"
 license = "MIT"
 
