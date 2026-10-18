@@ -242,17 +242,28 @@ const lgtmJevCommon = (() => {
     return result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
   }
 
+  function boundReadContent(result, binding) {
+    const visible = visibleText(result);
+    if (typeof visible !== "string" || visible.length > 256 * 1024) throw new Error("read_filtered");
+    // Content-only guidance hooks can drop structuredContent. Use only a complete
+    // visible block that still matches the binding; never recover removed text.
+    const content = result.structuredContent === undefined
+      ? result.content.find((block) => block.type === "text" && typeof block.text === "string"
+        && createHash("sha256").update(block.text).digest("hex") === binding.textDigest)?.text
+      : result.structuredContent;
+    if (typeof content !== "string" || !visible.includes(content)) throw new Error("read_filtered");
+    return content;
+  }
+
   function governedText(result, full, limit) {
-    const content = result?.structuredContent;
     const binding = result?.details?.lgtmRead;
-    if (typeof content !== "string" || !record(binding) || binding.protocol !== "lgtm-pi-read-v1" || result.details?.lgtmAdvisory?.protocol !== "lgtm-pi-advisory-v1" || result.details?.truncation?.truncated) throw new Error("read_filtered");
+    if (!record(binding) || binding.protocol !== "lgtm-pi-read-v1" || result.details?.lgtmAdvisory?.protocol !== "lgtm-pi-advisory-v1" || result.details?.truncation?.truncated) throw new Error("read_filtered");
     if (binding.pathDigest !== createHash("sha256").update(full).digest("hex")) throw new Error("read_redirected");
+    const content = boundReadContent(result, binding);
     const sha256 = createHash("sha256").update(content).digest("hex");
     if (binding.textDigest !== sha256 || content.includes("\0")) throw new Error("read_filtered");
     const bytes = new TextEncoder().encode(content).length;
     if (bytes > limit || content.split("\n").length > 1500) throw new Error("file_ineligible");
-    const visible = visibleText(result);
-    if (typeof visible !== "string" || visible.length > 256 * 1024 || !visible.includes(content)) throw new Error("read_filtered");
     return { content, bytes, sha256 };
   }
 
