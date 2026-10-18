@@ -153,11 +153,8 @@ rules:
           "modify"
         ],
         "signals": [
-          "endpoint",
-          "route",
-          "api",
-          "public",
-          "auth"
+          "public-api",
+          "authentication"
         ]
       },
       "instruction": "For each public or expensive route, document runtime validation, server-side authentication/authorization, rate limiting, secure cookies/CORS/CSRF, and non-debug defaults; report unknown semantics as review.",
@@ -211,12 +208,9 @@ rules:
           "modify"
         ],
         "signals": [
-          "endpoint",
-          "route",
-          "api",
-          "public",
-          "auth",
-          "input"
+          "public-api",
+          "authentication",
+          "public-input"
         ]
       },
       "instruction": "For each public or expensive route, prove boundary validation, server-side authorization, rate limiting, secure cookie/CORS/CSRF settings, and non-debug defaults with runtime evidence; static signals never claim semantic proof.",
@@ -273,10 +267,7 @@ rules:
           "modify"
         ],
         "signals": [
-          "endpoint",
-          "route",
-          "api",
-          "public"
+          "public-api"
         ]
       },
       "instruction": "For public endpoints, require boundary validation, server-side auth/authorization, rate limits for expensive/public routes, secure cookies/CORS/CSRF, and non-debug defaults.",
@@ -333,7 +324,7 @@ rules:
           "json",
           "regex",
           "sql",
-          "input"
+          "public-input"
         ]
       },
       "instruction": "Use parameterized SQL, argv/builders, contextual HTML/URL escaping, and typed serializers; do not concatenate untrusted values into boundary strings.",
