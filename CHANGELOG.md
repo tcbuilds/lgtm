@@ -13,6 +13,57 @@ changes that require user action. Do not list planned work as a shipped feature.
 At release time, move these entries into a dated version section and link its
 notes in `doc/releases/`.
 
+## [v0.13.1](doc/releases/v0.13.1.md) — 2026-10-18
+
+### Bug fixes
+
+- Fix valid Jev request reads rejected after Pi guidance hooks drop structured
+  content. Accept only a complete visible text block that matches the existing
+  read digest. Removed or changed text still fails closed; no raw reread occurs.
+- Recognize the exact v0.13.0 Pi hook templates during upgrade. Create a backup
+  if none exists; preserve an existing canonical backup. Custom hooks remain protected.
+- Update managed Pi extensions with `lgtm update`, then run `/reload` or restart
+  each running Pi session to load the fix.
+
+## [v0.13.0](doc/releases/v0.13.0.md) — 2026-10-18
+
+### Features
+
+- Add six optional Jev tools for file questions, review flags, scope and claim
+  advice, diagnostic triage, compaction advice, and untrusted-text warnings.
+  Managed Pi setup includes them; startup makes no classifier call.
+
+### Breaking changes
+
+- Earlier advisory API drafts used inline bodies; now pass a bounded workspace
+  JSON file through `requestPath`.
+  Keep `preview` and `allowSend` in outer arguments. Review still accepts `{}`.
+- Prepare private requests outside recorded tool arguments. References cannot
+  erase earlier logs, and rejected inline calls may already be recorded by Pi.
+
+### Improvements
+
+- Preserve lazy native context fields and structured governed results. Accept
+  fractional classifier scores, bound pending operations, and respect cancellation.
+- Measure rendered JavaScript execution for coverage and share privacy code.
+- Correct CI's MUST-only gate to evaluate failed/error results from one valid
+  evidence record. Warning reviews remain visible; malformed evidence blocks.
+
+### Security and bug fixes
+
+- Inspect complete structured Git output and separate NUL-delimited paths;
+  disable rename detection and external/text diff drivers to catch private origins.
+- Consume governed read output only, reject missing or redirected bindings,
+  and keep source previews metadata-only. Redact credentials and owned nested
+  errors before provider transport or journaling; redaction remains a heuristic.
+
+### Upgrade notes
+
+- Run `lgtm update`, then `/reload` or restart each Pi session. Update draft tool
+  callers to the reference-input API. Jev advice never grants permission or
+  replaces deterministic enforcement. See the detailed release notes for limits
+  and rollback guidance.
+
 ## [v0.12.6](doc/releases/v0.12.6.md) — 2026-10-17
 
 ### Bug fixes

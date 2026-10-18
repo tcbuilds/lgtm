@@ -4,13 +4,16 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use lgtm::pi_state::{PI_VERSION, PiEnforcementState, assess_at, record_attestation};
-use serde_json::json;
+use serde_json::{Value, json};
 
 mod common;
 use common::TempRepo;
+
+const HOOK_DEADLINE: Duration = Duration::from_secs(30);
+const HOOK_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 fn now_ms() -> u128 {
     SystemTime::now()
@@ -24,9 +27,42 @@ fn init_project(repo: &TempRepo) {
         .args(["init", "--agent", "pi", "--accept-guesses"])
         .current_dir(repo.path())
         .env("LGTM_HOOK_BINARY", env!("CARGO_BIN_EXE_lgtm"))
+        .env("HOME", repo.path())
         .output()
         .expect("Pi init runs");
     assert!(output.status.success(), "Pi init failed: {output:?}");
+}
+
+/// Record an attestation through the real CLI hook with an isolated HOME, so
+/// verified Pi registration lands inside the test repo instead of the user home.
+fn run_pi_session_start_hook(repo: &TempRepo, payload: &Value) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["hook", "session-start", "--adapter", "pi"])
+        .current_dir(repo.path())
+        .env("HOME", repo.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("Pi session-start hook starts");
+    child
+        .stdin
+        .take()
+        .expect("hook stdin")
+        .write_all(payload.to_string().as_bytes())
+        .expect("hook payload");
+    let deadline = Instant::now() + HOOK_DEADLINE;
+    loop {
+        if let Some(status) = child.try_wait().expect("hook status") {
+            assert!(status.success(), "Pi session-start hook failed: {status}");
+            return;
+        }
+        if Instant::now() >= deadline {
+            child.kill().expect("hook kill after deadline");
+            child.wait().expect("hook reap after deadline");
+            panic!("Pi session-start hook exceeded {HOOK_DEADLINE:?}");
+        }
+        std::thread::sleep(HOOK_POLL_INTERVAL);
+    }
 }
 
 fn record(repo: &TempRepo, trusted: bool, tools_verified: bool) -> PathBuf {
@@ -58,9 +94,10 @@ fn record(repo: &TempRepo, trusted: bool, tools_verified: bool) -> PathBuf {
     });
     let prefix = "{\"id\":\"old\",\"customType\":\"lgtm\",\"data\":{\"reason\":\"old\"}}\n";
     fs::write(&session, format!("{prefix}{marker}\n")).expect("session fixture writes");
-    record_attestation(
-        repo.path(),
+    run_pi_session_start_hook(
+        repo,
         &json!({
+            "type": "session_start",
             "scope": "project",
             "trusted": trusted,
             "toolContractsVerified": tools_verified,
@@ -72,8 +109,7 @@ fn record(repo: &TempRepo, trusted: bool, tools_verified: bool) -> PathBuf {
             "runtimeMarkerPosition": 57,
             "sessionId": "session"
         }),
-    )
-    .expect("attestation writes");
+    );
     session
 }
 
@@ -169,6 +205,7 @@ fn replacing_attested_executable_bytes_downgrades_active_state() {
         .args(["init", "--agent", "pi", "--accept-guesses"])
         .current_dir(repo.path())
         .env("LGTM_HOOK_BINARY", &binary)
+        .env("HOME", repo.path())
         .output()
         .expect("Pi init runs");
     assert!(output.status.success(), "Pi init failed: {output:?}");
@@ -205,9 +242,10 @@ fn session_identity_prevents_session_b_from_inheriting_session_a_state() {
         .and_then(|value| value.strip_suffix(';'))
         .and_then(|value| serde_json::from_str::<String>(value).ok())
         .expect("binary digest");
-    record_attestation(
-        repo.path(),
+    run_pi_session_start_hook(
+        &repo,
         &json!({
+            "type": "session_start",
             "scope": "project",
             "trusted": true,
             "toolContractsVerified": true,
@@ -219,8 +257,7 @@ fn session_identity_prevents_session_b_from_inheriting_session_a_state() {
             "runtimeMarkerPosition": 57,
             "sessionId": "session-b"
         }),
-    )
-    .expect("session B attestation");
+    );
     assert_eq!(
         lgtm::pi_state::assess_at_for_session(repo.path(), None, now_ms(), Some("session-a")).state,
         PiEnforcementState::StaleUnverified
@@ -228,6 +265,30 @@ fn session_identity_prevents_session_b_from_inheriting_session_a_state() {
     assert_eq!(
         lgtm::pi_state::assess_at_for_session(repo.path(), None, now_ms(), Some("session-b")).state,
         PiEnforcementState::Active
+    );
+}
+
+#[test]
+fn attestation_state_registers_inside_the_test_repo_home_only() {
+    let repo = TempRepo::new();
+    init_project(&repo);
+    // Remove init's record so it cannot mask a leak from the attestation hook.
+    fs::remove_dir_all(repo.path().join(".local/state/lgtm/pi-installations"))
+        .expect("remove init registration");
+    let _ = record(&repo, true, true);
+    assert!(
+        repo.exists(".lgtm/evidence/pi-attestation.json"),
+        "attestation must persist inside the test repo"
+    );
+    assert!(
+        repo.exists(".local/state/lgtm/pi-installations"),
+        "verified Pi registration must land in the test repo HOME"
+    );
+    let repo_path = repo.path().to_path_buf();
+    drop(repo);
+    assert!(
+        !repo_path.exists(),
+        "dropping the test repo must remove the registered Pi state"
     );
 }
 
@@ -552,6 +613,7 @@ fn non_executable_embedded_binary_is_unloadable() {
         .args(["init", "--agent", "pi", "--accept-guesses"])
         .current_dir(repo.path())
         .env("LGTM_HOOK_BINARY", &binary)
+        .env("HOME", repo.path())
         .output()
         .expect("Pi init runs");
     assert!(output.status.success(), "Pi init failed: {output:?}");

@@ -30,6 +30,44 @@ fn run_with_budget(command: &mut Command, budget: Duration) -> ExitStatus {
     }
 }
 
+fn v0130_extension(scope: &str) -> String {
+    // Freeze the released template; newer generator changes must not alter this input.
+    include_str!("fixtures/pi-v0130-extension.txt").replace("__LGTM_SCOPE__", scope)
+}
+
+#[test]
+fn upgrades_v0130_project_and_global_jev_extensions_with_exact_backup() {
+    for (args, extension, scope) in [
+        (
+            vec!["init", "--agent", "pi", "--accept-guesses"],
+            ".pi/extensions/lgtm.ts",
+            "project",
+        ),
+        (
+            vec!["init", "--global"],
+            ".pi/agent/extensions/lgtm.ts",
+            "global",
+        ),
+    ] {
+        let repo = TempRepo::new();
+        let mut init = Command::new(env!("CARGO_BIN_EXE_lgtm"));
+        init.args(args)
+            .env("HOME", repo.path())
+            .current_dir(repo.path());
+        assert!(run_bounded(&mut init).success(), "initial {extension}");
+        let current = repo.read(extension);
+        let old = v0130_extension(scope);
+        repo.write(extension, &old);
+        assert!(run_bounded(&mut init).success(), "upgrade {extension}");
+        assert_eq!(repo.read(extension), current, "old hook was not upgraded");
+        assert_eq!(
+            repo.read(&format!("{extension}.bak")),
+            old,
+            "backup changed"
+        );
+    }
+}
+
 #[test]
 fn standalone_jev_auto_routes_each_step_and_filters_only_notices() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

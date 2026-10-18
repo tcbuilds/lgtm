@@ -54,6 +54,9 @@ const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
     "fb7abda05c353b6f867767ffb24e7abaa582df0e7ab041f1a64739523ac5641d",
     "4ffe2fd3104e653447393f13cc1aa325508a457069c3da8c11ebdac73e1c77e4",
     "51d9e0a62f3f96e2e63a05ecd0e50e83dedce7902cdc9b06642c2770d96d3a0d",
+    // Canonical v0.13.0 project and global extensions.
+    "94930f303d7556618ca14e4c5c83845fb1c4054ecd41f6dc414898c3dd489832",
+    "54d143beac8424999b4d93748c87cbf492f8bdd4d0bca3911bb91e34e52bf6f4",
 ];
 const JEV_COMMON_TEMPLATE: &str = include_str!("../../templates/pi/jev_common.js");
 const JEV_TEMPLATE: &str = include_str!("../../templates/pi/jev.js");

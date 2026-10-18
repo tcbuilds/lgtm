@@ -522,39 +522,49 @@ mod fallback_tests {
 
     #[test]
     fn continuous_ruff_output_respects_test_deadline() {
-        let mut command = Command::new("/usr/bin/yes");
-        command.arg("ruff output");
-        let started = Instant::now();
-        let result = run_bounded_direct(command, started + Duration::from_millis(250));
-        assert!(result.is_err(), "continuous output must not be verified");
-        assert!(started.elapsed() < Duration::from_secs(1));
+        crate::test_support::run_in_isolated_process(
+            "checks::ruff::fallback_tests::continuous_ruff_output_respects_test_deadline",
+            || {
+                let mut command = Command::new("/usr/bin/yes");
+                command.arg("ruff output");
+                let started = Instant::now();
+                let result = run_bounded_direct(command, started + Duration::from_millis(250));
+                assert!(result.is_err(), "continuous output must not be verified");
+                assert!(started.elapsed() < Duration::from_secs(1));
+            },
+        );
     }
 
     #[test]
     fn escaped_pipe_holder_does_not_leave_a_drain_thread_blocked() {
-        let marker = std::env::temp_dir().join(format!(
-            "lgtm-ruff-test-fallback-{}.pid",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&marker);
-        let _cleanup = EscapedChildCleanup {
-            marker: marker.clone(),
-        };
-        let mut command = Command::new("/bin/sh");
-        command
-            .arg("-c")
-            .arg(
-                r#"/usr/bin/setsid /bin/sh -c 'echo $$ > "$1"; exec /bin/sleep 120' fallback "$1" & while [ ! -s "$1" ]; do /bin/sleep 0.001; done; exit 0"#,
-            )
-            .arg("fallback")
-            .arg(&marker);
-        let started = Instant::now();
-        let result = run_bounded_direct(command, started + Duration::from_millis(250));
+        crate::test_support::run_in_isolated_process(
+            "checks::ruff::fallback_tests::escaped_pipe_holder_does_not_leave_a_drain_thread_blocked",
+            || {
+                let marker = std::env::temp_dir().join(format!(
+                    "lgtm-ruff-test-fallback-{}.pid",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_file(&marker);
+                let _cleanup = EscapedChildCleanup {
+                    marker: marker.clone(),
+                };
+                let mut command = Command::new("/bin/sh");
+                command
+                    .arg("-c")
+                    .arg(
+                        r#"/usr/bin/setsid /bin/sh -c 'echo $$ > "$1"; exec /bin/sleep 120' fallback "$1" & while [ ! -s "$1" ]; do /bin/sleep 0.001; done; exit 0"#,
+                    )
+                    .arg("fallback")
+                    .arg(&marker);
+                let started = Instant::now();
+                let result = run_bounded_direct(command, started + Duration::from_millis(250));
 
-        assert!(result.is_err(), "an open escaped pipe must be unverified");
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "test fallback must return within its deadline"
+                assert!(result.is_err(), "an open escaped pipe must be unverified");
+                assert!(
+                    started.elapsed() < Duration::from_secs(1),
+                    "test fallback must return within its deadline"
+                );
+            },
         );
     }
 }

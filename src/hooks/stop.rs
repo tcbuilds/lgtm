@@ -5128,6 +5128,8 @@ mod tests {
     fn config_replacement_denies_pre_commit_and_binds_original_bytes() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
+        // This tests config binding, not timeouts. Allow parallel test scheduling.
+        const CONFIG_REPLACEMENT_BUDGET: Duration = Duration::from_secs(5);
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "lgtm-config-replacement-{}-{}",
@@ -5174,7 +5176,7 @@ mod tests {
         let reason = run_pre_commit_gate_with_budget(
             &root,
             Some("config-replacement"),
-            Duration::from_secs(1),
+            CONFIG_REPLACEMENT_BUDGET,
         )
         .expect("pre-commit gate runs")
         .expect("config replacement denies commit");

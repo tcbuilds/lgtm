@@ -18,6 +18,14 @@ is retained for longer runs. Code fences in the task stop task-text collection.
 Redaction is a heuristic, not proof that arbitrary prose has no private data.
 Do not include private credentials in prompts or tool descriptions.
 
+At the first recognized credential assignment, the router removes the rest of the
+bounded text. It does not try to guess where a quoted credential ends. This can
+remove useful task detail, but prevents a second quoted segment from leaking.
+Tool-name copies in classifier inputs, generated hints, and status messages use
+the same redaction before their length limit. Original tool names stay local for
+ranking and activation. Native Pi tool declarations and existing conversation
+messages are not rewritten; they are outside this extension's redaction scope.
+
 The router keeps existing active tools. Pi snapshots the tool loadout before the
 `context` hook, so newly enabled direct tools take effect on the **next model
 turn**, not the request being routed. The hint states this limit. Current requests
@@ -100,6 +108,28 @@ clients retain their existing v1 behavior. Claude and Codex behavior is unchange
 Jev auto cannot intercept every UI dialog from another extension. LGTM uses the
 explicit notice handoff. A hard denial from any extension remains a hard denial.
 If Jev auto is not loaded, LGTM warns once and preserves deterministic decisions.
+
+## Repair required-command failures without a waiver loop
+
+A required test or build failure is not a heuristic notice. The agent must inspect
+the failure, repair the cause within the approved task, and rerun the check. A
+routine repair does not require a new owner decision. Do not ask for a waiver
+that cannot clear a protected gate, or repeatedly ask the same question.
+
+Containment checks look for child processes left behind by a command. A command
+can exit successfully while a child remains. On Linux, even an exited child can
+remain as a zombie until its parent collects its exit status. The gate rejects
+these leftovers; Jev cannot turn that result into a pass.
+
+LGTM's own timeout fixtures exposed this problem. The test-mode runner used its
+whole deadline for execution, then had no time left to reap the killed child.
+Other fixtures deliberately orphaned processes without an isolated reaper. The
+repair reserves cleanup time and uses the existing isolated test helper. It does
+not relax containment, accept incomplete evidence, or change approval policy.
+
+Use the normal command gate after the repair. Passing tests alone do not prove
+that no child processes were left behind. Ask the owner only when the repair
+needs new authority or a real product decision, not merely because a check failed.
 
 ## Install and verify without a release
 

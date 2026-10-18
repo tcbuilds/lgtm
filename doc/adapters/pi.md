@@ -183,6 +183,32 @@ that gate has a fixed 300-second total budget, including bounded checks and evid
 persistence, and denies on aggregate exhaustion. Claude and Codex keep their
 existing full-gate budget.
 
+## User guide: installation records and test isolation
+
+The installation registry is a list of locations to refresh. It is not a list of
+running agents. Tests that run init or verified Pi session-start hooks must set
+the child process's `HOME` to a test-owned temporary directory. The temporary
+fixture removes that directory and its registry when the test ends. Do not change
+process-wide `HOME` in parallel Rust tests; use an isolated CLI child instead.
+
+To check for leaks, run the full suite with a separate temporary HOME and an
+isolated build directory. Keep Cargo and Rustup paths explicit so the test can
+still use the installed toolchain. After the suite, verify that the outer test
+HOME has no installation records. Records inside individual test fixtures are
+expected; records in the outer HOME show a missing isolation boundary.
+
+Refresh reports missing managed project roots for the current binary as stale
+registrations. It skips those projects without deleting records or recreating
+hooks. All directory entries still count toward the 4,096-entry scan limit,
+including stale and unrelated records. The 30-second budget also remains in force.
+The errors distinguish a full registry from a timeout.
+
+If the registry is full, inspect the records and move only confirmed stale ones
+to a backup directory outside the registry. Keep real installations and do not
+use a temporary-path prefix alone as proof that a record is stale. Then run
+`lgtm refresh`. There is no `lgtm repair` command. If the error is a timeout,
+retry once and inspect the registry and storage if it persists.
+
 ## User guide: package updates
 
 Pi project settings take precedence over global settings for the same package.
@@ -255,7 +281,7 @@ LGTM enforcement remains authoritative.
 
 ### Breaking draft API change: file references
 
-The repaired API targets **v13.0.0**, which is not yet released. Earlier PR drafts
+The repaired API ships in **v0.13.0**. Earlier PR drafts
 accepted inline excerpts, questions, claims, and state. These inputs now use a
 bounded JSON request file. Only `requestPath` and the documented boolean controls
 belong in tool arguments. Review flags still use an empty argument object.

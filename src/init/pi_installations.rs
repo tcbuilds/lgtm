@@ -132,6 +132,22 @@ fn persist(home: &Path, installation: Installation) -> Result<(), InitError> {
     commit_write(stage_private_write(&path, &bytes)?)
 }
 
+/// A full registry needs stale-record cleanup; a stalled scan needs a retry.
+fn registry_full_reason(directory: &Path) -> String {
+    format!(
+        "installation registry limit reached ({MAX_INSTALLATIONS}); move confirmed stale registration files from {} to a backup directory, then retry",
+        directory.display()
+    )
+}
+
+fn registry_timeout_reason(directory: &Path, stage: &str) -> String {
+    format!(
+        "installation registry {stage} timed out ({}s); retry, then inspect {} for stale registrations if it stays slow",
+        REFRESH_BUDGET.as_secs(),
+        directory.display()
+    )
+}
+
 fn require_registry_capacity(directory: &Path) -> Result<(), InitError> {
     let entries = std::fs::read_dir(directory).map_err(|source| InitError::Read {
         path: directory.to_path_buf(),
@@ -143,10 +159,16 @@ fn require_registry_capacity(directory: &Path) -> Result<(), InitError> {
             path: directory.to_path_buf(),
             source,
         })?;
-        if index >= MAX_INSTALLATIONS - 1 || Instant::now() >= deadline {
+        if index >= MAX_INSTALLATIONS - 1 {
             return Err(InitError::UnwritableTarget {
                 path: directory.to_path_buf(),
-                reason: "Pi installation registry is full or its traversal timed out; remove stale registrations before retrying".to_string(),
+                reason: registry_full_reason(directory),
+            });
+        }
+        if Instant::now() >= deadline {
+            return Err(InitError::UnwritableTarget {
+                path: directory.to_path_buf(),
+                reason: registry_timeout_reason(directory, "traversal"),
             });
         }
     }
@@ -238,6 +260,7 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
     let deadline = Instant::now() + REFRESH_BUDGET;
     let mut refreshed = 0;
     let mut preserved = 0;
+    let mut stale = 0;
     let mut file_writes = 0;
     // Registration stores canonical targets; HOME may use macOS /var aliases.
     let global_root = std::fs::canonicalize(home)
@@ -245,10 +268,11 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
     let global_target = global_root.join(".pi/agent/extensions/lgtm.ts");
     let mut global_registered = false;
     for (index, entry) in entries.into_iter().flatten().enumerate() {
-        if index >= MAX_INSTALLATIONS || Instant::now() >= deadline {
-            return Err(
-                "Pi extension refresh exceeded its bounded installation budget".to_string(),
-            );
+        if index >= MAX_INSTALLATIONS {
+            return Err(registry_full_reason(&directory));
+        }
+        if Instant::now() >= deadline {
+            return Err(registry_timeout_reason(&directory, "refresh"));
         }
         let path = entry
             .map_err(|error| format!("read Pi installation entry ({error})"))?
@@ -262,7 +286,17 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
             preserved += 1;
             continue;
         }
-        let managed = refresh_managed(&mut installation)?;
+        let Some(managed) = refresh_managed(&mut installation)? else {
+            if installation
+                .managed
+                .as_ref()
+                .is_some_and(|managed| managed.agent == "pi" && !managed.rules_only)
+            {
+                extension_root(&installation)?;
+            }
+            stale += 1;
+            continue;
+        };
         file_writes += managed;
         // Migration metadata must survive even when managed files already match.
         // persist avoids writing when the complete registration is unchanged.
@@ -298,7 +332,7 @@ fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {
         }
     }
     Ok(format!(
-        "LGTM installations: {refreshed} refreshed, {preserved} unchanged or preserved; {file_writes} managed file writes. Reload running agent sessions. Register untracked project installations once with the appropriate lgtm init command."
+        "LGTM installations: {refreshed} refreshed, {preserved} unchanged or preserved, {stale} stale registrations skipped (missing project root; records kept for manual cleanup); {file_writes} managed file writes. Reload running agent sessions. Register untracked project installations once with the appropriate lgtm init command."
     ))
 }
 
@@ -329,14 +363,17 @@ fn refresh_legacy_global(home: &Path, binary: &Path) -> Result<usize, String> {
         global: true,
         managed: Some(managed),
     };
-    let count = refresh_one(&installation)? + refresh_managed(&mut installation)?;
+    // The canonical HOME exists here, so this legacy root is never stale.
+    let count = refresh_one(&installation)? + refresh_managed(&mut installation)?.unwrap_or(0);
     persist(home, installation).map_err(|error| error.to_string())?;
     Ok(count)
 }
 
-fn refresh_managed(installation: &mut Installation) -> Result<usize, String> {
+/// Refresh the managed files of one registration. `Ok(None)` reports a stale
+/// registration whose managed root no longer exists.
+fn refresh_managed(installation: &mut Installation) -> Result<Option<usize>, String> {
     let Some(managed) = installation.managed.as_mut() else {
-        return Ok(0);
+        return Ok(Some(0));
     };
     let agent = match managed.agent.as_str() {
         "claude" => super::InitAgent::Claude,
@@ -349,7 +386,7 @@ fn refresh_managed(installation: &mut Installation) -> Result<usize, String> {
     }
     let metadata = match std::fs::symlink_metadata(&managed.root) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("inspect registered installation root ({error})")),
     };
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -359,7 +396,7 @@ fn refresh_managed(installation: &mut Installation) -> Result<usize, String> {
         && !managed.rules_only
         && !managed.root.join(".lgtm/config.json").is_file()
     {
-        return Ok(0);
+        return Ok(Some(0));
     }
     let count = super::managed_refresh::refresh(
         &managed.root,
@@ -383,7 +420,7 @@ fn refresh_managed(installation: &mut Installation) -> Result<usize, String> {
             Sha256::digest(super::rules::agents_document().as_bytes())
         ));
     }
-    Ok(count)
+    Ok(Some(count))
 }
 
 fn read_installation(path: &Path) -> Result<Installation, String> {
@@ -404,7 +441,7 @@ fn read_installation(path: &Path) -> Result<Installation, String> {
     Ok(installation)
 }
 
-fn refresh_one(installation: &Installation) -> Result<usize, String> {
+fn extension_root(installation: &Installation) -> Result<&Path, String> {
     let target = &installation.target;
     let suffix = if installation.global {
         ".pi/agent/extensions/lgtm.ts"
@@ -414,10 +451,15 @@ fn refresh_one(installation: &Installation) -> Result<usize, String> {
     if !target.ends_with(suffix) {
         return Err("registered path is not a Pi extension location".to_string());
     }
-    let root = target
+    target
         .ancestors()
         .nth(if installation.global { 4 } else { 3 })
-        .ok_or("registered extension has no installation root")?;
+        .ok_or_else(|| "registered extension has no installation root".to_string())
+}
+
+fn refresh_one(installation: &Installation) -> Result<usize, String> {
+    let target = &installation.target;
+    let root = extension_root(installation)?;
     preflight_targets(root, &[target]).map_err(|error| error.to_string())?;
     preflight_file_targets(&[target]).map_err(|error| error.to_string())?;
     let binary = &installation.binary;
