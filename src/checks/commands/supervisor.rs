@@ -751,9 +751,15 @@ fn run_test_command_with_deadline(
     mut command: Command,
     deadline: Instant,
 ) -> Result<Captured, ContainedRunError> {
-    if deadline.saturating_duration_since(Instant::now()).is_zero() {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
         return Err(ContainedRunError::CouldNotRun);
     }
+    // Cut the wait short so the kill, reap, and capture below still have the
+    // cleanup reserve inside the caller's deadline; short budgets keep half.
+    let Some(execution_deadline) = deadline.checked_sub(CLEANUP_RESERVE.min(remaining / 2)) else {
+        return Err(ContainedRunError::CouldNotRun);
+    };
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -778,7 +784,13 @@ fn run_test_command_with_deadline(
         return Err(ContainedRunError::ContainmentUnproven);
     };
 
-    let status = wait_and_drain(&mut child, &mut stdout, &mut stderr, deadline, None);
+    let status = wait_and_drain(
+        &mut child,
+        &mut stdout,
+        &mut stderr,
+        execution_deadline,
+        None,
+    );
     if status.is_none() {
         kill_process_group(pid);
         let _ = child.kill();
@@ -800,6 +812,9 @@ fn run_test_command_with_deadline(
         return Err(ContainedRunError::ContainmentViolation);
     }
     if status.is_none() {
+        // A cutoff must still consume the caller's deadline; the cleanup
+        // reserve must not look like spare budget for later commands.
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
         return Err(ContainedRunError::CouldNotRun);
     }
     if !direct_reaped {

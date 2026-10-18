@@ -141,6 +141,19 @@ fn run_for_event(
                             ),
                         );
                     }
+                    Ok(crate::hooks::stop::PreCommitGateDecision::HeuristicNotices(notices)) => {
+                        return match adapter
+                            .encode_response(event, HookResponse::HeuristicNotices(notices))
+                        {
+                            Ok(encoded) => {
+                                match adapter::emit(output, &mut std::io::stderr(), &encoded) {
+                                    Ok(()) => ExitCode::from(encoded.exit_code),
+                                    Err(_) => ExitCode::from(2),
+                                }
+                            }
+                            Err(reason) => deny(output, adapter, event, &reason),
+                        };
+                    }
                     Ok(crate::hooks::stop::PreCommitGateDecision::FindingApprovalRequired(
                         challenge,
                     )) => {

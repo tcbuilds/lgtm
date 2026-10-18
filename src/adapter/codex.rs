@@ -118,6 +118,9 @@ impl HookAdapter for CodexAdapter {
                 }
                 _ => Err(invalid_combination(event, "PostToolFeedback")),
             },
+            HookResponse::HeuristicNotices(_) => {
+                Err(invalid_combination(event, "HeuristicNotices"))
+            }
             HookResponse::FindingApprovalRequired(_) => {
                 Err(invalid_combination(event, "FindingApprovalRequired"))
             }

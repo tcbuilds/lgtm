@@ -805,23 +805,28 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn extension_refresh_executes_the_newly_installed_binary_and_reports_failure() {
-        let directory = TemporaryDirectory::create().unwrap();
-        let source = directory.path.join("new-lgtm");
-        let executable = directory.path.join("installed-lgtm");
-        fs::write(&executable, b"old binary").unwrap();
-        fs::write(
-            &source,
-            b"#!/bin/sh\n[ \"$1\" = refresh ] || exit 2\nprintf 'new-template-refreshed\\n'\n",
-        )
-        .unwrap();
-        install(&source, &executable, &directory.path).unwrap();
-        assert_eq!(
-            refresh_managed_files(&executable).unwrap(),
-            "new-template-refreshed"
+        crate::test_support::run_in_isolated_process(
+            "update::tests::extension_refresh_executes_the_newly_installed_binary_and_reports_failure",
+            || {
+                let directory = TemporaryDirectory::create().unwrap();
+                let source = directory.path.join("new-lgtm");
+                let executable = directory.path.join("installed-lgtm");
+                fs::write(&executable, b"old binary").unwrap();
+                fs::write(
+                    &source,
+                    b"#!/bin/sh\n[ \"$1\" = refresh ] || exit 2\nprintf 'new-template-refreshed\\n'\n",
+                )
+                .unwrap();
+                install(&source, &executable, &directory.path).unwrap();
+                assert_eq!(
+                    refresh_managed_files(&executable).unwrap(),
+                    "new-template-refreshed"
+                );
+                fs::write(&source, b"#!/bin/sh\nexit 3\n").unwrap();
+                install(&source, &executable, &directory.path).unwrap();
+                assert!(refresh_managed_files(&executable).is_err());
+            },
         );
-        fs::write(&source, b"#!/bin/sh\nexit 3\n").unwrap();
-        install(&source, &executable, &directory.path).unwrap();
-        assert!(refresh_managed_files(&executable).is_err());
     }
 
     #[test]

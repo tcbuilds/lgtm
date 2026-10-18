@@ -1,3 +1,116 @@
+# Handoff — PR #132 follow-up on feat/jev-quiet-gates
+
+> Updated: 2026-10-18T17:06:49.041Z
+> Worktree: `/home/ubuntu/lgtm-quiet-gates`
+> Snapshot HEAD: `40332328a6e0caaa8e8217ab25b016575e56aed0`; confirm Git for later publication.
+> Stale if the branch or source changes after this checkpoint.
+
+## Mission and authority
+
+Finish existing draft [PR #132](https://github.com/tcbuilds/lgtm/pull/132):
+per-step Jev routing, quiet heuristic notices, and the real test-process cleanup
+repairs that remove the repeated waiver loop. Diagnose, fix, and rerun routine
+failures without asking for another waiver. Keep hard gates and permissions.
+No merge, release, tag, version bump, production install, or new unit tests.
+
+At this checkpoint, initial commit `4033232` is the last published commit. Its
+one owner-approved exception does not permit another bypass. The normal follow-up
+commit and push are next; check Git/PR head for later publication state. The live
+personal extension is not updated.
+
+## Git state to preserve
+
+A merge of upstream `4d0dbc7c71a0f9a19ad8c106aaa2c46d36509dc0` is pending.
+Preserve the staged merge, source repairs, and current fixture/docs edits. Do not
+reset, stash, or broadly unstage. Main's release files/version are inherited,
+not a new release; the PR diff against main has no release/version change.
+The original `/home/ubuntu/lgtm` and separate benchmark checkout contain unrelated
+work. Do not edit them.
+
+## Repairs already checked
+
+- Reserve time to reap killed test commands, while preserving aggregate deadlines.
+- Run existing Ruff, refresh, caller-exit, and claims-output fixtures under the
+  existing isolated reaper. Production containment is unchanged.
+- Give the config-binding fixture five seconds; it is not a timeout test.
+- Use a real frozen v0.13.0 extension fixture for upgrade checks. All four old
+  ownership hashes were traced to the actual v0.13.0 and pre-feature Git sources.
+- Router privacy: at the first recognized credential assignment, keep the ordinary
+  prefix and a marker, then omit the remaining bounded text. Do not parse quote ends.
+- Sanitize name copies in classifier catalog/questions/recent metadata and generated
+  hints/status. Keep original local activation identities and native Pi schemas.
+- The offline fixture checks complete provider requests, YAML/shell tails, two
+  colliding redacted names, local activation, cached/busy hints, invalid scores,
+  warnings, and a valid pre-timeout stale-session reply. No live provider is called.
+
+## Review status
+
+Full 23-file Sol-high/Astra-high review found a privacy blocker and a weak
+stale-session test. The first repair passed Astra but Sol found YAML quote tails
+and raw name copies. One pi-review circuit-breaker oracle, `1684df7f` on
+`openai-codex/gpt-6-astra:high`, defined the conservative rule now implemented.
+Do not return to quote-by-quote fixes or weaken containment.
+
+Final fix verification passed in workflow
+`26979312-41a1-4c1b-a67e-06502df86d03`: Sol-high `1b9c353b` and Astra-high
+`53ff6361` found no remaining supported blocker. The exact models are
+`openai-codex/gpt-6.1-sol:high` and `openai-codex/gpt-6-astra:high`.
+Reports are under `/tmp/lgtm-containment-verification/post-architect-review.*.md`.
+These were same-model fallbacks because retained-child discovery was empty.
+The parent ledger marks the privacy and session findings verified.
+
+## Validation
+
+- Real v5 supervisor: full `cargo test` completed with code 0 in 260.67 seconds,
+  with no truncation or containment violation, before the final router-only repair.
+  Formatting, strict Clippy, and build also passed.
+- Current offline router fixture, strict standalone TypeScript CLI, and
+  `cargo test --test jev_pi` (11 tests) pass after the final repair.
+- Removing only `operation !== generation` made the stale-session test fail;
+  restoring it made the test pass. No mutation remains.
+- Rust and Biome diagnostics are clean. Repo-root TS LSP lacks installed Node/Pi
+  SDK resolution; the explicit strict CLI passes. Markdown/plain-text LSP is absent.
+- The normal commit hook still needs to run fresh final configured checks.
+  Do not claim it passed until a real commit and evidence confirm that.
+
+## Next steps
+
+1. Both final review results are consumed and the parent ledger is updated.
+   Run the normal commit gate on the exact staged final tree.
+2. Rerun affected checks after any edit. Preserve original tool-name mapping,
+   native schemas, and existing messages; no permission grant comes from Jev.
+3. Stage exact final files, including repaired router/fixture and these docs.
+   Check Git email is `254259785+tcbuilds@users.noreply.github.com`.
+4. Use a Git-only worker in this worktree for a bare normal `git commit`.
+   Compound commit forms were denied. Do not bypass a denial; diagnose it.
+   The real configured suite takes about 4.5 minutes.
+5. Push `feat/jev-quiet-gates` without tags, update existing draft PR #132 with
+   current evidence, and verify its head. Do not merge or release.
+6. Remove task scratch/probe files only after their evidence is no longer needed.
+
+## Evidence and useful files
+
+- `templates/pi/jev-auto.ts`, `tests/fixtures/pi/jev_auto.cjs`: final privacy/session repair.
+- `doc/jev-auto.md`: behavior, privacy limits, manual install/reload, rollback.
+- `src/checks/commands/supervisor.rs`, `src/checks/ruff.rs`, `src/update.rs`,
+  `tests/commands.rs`, `tests/claims_stop.rs`: process-hygiene repairs.
+- `tests/fixtures/pi-v0130-extension.txt`, `tests/jev_pi.rs`: real historical upgrade input.
+- `/tmp/lgtm-containment-verification/`: result JSON/logs, review packets/reports,
+  `findings-ledger.json`, and the oracle contract. Keep while work is in flight.
+- `/tmp/lgtm-containment-probe/`: reusable diagnostic scripts; the full trace
+  located the final orphan in the claims-output fixture.
+
+## Resume
+
+Start Pi in `/home/ubuntu/lgtm-quiet-gates`, use `/warmup`, then read this file.
+Current packet: `/tmp/lgtm-containment-verification/post-architect-packet.md`.
+Owner decisions pending: none.
+
+## Archived — 2026-10-18 (historical, not current authority)
+
+<details>
+<summary>Previous M26 handoff</summary>
+
 # Handoff — M26 implementation in progress
 
 > Updated: 2026-10-17 after slice 26.2
@@ -283,3 +396,5 @@ the phase is done.
 
 Unrelated untracked paths to leave untouched: `.killer-whale/`, `.pi/`,
 `triage.md`. The historical August handoff is `HANDOFF.2026-08-13.md`.
+
+</details>

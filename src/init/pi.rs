@@ -52,6 +52,8 @@ const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
     "944af599664d9908adad99bc74bbb330ec4b76726b72448b6fc0fea4582bc593",
     "48ece1bf940d19769ea526c38c8743510af934141211563e5ab9b4ccaaa6dcce",
     "fb7abda05c353b6f867767ffb24e7abaa582df0e7ab041f1a64739523ac5641d",
+    "4ffe2fd3104e653447393f13cc1aa325508a457069c3da8c11ebdac73e1c77e4",
+    "51d9e0a62f3f96e2e63a05ecd0e50e83dedce7902cdc9b06642c2770d96d3a0d",
     // Canonical v0.13.0 project and global extensions.
     "94930f303d7556618ca14e4c5c83845fb1c4054ecd41f6dc414898c3dd489832",
     "54d143beac8424999b4d93748c87cbf492f8bdd4d0bca3911bb91e34e52bf6f4",
@@ -85,11 +87,12 @@ const NORMAL_TIMEOUT_MS = 10_000;
 const PRE_TOOL_TIMEOUT_MS = 310_000;
 const POLICY_INPUT_MARKER = "lgtm-pi-policy-input-v1";
 const APPROVAL_CAPABILITY = Object.freeze({
-  name: "lgtm-pi-finding-approval",
+  name: "lgtm-pi-heuristic-notices",
   version: 1,
 });
 const APPROVAL_PROTOCOL = "lgtm-pi-finding-approval";
-const APPROVAL_CONFIRM_TIMEOUT_MS = 30_000;
+const NOTICE_PROTOCOL = "lgtm-pi-heuristic-notices";
+const NOTICE_TIMEOUT_MS = 1_500;
 const MAX_APPROVAL_FINDINGS = 32;
 const MAX_APPROVAL_TEXT_BYTES = 512;
 const MAX_APPROVAL_COORDINATE = 1_000_000_000;
@@ -471,10 +474,10 @@ function appendFailure(pi, ctx, eventType, reason, approvalState, generation) {
       || approvalState.notifiedFailures.size >= MAX_NOTIFIED_FAILURES) return;
   approvalState.notifiedFailures.add(warningKey);
   try {
-    ctx.ui?.notify(
-      `LGTM Pi hook is unverified (${warningKey}). Check LGTM session entries; after updating LGTM, run lgtm refresh and /reload.`,
-      "warning",
-    );
+    // Presentation is optional; a classifier never changes this failure or its gate decision.
+    void presentGateNotices(pi, ctx, eventType, { identity: null, items: [{
+      kind: "unverified", ruleId: `pi-${warningKey}`, path: null, line: null, candidateId: null,
+    }] }, approvalState, approvalState.controller.signal);
   } catch {
     // UI notification is optional and must not change the hook decision.
   }
@@ -617,6 +620,9 @@ function validateResponse(eventType, response) {
   if (response === null || typeof response !== "object" || Array.isArray(response)) {
     return "response_not_object";
   }
+  if (Object.prototype.hasOwnProperty.call(response, "notices")) {
+    return validNoticeResponse(eventType, response) ? undefined : "invalid_notice_response";
+  }
   if (eventType === "tool_call") {
     if (Object.prototype.hasOwnProperty.call(response, "approval")) {
       return validApprovalResponse(response) ? undefined : "invalid_approval_response";
@@ -677,29 +683,76 @@ function approvalChallenge(response) {
     : undefined;
 }
 
-function sameApprovalChallenge(left, right) {
-  if (!left || !right || left.identity !== right.identity
-      || left.findings.length !== right.findings.length) return false;
-  return left.findings.every((finding, index) => {
-    const other = right.findings[index];
-    return finding.ruleId === other.ruleId
-      && finding.path === other.path
-      && finding.startLine === other.startLine
-      && finding.startColumn === other.startColumn
-      && finding.endLine === other.endLine
-      && finding.endColumn === other.endColumn
-      && finding.candidateId === other.candidateId;
+function validNoticeResponse(eventType, response) {
+  if (!["tool_call", "tool_result", "agent_settled"].includes(eventType)
+      || responseKeys(response) !== "notices" || !withinJsonBudget(response, 64 * 1024)) return false;
+  const notices = response.notices;
+  if (!notices || typeof notices !== "object" || Array.isArray(notices)
+      || responseKeys(notices) !== "identity\u0000items\u0000protocol\u0000version"
+      || notices.protocol !== NOTICE_PROTOCOL || notices.version !== 1
+      || !Array.isArray(notices.items) || notices.items.length < 1 || notices.items.length > 32) return false;
+  if (eventType === "tool_call"
+      ? typeof notices.identity !== "string" || !/^[0-9a-f]{64}$/.test(notices.identity)
+      : notices.identity !== null) return false;
+  return notices.items.every((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)
+        || responseKeys(item) !== "candidateId\u0000kind\u0000line\u0000path\u0000ruleId"
+        || !["generic-secret", "review", "unverified"].includes(item.kind)
+        || typeof item.ruleId !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(item.ruleId)
+        || (item.path !== null && (typeof item.path !== "string" || item.path.length > 512 || /[\u0000-\u001f\u007f]/.test(item.path)))
+        || (item.line !== null && (!Number.isSafeInteger(item.line) || item.line < 0 || item.line > MAX_APPROVAL_COORDINATE))
+        || (item.candidateId !== null && (typeof item.candidateId !== "string" || !/^[0-9a-f]{64}$/.test(item.candidateId)))) return false;
+    return eventType === "tool_call"
+      ? item.kind === "generic-secret" && item.ruleId === "generic-api-key" && item.path !== null && item.candidateId !== null
+      : item.kind !== "generic-secret";
   });
 }
 
-function approvalPromptMessage(challenge) {
-  const lines = challenge.findings.map((finding) =>
-    `- ${finding.ruleId} at ${finding.path}:${finding.startLine}:${finding.startColumn} (candidate ${finding.candidateId.slice(0, 16)})`);
-  return [
-    "LGTM found redacted heuristic findings in the staged commit.",
-    "Approve only these exact candidates?",
-    ...lines,
-  ].join("\n");
+async function presentGateNotices(pi, ctx, eventType, notices, state, signal) {
+  const generation = state.generation;
+  const key = createHash("sha256").update(JSON.stringify([eventType, notices])).digest("hex");
+  if (state.noticeKeys.has(key)) return;
+  if (state.noticeKeys.size >= 256) state.noticeKeys.delete(state.noticeKeys.keys().next().value);
+  const owner = {};
+  state.noticeKeys.set(key, owner);
+  let delivered = false;
+  const fallback = () => {
+    if (generation !== state.generation || signal?.aborted) return;
+    delivered = true;
+    try {
+      const diagnostic = notices.items.length === 1 && notices.items[0].kind === "unverified"
+        && notices.items[0].ruleId.startsWith("pi-") ? notices.items[0].ruleId.slice(3) : undefined;
+      if (diagnostic) {
+        ctx.ui?.notify(`LGTM Pi hook is unverified (${diagnostic}). Check LGTM session entries; after updating LGTM, run lgtm refresh and /reload.`, "warning");
+      } else {
+        pi.appendEntry("lgtm-heuristic-notices", { event: eventType, key, count: notices.items.length, visibility: "warning" });
+        ctx.ui?.notify(`LGTM: ${notices.items.length} nonblocking review notice(s). See session entries.`, "warning");
+      }
+    } catch {
+      // Optional presentation cannot deny an operation or manufacture evidence.
+    }
+  };
+  let timer;
+  try {
+    if (ctx.isProjectTrusted?.() !== true || typeof pi.events?.emit !== "function") return fallback();
+    let done;
+    const completed = new Promise((resolve) => {
+      done = (presented = true) => { delivered = presented; resolve(presented); };
+    });
+    const request = { protocol: NOTICE_PROTOCOL, version: 1, event: eventType,
+      notices: cloneJson(notices), ctx, signal, handled: false, done };
+    pi.events.emit("jev-auto:gate", request);
+    if (request.handled !== true) return fallback();
+    const finished = await Promise.race([completed, new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), NOTICE_TIMEOUT_MS);
+    })]);
+    if (!finished) fallback();
+  } catch {
+    fallback();
+  } finally {
+    clearTimeout(timer);
+    if (!delivered && generation === state.generation && state.noticeKeys.get(key) === owner) state.noticeKeys.delete(key);
+  }
 }
 
 function isDirectCommitCandidate(event) {
@@ -788,71 +841,32 @@ function signalWasAborted(ctx) {
 
 function approvalContextIsCurrent(ctx, approvalState, authority) {
   return !signalWasAborted(ctx)
-    && ctx.mode === "tui"
-    && ctx.hasUI === true
     && approvalState.generation === authority.generation
     && approvalState.sessionId === authority.sessionId
     && sessionId(ctx) === authority.sessionId;
 }
 
-async function confirmAndRevalidateApproval(
-  root,
-  event,
-  ctx,
-  payload,
-  challenge,
-  approvalState,
-  signal,
-) {
-  if (ctx.mode !== "tui" || ctx.hasUI !== true || typeof ctx.ui?.confirm !== "function") {
-    return blocked("Pi native confirmation is unavailable; staged commit denied");
+async function presentAndRevalidateNotices(pi, root, ctx, payload, notices, state, signal) {
+  const authority = { sessionId: sessionId(ctx), generation: state.generation };
+  if (!authority.sessionId || !approvalContextIsCurrent(ctx, state, authority) || !trustedRuntimeVersion()) {
+    return blocked("Pi notice attestation changed; staged commit denied");
   }
-  const confirmedSessionId = sessionId(ctx);
-  if (typeof confirmedSessionId !== "string" || confirmedSessionId.length === 0) {
-    return blocked("Pi session attestation is unavailable; staged commit denied");
+  await presentGateNotices(pi, ctx, "tool_call", notices, state, signal);
+  if (!approvalContextIsCurrent(ctx, state, authority) || !trustedRuntimeVersion()) {
+    return blocked("Pi notice context changed; staged commit denied");
   }
-  const authority = {
-    sessionId: confirmedSessionId,
-    generation: approvalState.generation,
-    challenge,
-  };
-  if (!approvalContextIsCurrent(ctx, approvalState, authority) || !trustedRuntimeVersion()) {
-    return blocked("Pi approval attestation changed; staged commit denied");
-  }
-  let confirmed = false;
-  try {
-    confirmed = await ctx.ui.confirm(
-      "LGTM staged commit confirmation",
-      approvalPromptMessage(challenge),
-      { timeout: APPROVAL_CONFIRM_TIMEOUT_MS, signal },
-    );
-  } catch {
-    return blocked("Pi native confirmation failed; staged commit denied");
-  }
-  if (confirmed !== true || !approvalContextIsCurrent(ctx, approvalState, authority)) {
-    return blocked("staged commit heuristic findings were not confirmed");
-  }
-  if (!trustedRuntimeVersion()) {
-    return blocked("Pi approval executable or template changed; staged commit denied");
-  }
-
-  let retry;
-  try {
-    retry = await invoke(LGTM_BINARY, root, "tool_call", payload, signal);
-  } catch {
-    return blocked("Pi approval revalidation failed; staged commit denied");
-  }
-  if (!approvalContextIsCurrent(ctx, approvalState, authority)
-      || !trustedRuntimeVersion() || retry.failure || retry.diagnostics) {
-    return blocked("staged commit approval could not be revalidated; commit denied");
+  const retry = await invoke(LGTM_BINARY, root, "tool_call", payload, signal);
+  if (!approvalContextIsCurrent(ctx, state, authority) || !trustedRuntimeVersion()
+      || retry.failure || retry.diagnostics) {
+    return blocked("staged commit notices could not be revalidated; commit denied");
   }
   if (retry.response === undefined) return undefined;
-  const retryChallenge = approvalChallenge(retry.response);
-  if (retryChallenge && sameApprovalChallenge(challenge, retryChallenge)) return undefined;
-  if (retryChallenge) {
-    return blocked("staged commit findings changed during confirmation; commit denied");
+  if (!retry.response.notices) return retry.response;
+  if (retry.response.notices.identity !== notices.identity
+      || JSON.stringify(retry.response.notices.items) !== JSON.stringify(notices.items)) {
+    return blocked("staged commit findings changed during notice triage; commit denied");
   }
-  return retry.response;
+  return undefined;
 }
 
 async function handle(pi, eventType, event, ctx, approvalState) {
@@ -865,6 +879,7 @@ async function handle(pi, eventType, event, ctx, approvalState) {
       approvalState.controller.abort();
       approvalState.controller = new AbortController();
       approvalState.notifiedFailures.clear();
+      approvalState.noticeKeys.clear();
     }
     approvalState.sessionId = currentSessionId;
     generation = approvalState.generation;
@@ -939,27 +954,23 @@ async function handle(pi, eventType, event, ctx, approvalState) {
         return blocked("LGTM diagnostics made staged commit approval unverified; commit denied");
       }
     }
-    if (eventType === "tool_call") {
-      const challenge = approvalChallenge(result.response);
-      if (challenge) {
-        try {
-          return await confirmAndRevalidateApproval(
-            root,
-            event,
-            ctx,
-            payload,
-            challenge,
-            approvalState,
-            signal,
-          );
-        } catch {
-          return blocked("Pi native confirmation failed; staged commit denied");
-        }
+    if (result.response?.notices) {
+      if (eventType === "tool_call") {
+        if (!isDirectCommitCandidate(event)) return blocked("Unexpected commit notice response; tool denied");
+        return await presentAndRevalidateNotices(pi, root, ctx, payload, result.response.notices, approvalState, signal);
       }
+      await presentGateNotices(pi, ctx, eventType, result.response.notices, approvalState, signal);
+      return eventType === "tool_result" ? mergeToolResult(event, undefined, ctx) : undefined;
+    }
+    if (eventType === "tool_call" && approvalChallenge(result.response)) {
+      return blocked("Legacy finding confirmation is not supported by this extension; refresh LGTM");
     }
     return eventType === "tool_result" ? mergeToolResult(event, result.response, ctx) : result.response;
   } catch {
     appendFailure(pi, ctx, eventType, "handler", approvalState, generation);
+    if (eventType === "tool_call" && isDirectCommitCandidate(event)) {
+      return blocked("LGTM commit handler failed; commit denied");
+    }
     return undefined;
   }
 }
@@ -987,6 +998,7 @@ export default function lgtm(pi) {
     generation: 0,
     controller: new AbortController(),
     notifiedFailures: new Set(),
+    noticeKeys: new Map(),
   };
   pi.on("session_start", (event, ctx) => {
     registerLgtmJev(pi, () => approvalState.controller.signal);
@@ -1002,6 +1014,7 @@ export default function lgtm(pi) {
     approvalState.generation += 1;
     approvalState.sessionId = undefined;
     approvalState.notifiedFailures.clear();
+    approvalState.noticeKeys.clear();
   });
   pi.on("tool_call", (event, ctx) =>
     handle(pi, "tool_call", event, ctx, approvalState));

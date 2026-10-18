@@ -1,4 +1,7 @@
 mod common;
+#[cfg(unix)]
+#[path = "../src/test_support.rs"]
+mod test_support;
 
 use std::io::Read;
 #[cfg(target_os = "linux")]
@@ -230,14 +233,19 @@ fn fixture_process_timeout_kills_and_reaps_stalled_child() {
 #[cfg(unix)]
 #[test]
 fn fixture_process_does_not_wait_for_descendant_output_eof() {
-    let repo = TempRepo::new();
-    let mut command = Command::new("/bin/sh");
-    command.args(["-c", "/bin/sleep 20 & printf 'retained\\n'; exit 0"]);
-    let started = Instant::now();
-    let output = run_bounded_process(&repo, command, None, Duration::from_secs(2));
-    assert!(output.status.success());
-    assert_eq!(output.stdout, b"retained\n");
-    assert!(started.elapsed() < Duration::from_secs(1));
+    test_support::run_in_isolated_process(
+        "fixture_process_does_not_wait_for_descendant_output_eof",
+        || {
+            let repo = TempRepo::new();
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "/bin/sleep 20 & printf 'retained\\n'; exit 0"]);
+            let started = Instant::now();
+            let output = run_bounded_process(&repo, command, None, Duration::from_secs(2));
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"retained\n");
+            assert!(started.elapsed() < Duration::from_secs(1));
+        },
+    );
 }
 
 #[test]

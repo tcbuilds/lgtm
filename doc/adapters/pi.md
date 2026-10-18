@@ -96,10 +96,11 @@ reason code, such as `tool_provenance_unverified`. LGTM attempts to record every
 failure in Pi session entries with custom type `lgtm`. Persistence is best effort
 if Pi rejects the entry.
 
-Each loaded extension shows a warning once per reason per session. A new session,
-`session_start`, or shutdown resets this limit. Warning state holds at most 32
-reason codes. Repeated warnings are suppressed; failure records and enforcement
-decisions are not suppressed.
+Without standalone Jev auto, each loaded extension shows a warning once per
+reason per session. With Jev auto, the same metadata-only notice can be recorded
+silently or shown as a nonblocking warning. A new session, `session_start`, or
+shutdown resets the bounded presentation state. Failure records and deterministic
+enforcement decisions are not suppressed. See [Jev auto](../jev-auto.md).
 
 For `tool_provenance_unverified`, check whether another extension replaced a
 built-in tool. If Pi changed its API, update LGTM, run `lgtm refresh`, then use
@@ -394,12 +395,15 @@ is not classifier accuracy. The older live result in
 [the replay record](../jev-replay-results.md) is historical evidence, not a fresh
 live verification of the reference-input API.
 
-Run `cargo test --test jev_pi` for generated-extension integration checks. Run
-`node scripts/jev-coverage.cjs` with Node 24 and Rust installed to measure their
-execution against the original JS fragments. The loader verifies each rendered
-fragment byte-for-byte, then executes it under its original source filename.
-Pinned c8 writes real LCOV to `target/jev-coverage/lcov.info`. Coverage
-includes every Jev template, including unexecuted files. CI imports that report
+Run `cargo test --test jev_pi` for generated-extension and standalone-router
+integration checks. Run `node scripts/jev-coverage.cjs` with Node 24 and Rust
+installed to measure the original JS fragments and standalone TS sources, plus
+checkpoint integration. The loader verifies each rendered fragment byte-for-byte,
+then executes it under its original source filename. Node type stripping retains
+the TS source filenames for measurement. Pinned c8 writes real LCOV to
+`target/jev-coverage/lcov.info`. Coverage includes matching Jev JS/TS sources and
+the checkpoint template, including unexecuted files. The 80% line and branch
+thresholds remain unchanged. CI imports that report
 into SonarCloud; fixture files are classified as tests, not production sources.
 No coverage exclusions or fabricated counts replace missing execution.
 
@@ -495,9 +499,12 @@ benign-quoting, or unclear category. **This is not a security boundary.** A clea
 inspected span says nothing about unseen text. Advice never overrides trusted
 instructions, permissions, or deterministic checks. No raw excerpt is returned.
 
-## Answer caching: not needed
+## Answer caching for explicit advisory tools
 
-No bounded answer cache ships. The decision rule is measurement first: caching is
+The six explicit advisory tools do not cache answers. Standalone
+[Jev auto](../jev-auto.md) separately retains one transient routing hint and bounded
+notice-presentation deduplication; neither stores approval or command evidence.
+No persistent answer cache ships. The decision rule is measurement first: caching is
 only justified when repeat queries of the same identity actually reuse answers
 enough to beat the cost and risk it adds. The offline preflight makes no live
 calls by design, and the live replay has no measured repeat reuse, so there is no
@@ -514,10 +521,18 @@ these decisions.
 
 ## Finding approval capability
 
-The canonical extension advertises the strictly versioned
-`lgtm-pi-finding-approval` capability on Bash tool calls. Rust preserves that
-capability only when its exact `{name, version: 1}` object is present; missing,
-malformed, unknown, or old callers receive the ordinary `{block, reason}` denial.
+The canonical extension now advertises `lgtm-pi-heuristic-notices` version 1.
+Eligible staged heuristics become nonblocking typed notices, with presentation
+handled by standalone [Jev auto](../jev-auto.md). No native confirmation is asked.
+The extension performs a fresh deterministic reassessment after presentation;
+changed or hard findings remain denied. Missing Jev produces a warning, not a
+new prompt or a passed check.
+
+The paragraphs below describe the retained **legacy client**
+`lgtm-pi-finding-approval` v1 contract. Rust still preserves that capability only
+when its exact `{name, version: 1}` object is present. The new extension does not
+advertise it and rejects a legacy challenge rather than opening a dialog. Missing,
+malformed, or unknown capabilities cannot select the new notice policy.
 Only a direct staged `git commit` whose complete fresh gitleaks assessment contains
 eligible built-in `generic-api-key` findings can produce the redacted approval
 challenge. Provider credentials, private keys, custom rules, mixed findings, and

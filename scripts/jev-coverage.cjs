@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Measure generated-extension execution against the original Jev and checkpoint template sources.
+// Measure generated and standalone Jev/checkpoint execution against original JS and TS sources.
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const root = path.resolve(__dirname, "..");
 const directory = path.join(root, "target", "jev-coverage");
 fs.mkdirSync(directory, { recursive: true });
-const args = ["exec", "--yes", "--package=c8@12.0.0", "--", "c8", "--all", "--src", "templates/pi", "--include", "**/jev*.js", "--include", "**/checkpoint.ts", "--extension", ".js", "--extension", ".ts", "--temp-directory", path.join(directory, "v8"), "--reports-dir", directory, "--reporter=lcov", "--reporter=text", "--check-coverage", "--lines=80", "--branches=80", "cargo", "test", "--locked", "--test", "jev_pi", "--test", "checkpoint"];
+const args = ["exec", "--yes", "--package=c8@12.0.0", "--", "c8", "--all", "--src", "templates/pi", "--include", "**/jev*.js", "--include", "**/jev*.ts", "--include", "**/checkpoint.ts", "--extension", ".js", "--extension", ".ts", "--temp-directory", path.join(directory, "v8"), "--reports-dir", directory, "--reporter=lcov", "--reporter=text", "--check-coverage", "--lines=80", "--branches=80", "cargo", "test", "--locked", "--test", "jev_pi", "--test", "checkpoint"];
 const child = spawn(process.platform === "win32" ? "npm.cmd" : "npm", args, {
   cwd: root, stdio: "inherit", detached: process.platform !== "win32",
   env: { ...process.env, npm_config_fetch_timeout: "60000", npm_config_fetch_retries: "1" },

@@ -124,6 +124,20 @@ impl HookAdapter for PiAdapter {
                     "reason": "staged commit contains redacted heuristic findings requiring confirmation",
                 }))
             }
+            HookResponse::HeuristicNotices(notices) => {
+                if !matches!(
+                    event,
+                    HookEvent::PreToolUse | HookEvent::PostToolUse | HookEvent::Stop
+                ) {
+                    return Err(invalid_combination(event, "HeuristicNotices"));
+                }
+                stdout_json(json!({"notices": {
+                    "protocol": ApprovalCapability::NOTICE_NAME,
+                    "version": ApprovalCapability::VERSION,
+                    "identity": notices.identity,
+                    "items": notices.items,
+                }}))
+            }
             HookResponse::InjectMessage(content) => {
                 if event != HookEvent::BeforeAgentStart {
                     return Err(invalid_combination(event, "InjectMessage"));
