@@ -13,6 +13,18 @@ changes that require user action. Do not list planned work as a shipped feature.
 At release time, move these entries into a dated version section and link its
 notes in `doc/releases/`.
 
+## [v0.13.1](doc/releases/v0.13.1.md) — 2026-10-18
+
+### Bug fixes
+
+- Fix valid Jev request reads rejected after Pi guidance hooks drop structured
+  content. Accept only a complete visible text block that matches the existing
+  read digest. Removed or changed text still fails closed; no raw reread occurs.
+- Recognize the exact v0.13.0 Pi hook templates during upgrade. Create a backup
+  if none exists; preserve an existing canonical backup. Custom hooks remain protected.
+- Update managed Pi extensions with `lgtm update`, then run `/reload` or restart
+  each running Pi session to load the fix.
+
 ## [v0.13.0](doc/releases/v0.13.0.md) — 2026-10-18
 
 ### Features
