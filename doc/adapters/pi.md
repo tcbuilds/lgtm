@@ -339,8 +339,12 @@ Its call/byte counts and eligibility labels are estimates, not content or native
 read-permission proofs.
 
 The tool rejects private/credential-bearing content and unsafe or filtered reads.
-It consumes only final governed structured text, never raw source snapshots or
-a discarded field. Metadata changes cause `stale` or unavailable outcomes.
+It consumes only final governed text, never raw source snapshots or a discarded
+field. If a guidance hook adds text and Pi drops `structuredContent`, Jev can use
+a complete visible text block whose SHA-256 matches the read binding. It does not
+combine blocks, strip guidance, or recover removed text. Replaced structured text,
+changed bindings, and removed or altered file blocks still fail closed. This
+applies to request files and selected source files. Metadata changes cause `stale` or unavailable outcomes.
 Metadata checks are not byte-identity or race-proof guarantees. Bool answers retain probabilities. Choice labels outside the offered
 criteria become explicit no-match. Scores are finite expected level indices in
 `[0, criteria.length - 1]`, including fractional values such as `1.5`.

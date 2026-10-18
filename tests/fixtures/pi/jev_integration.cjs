@@ -107,6 +107,39 @@ async function proveNoRawSourceReads() {
   }
 }
 
+async function proveContentOnlyGuidance() {
+  const executeTool = context.executeTool;
+  const before = requests.length;
+  let mode = "guidance";
+  context.executeTool = async (...args) => {
+    const outcome = await executeTool(...args);
+    const result = outcome.result;
+    const original = result.structuredContent;
+    // Match Pi's merge rule when a later hook returns content only.
+    delete result.structuredContent;
+    result.content = [{ type: "text", text: "Path-scoped rules" }, ...result.content];
+    if (mode === "redacted") result.content = [{ type: "text", text: "[REDACTED]" }];
+    if (mode === "changed") result.content = [{ type: "text", text: original + " changed" }];
+    if (mode === "structured") result.structuredContent = "[REDACTED]";
+    if (mode === "binding") result.details.lgtmRead.textDigest = "0".repeat(64);
+    if (mode === "advisory") delete result.details.lgtmAdvisory;
+    return outcome;
+  };
+  try {
+    assert.equal((await invoke({ ...params, preview: true })).status, "preview", "content-only guidance broke the request read");
+    assert.equal(requests.length, before, "preview contacted the classifier");
+    assert.equal((await invoke()).status, "ok", "content-only guidance broke the selected-file read");
+    assert.equal(requests.at(-1).state.file.content, body, "guidance reached the classifier");
+    const accepted = requests.length;
+    for (mode of ["redacted", "changed", "structured", "binding", "advisory"]) {
+      assert.equal((await invoke()).status, "rejected", `${mode} request output was accepted`);
+      assert.equal(requests.length, accepted, `${mode} output reached the classifier`);
+    }
+  } finally {
+    context.executeTool = executeTool;
+  }
+}
+
 async function proveLazyContextGuards() {
   const tool = tools.get("lgtm_jev_files");
   const requestPath = writeRequest(params);
@@ -240,6 +273,8 @@ async function proveRequestBounds() {
   readTransform = () => "[REDACTED]";
   assert.notEqual((await invoke()).status, "ok");
   assert.equal(requests.length, before, "a tool-result redaction was bypassed");
+  readTransform = (text) => text;
+  await proveContentOnlyGuidance();
   readTransform = (text) => "Trusted tool guidance\n\n" + text;
   assert.equal((await invoke()).status, "ok", "governed source preceded by guidance was not recognized");
   assert.equal(requests.at(-1).state.file.content, body);
