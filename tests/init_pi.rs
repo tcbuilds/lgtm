@@ -570,7 +570,7 @@ const bashResult = deepFreeze({ toolCallId: "bash-call", toolName: "bash", input
 const toolCallBefore = JSON.stringify(toolCall);
 const toolResult = deepFreeze({ toolName: "edit", input: { path: "file", edits: [{ oldText: "old", newText: "new" }] }, content: [{ type: "text", text: "original" }], details: { source: "pi" }, isError: true, usage: { input: 3, output: 4 } });
 const toolResultBefore = JSON.stringify(toolResult);
-const readResult = deepFreeze({ toolName: "read", input: { path: "src/app.py", offset: 0, limit: 20 }, content: [{ type: "text", text: "file contents" }], details: { source: "pi" }, isError: false, usage: { input: 2 } });
+const readResult = deepFreeze({ toolName: "read", input: { path: "src/app.py", offset: 0, limit: 20 }, content: [{ type: "text", text: "file contents" }], structuredContent: "file contents", details: { source: "pi" }, isError: false, usage: { input: 2 } });
 const readResultBefore = JSON.stringify(readResult);
 Promise.resolve(handlers.tool_call(toolCall, ctx))
   .then((failureResult) => {
@@ -597,7 +597,12 @@ Promise.resolve(handlers.tool_call(toolCall, ctx))
     if (!readMerged || readMerged.content.length !== 2
         || readMerged.content[0].text !== "file contents"
         || readMerged.content[1].text !== "policy feedback"
-        || Object.keys(readMerged).join("\u0000") !== "content") process.exit(11);
+        || readMerged.structuredContent !== "file contents"
+        || readMerged.details.source !== "pi"
+        || readMerged.details.lgtmRead?.protocol !== "lgtm-pi-read-v1") process.exit(11);
+    const hash = (value) => require("node:crypto").createHash("sha256").update(value).digest("hex");
+    if (readMerged.details.lgtmRead.pathDigest !== hash(require("node:path").resolve(process.cwd(), "src/app.py"))
+        || readMerged.details.lgtmRead.textDigest !== hash("file contents")) process.exit(17);
     return handlers.tool_result({ toolName: "read", input: { path: "src/app.py" }, content: "invalid", isError: false }, ctx);
   })
   .then((invalidResult) => {

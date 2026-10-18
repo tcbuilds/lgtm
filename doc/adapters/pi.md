@@ -244,6 +244,244 @@ still reports an unverified hook, check its runtime evidence. Do not remove the
 warning or mark the hook verified without that check. In particular, codemode
 calls are not a new claim of verified LGTM enforcement.
 
+## Jev advisory tools and request privacy
+
+Managed project/global init includes six advisory Jev tools, exposed through
+native codemode. Startup makes no classifier call and needs no extra key. Explicit
+judgments use Pi's native OpenRouter `~typesafe/jev-latest` classifier and its
+existing auth. Missing APIs, model, or provider return `unavailable`; deterministic
+LGTM enforcement remains authoritative.
+
+### Breaking draft API change: file references
+
+The repaired API targets **v13.0.0**, which is not yet released. Earlier PR drafts
+accepted inline excerpts, questions, claims, and state. These inputs now use a
+bounded JSON request file. Only `requestPath` and the documented boolean controls
+belong in tool arguments. Review flags still use an empty argument object.
+
+**Why:** Pi records nested tool arguments before a tool runs. Redacting a result
+or an `lgtm-jev` entry cannot remove an earlier argument record. With a valid
+reference call, that record contains a path and controls, not the request body.
+Pi can still record malformed inline arguments before Jev rejects them. Do not
+put private data into any tool argument, including `write.content`, a command
+literal, or a codemode script literal.
+
+Prepare request files in an owner-approved editor or with a local command that
+reads an approved file and writes JSON **without printing its contents**. Do not
+copy raw logs through a model-facing tool result to build a request. Keep private
+request files out of Git, give them owner-only permissions, and delete them when
+finished. File references do not erase earlier logs or protect files left on disk.
+
+Request files must be workspace-contained, regular, single-link UTF-8 files of at
+most 32 KiB and 1,500 lines (a trailing LF counts as another line). Symlinks, private locations, prohibited paths, changed reads, malformed
+JSON, and missing native read permission are rejected. Reads pass through Pi's
+governed `read` path. The JSON body must match the selected tool's schema. The owned read-result hook
+must be active in an initialized project; missing or changed read metadata fails
+closed. A path digest observes the executed read arguments, not an unforgeable
+authority token. Cooperative path redirects are rejected rather than followed
+with a raw read of the original path.
+
+| Tool | JSON request body | Outer controls |
+| --- | --- | --- |
+| `lgtm_jev_files` | `paths`, `questions` | `preview` |
+| `lgtm_jev_scope` | `scope`, `claims`, optional `revision` | none |
+| `lgtm_jev_triage` | `command`, `exitCode`, `excerpt`, optional `cwd`, `finding` | `allowSend` |
+| `lgtm_jev_compaction` | optional `changedPaths`, `unfinished`, `constraints`; at least one item | none |
+| `lgtm_jev_untrusted` | `source`, `excerpt` | `allowSend` |
+
+`preview` and `allowSend` are not JSON-body fields. Body text cannot grant upload
+permission. Redaction is a conservative heuristic, not proof that arbitrary
+source has no secrets. It handles quoted JSON credential names, common config
+assignments and token forms, emails, home paths, and IPs. Private-key blocks are
+rejected. Common credential files such as `.npmrc`, `.netrc`, `.aws/`, and
+`.ssh/` are denied. Unknown formats can escape a heuristic: review selected
+inputs before sending them. Results do not create permission or verification. Jev keeps at most 64 active or
+settling invocation IDs; overload returns `advisory_busy` without a new request.
+Owned nested native errors are replaced with fixed text before Pi's error
+journal sees them, including late errors after advisory cancellation. Deterministic
+post-tool checks still run. Normal tool calls outside Jev are unchanged. Native
+events or other trusted in-process extensions can still observe data; this is
+not a sandbox against extensions or same-user filesystem changes.
+
+## Jev file questions
+
+Put one to eight `paths` and one to four typed `questions` in the request file.
+For example, an approved request can contain:
+
+```json
+{
+  "paths": ["src/checks/auth.rs"],
+  "questions": {
+    "lexical_check": {
+      "type": "bool",
+      "instructions": "Does this file check lexical signals rather than prove runtime authorization?",
+      "criteria": {"true": "Lexical review signals", "false": "No such check"}
+    }
+  }
+}
+```
+
+Use the path to that file, not its contents:
+
+```js
+const preview = await tools.lgtm_jev_files({requestPath: "advice-request.json", preview: true});
+text(preview);
+const judged = await tools.lgtm_jev_files({requestPath: "advice-request.json"});
+text(judged);
+```
+
+Each source file is at most 16 KiB and 1,500 lines. The batch source budget is
+64 KiB. File judgments have five-second deadlines inside a twenty-second total
+budget, including request loading. Files are read sequentially, with at most one
+classifier call per file. Preview reads its request file, but checks only metadata for selected source
+files. It reads no selected-source bytes and makes **zero classifier calls**.
+Its call/byte counts and eligibility labels are estimates, not content or native
+read-permission proofs.
+
+The tool rejects private/credential-bearing content and unsafe or filtered reads.
+It consumes only final governed structured text, never raw source snapshots or
+a discarded field. Metadata changes cause `stale` or unavailable outcomes.
+Metadata checks are not byte-identity or race-proof guarantees. Bool answers retain probabilities. Choice labels outside the offered
+criteria become explicit no-match. Scores are finite expected level indices in
+`[0, criteria.length - 1]`, including fractional values such as `1.5`.
+Malformed, missing, or out-of-range answers are unavailable, not negative matches.
+
+Results contain typed judgments, safe question IDs/types, file metadata,
+coverage/status, and reported usage. `hashKind: "governed_output"` labels the
+SHA-256 of the authorized returned text, not a proven on-disk file hash;
+`coverage: "governed"` makes that scope explicit. They do not contain source or rubric bodies.
+Use ordinary reads before editing or quoting. Request files and chosen source
+files can contain sensitive data that heuristics cannot recognize; approval of
+the input remains the caller's responsibility.
+
+### Replay and coverage checks
+
+`tests/fixtures/pi/jev_replay_corpus.json` retains the hand-labeled public-source
+corpus and rubric `lgtm-pi-jev-replay-v1`. The offline preflight uses a scripted
+provider to check transport, bounds, stale input, hostile-text handling, and
+typed results. It is marked `semanticQuality: "not-evaluated"`; scripted agreement
+is not classifier accuracy. The older live result in
+[the replay record](../jev-replay-results.md) is historical evidence, not a fresh
+live verification of the reference-input API.
+
+Run `cargo test --test jev_pi` for generated-extension integration checks. Run
+`node scripts/jev-coverage.cjs` with Node 24 and Rust installed to measure their
+execution against the original JS fragments. The loader verifies each rendered
+fragment byte-for-byte, then executes it under its original source filename.
+Pinned c8 writes real LCOV to `target/jev-coverage/lcov.info`. Coverage
+includes every Jev template, including unexecuted files. CI imports that report
+into SonarCloud; fixture files are classified as tests, not production sources.
+No coverage exclusions or fabricated counts replace missing execution.
+
+A live replay needs separate owner approval and a bounded call/cost budget.
+Record source identities, model alias/version, failures, abstentions, elapsed
+time, and actual cost. Compare against grep or CodeGraph. No advantage over grep
+is claimed by the old small corpus, and no paid replay runs during init or tests.
+
+## Jev diff review flags
+
+`lgtm_jev_review` uses fixed read-only Git calls through Pi's native Bash tool.
+It validates complete structured output and a separate NUL-delimited name list.
+It disables rename detection and external/text-conversion drivers for both Git
+operations, so old private rename endpoints remain visible. It checks the path
+list again after reading the patch. Truncated native output,
+changed path lists, private paths, and recognized sensitive content are rejected
+before classification. A clean worktree makes no classifier call.
+
+```js
+text(await tools.lgtm_jev_review({}));
+```
+
+Input is capped at 200 files and 192 KiB of complete diff before the UTF-8-safe
+48 KiB clip. Clipping is reported as partial coverage. Hunk text is never used
+as returned filename metadata. Four independent flags cover auth/permissions,
+data loss, public interfaces, and state/concurrency complexity. There is no
+aggregate risk score. Missing answers remain unknown. These flags never change
+a gate, grant permission, or create passed-command evidence.
+
+## Jev scope and claim advice
+
+A scope request file holds a 512-character `scope`, one to eight bounded
+`claims`, and an optional 40-hex `revision`. The tool reads the revision and
+complete NUL-delimited changed paths through native Bash. It rejects private or
+incomplete path lists and bounds the list to 200 paths.
+
+```js
+text(await tools.lgtm_jev_scope({requestPath: "scope-request.json"}));
+```
+
+A revision mismatch is `stale`; no changes is `empty`. Both make zero classifier
+calls. Per-claim verdicts are supported, unsupported, contradicted, unclear,
+missing, or invalid. These are advice, not verification; deterministic Stop
+claim checks remain authoritative. Claim and scope bodies are not returned.
+
+## Jev diagnostic triage
+
+A triage request file holds `command`, integer `exitCode`, and an already-minimized
+`excerpt`, plus optional `cwd` and `finding`. The tool reads that request file,
+not a full log. It redacts metadata and excerpt before the 8 KiB byte clip.
+Private keys in any field reject the request, including preview.
+
+```js
+text(await tools.lgtm_jev_triage({requestPath: "triage-request.json"}));
+// Send only after the owner has approved the selected input and preview.
+text(await tools.lgtm_jev_triage({requestPath: "triage-request.json", allowSend: true}));
+```
+
+Only outer `allowSend: true` permits a classifier call. Preview and advice return
+safe facts, counts, clipping information, and a bounded cause category: code,
+tool, environment, or unknown. They do not return the excerpt or suggest/apply a
+repair. Unavailable advice does not prevent normal log inspection.
+
+## Jev compaction advice
+
+A compaction request file contains bounded `changedPaths`, `unfinished`, and
+`constraints` lists. It reads no transcript and cannot compact anything.
+
+```js
+text(await tools.lgtm_jev_compaction({requestPath: "compaction-request.json"}));
+```
+
+The result contains a recommendation and a sanitized preservation checklist.
+Private-key state is rejected. Missing answers remain partial or unavailable.
+Use Pi's own `/compact`; its summary format, cut safety, settings, and tool/result
+pair handling stay in control.
+
+## Jev untrusted-output advice
+
+An untrusted request file holds bounded `source` and `excerpt` fields. Both are
+sanitized before preview, transport, return, or optional session metadata.
+Private-key content in either field is rejected. The excerpt is clipped to
+8 KiB on a UTF-8 boundary, with provided/inspected coverage reported.
+
+```js
+text(await tools.lgtm_jev_untrusted({requestPath: "untrusted-request.json"}));
+// Send only after reviewing the selected input and redacted preview.
+text(await tools.lgtm_jev_untrusted({requestPath: "untrusted-request.json", allowSend: true}));
+```
+
+The result has a suspicious flag and an instruction-injection, exfiltration,
+benign-quoting, or unclear category. **This is not a security boundary.** A clean
+inspected span says nothing about unseen text. Advice never overrides trusted
+instructions, permissions, or deterministic checks. No raw excerpt is returned.
+
+## Answer caching: not needed
+
+No bounded answer cache ships. The decision rule is measurement first: caching is
+only justified when repeat queries of the same identity actually reuse answers
+enough to beat the cost and risk it adds. The offline preflight makes no live
+calls by design, and the live replay has no measured repeat reuse, so there is no
+net benefit to claim. Adding storage now would create stale-answer risk for a
+cheap decision without evidence.
+
+If a future live replay shows real reuse, a cache may be added only with a
+bounded, private design: identity covers the exact input, questions, provider and
+model, policy, and source freshness; a moving alias like `~typesafe/jev-latest`
+must resolve to a concrete version before reuse; errors are never cached as
+negative judgments; expiry and size limits are enforced; corrupt state fails
+closed; and cancellation never writes. Do not add a database or service to cache
+these decisions.
+
 ## Finding approval capability
 
 The canonical extension advertises the strictly versioned
