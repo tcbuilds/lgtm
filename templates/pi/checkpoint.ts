@@ -276,10 +276,9 @@ function renderEvidence(input: { request: CheckpointRequest; facts: RepositoryFa
 }
 
 function extractJsonObject(raw: string): string | undefined {
-  const candidate = /```(?:json)?\s*\n([\s\S]*?)```/.exec(raw)?.[1] ?? raw;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  return start < 0 || end <= start ? undefined : candidate.slice(start, end + 1);
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  return start < 0 || end <= start ? undefined : raw.slice(start, end + 1);
 }
 
 // Task records are the only place the model can change a file, so each one is validated field by field.

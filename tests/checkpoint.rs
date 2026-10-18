@@ -95,124 +95,146 @@ fn checkpoint_install_rejects_symlinks_before_repository_writes() {
     assert_eq!(home.read("outside.ts"), "// do not change\n");
 }
 
-#[test]
-fn automatic_compaction_checkpoints_files_without_changing_pi_compaction() {
+/// Absolute path to the tracked template, so V8 coverage maps to the real source file.
+const CHECKPOINT_TEMPLATE: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/templates/pi/checkpoint.ts");
+
+/// Node harness that loads the template from CHECKPOINT_TEMPLATE, replaces its fs and
+/// path imports with test globals, and runs one named scenario against real git and
+/// real files in the current directory. The model registry and notifications are mocks.
+const CHECKPOINT_HARNESS: &str = include_str!("fixtures/pi/checkpoint_harness.js");
+
+/// Run one named harness scenario in a throwaway repository.
+fn run_checkpoint_scenario(scenario: &str) {
     let repo = TempRepo::new();
-    repo.write(
-        "checkpoint.ts",
-        include_str!("../templates/pi/checkpoint.ts"),
-    );
-    repo.write(
-        "exercise.mjs",
-        r##"import assert from 'node:assert/strict';
-import * as fs from 'node:fs/promises';
-import { execFileSync, execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { stripTypeScriptTypes } from 'node:module';
-const exec = promisify(execFile);
-let action = 'normal';
-globalThis.__checkpointFs = { ...fs, writeFile: async (path, ...args) => {
-  await fs.writeFile(path, ...args);
-  if (action === 'staging-conflict' && String(path).includes('.HANDOFF.md.') && String(path).endsWith('.tmp')) {
-    await fs.writeFile('HANDOFF.md', 'Owner edit during staging\n');
-  }
-}};
-const source = (await fs.readFile('checkpoint.ts', 'utf8')).replace(
-  'import { lstat, open, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";',
-  'const { lstat, open, readFile, realpath, rename, unlink, writeFile } = globalThis.__checkpointFs;'
-);
-const { default: checkpoint } = await import('data:text/javascript;base64,' + Buffer.from(stripTypeScriptTypes(source)).toString('base64'));
-execFileSync('git', ['init', '-q'], { timeout: 5000 });
-execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'initial'], { timeout: 5000 });
-await fs.mkdir('nested');
-const plan = '- [ ] Ship change\n- [ ] Still pending\n';
-await fs.writeFile('implementation_plan.md', plan);
-await fs.writeFile('HANDOFF.md', 'Previous owner notes\n');
-const handlers = new Map();
-const commands = new Map();
-const notices = [];
-let calls = 0;
-let sessionId = 'current-session';
-const headings = ['Mission context', 'What shipped this session', 'What is mid-flight', 'What was tried and rejected', 'Open decisions', 'Build and test state', 'Files of interest', 'Continue here'];
-const body = headings.map(h => '## ' + h + '\nObserved session evidence.').join('\n\n');
-const pi = {
-  on: (name, handler) => handlers.set(name, handler),
-  registerCommand: (name, handler) => commands.set(name, handler),
-  exec: async (command, args, options) => {
-    try { const r = await exec(command, args, options); return { ...r, code: 0, killed: false }; }
-    catch (e) { return { stdout: '', code: 1, killed: false }; }
-  }
-};
-const ctx = {
-  cwd: process.cwd() + '/nested', hasUI: true,
-  ui: { notify: message => notices.push(message) }, model: { id: 'fixture' },
-  sessionManager: {
-    getSessionId: () => sessionId,
-    getBranch: () => [{id:'old', type:'message', message:{role:'assistant', content:[{type:'text',text:'cargo build passed; Ship change verified'}]}}, {id:'kept',type:'message',message:{role:'user',content:'continue'}}]
-  },
-  modelRegistry: {
-    hasConfiguredAuth: () => true,
-    complete: async (_model, input) => {
-      calls++;
-      assert.match(input.messages[0].content[0].text, /cargo build passed/);
-      if (action === 'conflict') await fs.writeFile('HANDOFF.md', 'Concurrent owner edit\n');
-      if (action === 'abort') controller.abort();
-      if (action === 'malformed') return {stopReason:'stop',content:[{type:'text',text:'unusable JSON'}]};
-      return {stopReason:'stop', content:[{type:'text',text:JSON.stringify({handoff:body,completedTasks:[
-        {line:1,text:'- [ ] Ship change',evidence:'cargo build passed'},
-        {line:2,text:'- [ ] Still pending',evidence:'invented success'},
-        {line:2,text:'- [ ] Still pending',evidence:'- [ ] Still pending'}
-      ]})}]};
-    }
-  }
-};
-checkpoint(pi);
-let controller = new AbortController();
-const event = () => ({reason:'threshold',signal:controller.signal,preparation:{tokensBefore:1000,settings:{keepRecentTokens:100},firstKeptEntryId:'kept'}});
-const handler = handlers.get('session_before_compact');
-assert.equal(await handler({...event(),reason:'manual'},ctx), undefined);
-assert.equal(calls, 0);
-assert.equal(await handler(event(),ctx), undefined);
-assert.equal(calls, 1);
-const handoff = await fs.readFile('HANDOFF.md','utf8');
-assert.match(handoff,/Previous owner notes/);
-assert.match(handoff,/<details>/);
-assert.match(handoff,/# Handoff —/);
-assert.match(handoff,/Resume in Pi/);
-assert.equal(await fs.readFile('implementation_plan.md','utf8'),'- [x] Ship change\n- [ ] Still pending\n');
-action = 'malformed';
-await handler(event(),ctx);
-assert.equal(await fs.readFile('HANDOFF.md','utf8'),handoff);
-await commands.get('checkpoint-auto').handler('off',ctx);
-await handler(event(),ctx);
-assert.equal(calls, 2);
-await commands.get('checkpoint-auto').handler('on',ctx);
-action = 'normal';
-sessionId = 'next-session';
-const stale = new Date(Date.now() - 31 * 86400000);
-await fs.utimes('HANDOFF.md',stale,stale);
-await handler(event(),ctx);
-const archives = (await fs.readdir('.')).filter(name => /^HANDOFF\.\d{4}-\d{2}-\d{2}\.md$/.test(name));
-assert.equal(archives.length,1);
-assert.match(await fs.readFile(archives[0],'utf8'),/Previous owner notes/);
-if (process.platform !== 'win32') assert.equal((await fs.stat(archives[0])).mode & 0o077,0);
-action = 'conflict';
-await handler(event(),ctx);
-assert.equal(await fs.readFile('HANDOFF.md','utf8'),'Concurrent owner edit\n');
-action = 'staging-conflict';
-await handler(event(),ctx);
-assert.equal(await fs.readFile('HANDOFF.md','utf8'),'Owner edit during staging\n');
-action = 'abort';
-await handler(event(),ctx);
-assert.equal(await fs.readFile('HANDOFF.md','utf8'),'Owner edit during staging\n');
-assert.equal(await fs.stat('.lgtm-checkpoint.lock').catch(() => null),null);
-console.log('checkpoint lifecycle checks passed');
-"##,
-    );
     let output = Command::new("node")
-        .arg("exercise.mjs")
+        .args([
+            "--input-type=module",
+            "-e",
+            CHECKPOINT_HARNESS,
+            CHECKPOINT_TEMPLATE,
+            scenario,
+        ])
         .current_dir(repo.path())
         .output()
         .expect("Node executes");
-    assert!(output.status.success(), "{output:?}");
+    assert!(
+        output.status.success(),
+        "checkpoint scenario {scenario} failed: {output:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains(&format!("checkpoint scenario passed: {scenario}")),
+        "checkpoint scenario {scenario} did not report success: {output:?}"
+    );
+}
+
+#[test]
+fn manual_compaction_and_toggle_are_respected() {
+    run_checkpoint_scenario("manual_and_toggle");
+}
+
+#[test]
+fn only_verified_exact_plan_lines_are_checked() {
+    run_checkpoint_scenario("plan_evidence_guard");
+}
+
+#[test]
+fn plan_task_records_are_bounded_and_validated() {
+    run_checkpoint_scenario("plan_task_bounds");
+}
+
+#[test]
+fn a_missing_plan_and_handoff_write_the_snapshot_only() {
+    run_checkpoint_scenario("missing_files_snapshot_only");
+}
+
+#[test]
+fn unusable_model_output_preserves_an_existing_handoff() {
+    run_checkpoint_scenario("unusable_output_preserves_handoff");
+}
+
+#[test]
+fn unusable_model_output_writes_the_fallback_without_a_handoff() {
+    run_checkpoint_scenario("fallback_without_handoff");
+}
+
+#[test]
+fn a_throwing_model_call_is_reported_without_files() {
+    run_checkpoint_scenario("model_call_throws");
+}
+
+#[test]
+fn a_working_directory_outside_git_is_skipped() {
+    run_checkpoint_scenario("outside_git_repository");
+}
+
+#[test]
+fn symlinks_directories_and_oversized_inputs_are_rejected() {
+    run_checkpoint_scenario("unsafe_and_oversized_files");
+}
+
+#[test]
+fn a_stale_handoff_moves_to_a_dated_file_without_overwriting() {
+    run_checkpoint_scenario("stale_archive_collisions");
+}
+
+#[test]
+fn archive_write_attempts_stay_bounded() {
+    run_checkpoint_scenario("archive_attempt_bounds");
+}
+
+#[test]
+fn archive_overflow_and_the_byte_budget_move_old_blocks_out() {
+    run_checkpoint_scenario("archive_overflow_and_budget");
+}
+
+#[test]
+fn concurrent_edits_and_aborts_never_overwrite_owner_changes() {
+    run_checkpoint_scenario("concurrent_edits_and_abort");
+}
+
+#[test]
+fn a_foreign_lock_blocks_the_checkpoint_and_lock_changes_survive() {
+    run_checkpoint_scenario("lock_contention_and_release");
+}
+
+#[test]
+fn write_failures_leave_no_partial_files() {
+    run_checkpoint_scenario("write_errors_are_isolated");
+}
+
+#[test]
+fn notification_failures_do_not_change_checkpoint_behavior() {
+    run_checkpoint_scenario("notification_failures");
+}
+
+#[test]
+fn unborn_degraded_and_unsafe_git_states_are_reported() {
+    run_checkpoint_scenario("unborn_and_degraded_git");
+}
+
+#[test]
+fn upstream_unpushed_and_detached_states_are_recorded() {
+    run_checkpoint_scenario("upstream_and_detached_head");
+}
+
+#[test]
+fn fenced_model_output_is_normalized_and_bounded() {
+    run_checkpoint_scenario("model_response_shapes");
+}
+
+#[test]
+fn evidence_rendering_is_bounded() {
+    run_checkpoint_scenario("evidence_bounds");
+}
+
+#[test]
+fn an_aborted_signal_stops_the_checkpoint() {
+    run_checkpoint_scenario("aborted_signal_is_respected");
+}
+
+#[test]
+fn unreadable_repository_paths_are_reported() {
+    run_checkpoint_scenario("unreadable_paths_are_reported");
 }

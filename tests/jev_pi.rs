@@ -26,6 +26,59 @@ fn run_bounded(command: &mut Command) -> ExitStatus {
     }
 }
 
+fn v0130_extension(current: &str) -> String {
+    let start = current
+        .find("  function boundReadContent(")
+        .expect("current read-content helper");
+    let end = current
+        .find("  async function readFile(")
+        .expect("readFile");
+    let old = r#"  function governedText(result, full, limit) {
+    const content = result?.structuredContent;
+    const binding = result?.details?.lgtmRead;
+    if (typeof content !== "string" || !record(binding) || binding.protocol !== "lgtm-pi-read-v1" || result.details?.lgtmAdvisory?.protocol !== "lgtm-pi-advisory-v1" || result.details?.truncation?.truncated) throw new Error("read_filtered");
+    if (binding.pathDigest !== createHash("sha256").update(full).digest("hex")) throw new Error("read_redirected");
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    if (binding.textDigest !== sha256 || content.includes("\0")) throw new Error("read_filtered");
+    const bytes = new TextEncoder().encode(content).length;
+    if (bytes > limit || content.split("\n").length > 1500) throw new Error("file_ineligible");
+    const visible = visibleText(result);
+    if (typeof visible !== "string" || visible.length > 256 * 1024 || !visible.includes(content)) throw new Error("read_filtered");
+    return { content, bytes, sha256 };
+  }
+
+"#;
+    format!("{}{}{}", &current[..start], old, &current[end..])
+}
+
+#[test]
+fn upgrades_v0130_project_and_global_jev_extensions_with_exact_backup() {
+    for (args, extension) in [
+        (
+            vec!["init", "--agent", "pi", "--accept-guesses"],
+            ".pi/extensions/lgtm.ts",
+        ),
+        (vec!["init", "--global"], ".pi/agent/extensions/lgtm.ts"),
+    ] {
+        let repo = TempRepo::new();
+        let mut init = Command::new(env!("CARGO_BIN_EXE_lgtm"));
+        init.args(args)
+            .env("HOME", repo.path())
+            .current_dir(repo.path());
+        assert!(run_bounded(&mut init).success(), "initial {extension}");
+        let current = repo.read(extension);
+        let old = v0130_extension(&current);
+        repo.write(extension, &old);
+        assert!(run_bounded(&mut init).success(), "upgrade {extension}");
+        assert_eq!(repo.read(extension), current, "old hook was not upgraded");
+        assert_eq!(
+            repo.read(&format!("{extension}.bak")),
+            old,
+            "backup changed"
+        );
+    }
+}
+
 #[test]
 fn generated_jev_tool_is_default_on_private_bounded_and_optional() {
     for scope in ["project", "global", "both"] {

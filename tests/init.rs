@@ -3,7 +3,9 @@
 //! Each test runs the compiled binary inside a throwaway temporary directory so
 //! filesystem effects are exercised end to end without touching the repo. The
 //! temp directory is created with a process- and counter-unique name and removed
-//! on drop so tests stay isolated and leave no residue.
+//! on drop so tests stay isolated and leave no residue. It is also the child
+//! `HOME`, so registration-capable commands record their installation under the
+//! temp root instead of the developer's real installation registry.
 
 use std::process::Command;
 
@@ -25,6 +27,7 @@ fn run_init(repo: &TempRepo) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["init", "--accept-guesses"])
         .current_dir(repo.path())
+        .env("HOME", repo.path())
         .output()
         .expect("lgtm binary should execute")
 }
@@ -41,6 +44,7 @@ fn run_init_codex(repo: &TempRepo) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["init", "--agent", "codex", "--accept-guesses"])
         .current_dir(repo.path())
+        .env("HOME", repo.path())
         .output()
         .expect("Codex init should execute")
 }
@@ -49,6 +53,7 @@ fn run_init_pi(repo: &TempRepo) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["init", "--agent", "pi", "--accept-guesses"])
         .current_dir(repo.path())
+        .env("HOME", repo.path())
         .output()
         .expect("Pi init should execute")
 }
@@ -355,6 +360,7 @@ fn codex_hook_command_runs_from_subdirectory_without_path_lookup() {
         .args(["init", "--agent", "codex", "--accept-guesses"])
         .env("LGTM_HOOK_BINARY", binary)
         .current_dir(repo.path())
+        .env("HOME", repo.path())
         .output()
         .expect("Codex init should execute");
     assert!(output.status.success(), "Codex init must succeed");
@@ -410,6 +416,7 @@ fn init_accepts_declared_pytest_without_guessing_other_tools() {
     let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .arg("init")
         .current_dir(repo.path())
+        .env("HOME", repo.path())
         .output()
         .expect("init executes");
     assert!(
@@ -1216,6 +1223,7 @@ fn run_init_rules_only(repo: &TempRepo, agent: &str) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["init", "--rules-only", "--agent", agent])
         .current_dir(repo.path())
+        .env("HOME", repo.path())
         .output()
         .expect("rules-only init should execute")
 }
@@ -1547,4 +1555,67 @@ fn rules_only_registers_no_hooks_for_codex() {
     assert!(!repo.exists(".codex/hooks.json"));
     assert!(!repo.exists(".lgtm/config.json"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("no hooks registered"));
+}
+
+/// List the installation records an `init` run wrote under the temp `HOME`.
+fn registry_records(repo: &TempRepo) -> Vec<std::path::PathBuf> {
+    let directory = repo.path().join(".local/state/lgtm/pi-installations");
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => panic!("registry should be readable: {error}"),
+    };
+    entries
+        .map(|entry| entry.expect("registry entry should be readable").path())
+        .collect()
+}
+
+/// A registration-capable `init` helper from this file, run inside one temp repo.
+type InitRun = fn(&TempRepo) -> std::process::Output;
+
+/// A real `init` registers the installation under the child `HOME`, and dropping
+/// the temp root takes the record with it. Without the `HOME` override each run
+/// appends a record for an already-deleted root to the developer's real
+/// registry, until that registry fills up and real `init` starts failing.
+#[test]
+fn real_init_registers_under_the_temp_home_and_cleanup_removes_the_record() {
+    let cases: [(&str, InitRun); 4] = [
+        ("claude", run_init),
+        ("codex", run_init_codex),
+        ("pi", run_init_pi),
+        ("codex rules-only", |repo| {
+            run_init_rules_only(repo, "codex")
+        }),
+    ];
+
+    for (case, run) in cases {
+        let repo = TempRepo::new();
+        let output = run(&repo);
+        assert!(output.status.success(), "{case} init must succeed");
+
+        let records = registry_records(&repo);
+        assert_eq!(
+            records.len(),
+            1,
+            "{case} init must register exactly one installation under the temp HOME"
+        );
+        let record: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&records[0]).expect("record should be readable"),
+        )
+        .expect("record should be valid JSON");
+        assert_eq!(
+            record["managed"]["root"].as_str(),
+            std::fs::canonicalize(repo.path())
+                .expect("temp root should canonicalize")
+                .to_str(),
+            "{case} registration must point at the temp root, not the real HOME"
+        );
+
+        let registry = repo.path().join(".local/state/lgtm/pi-installations");
+        drop(repo);
+        assert!(
+            !registry.exists(),
+            "{case} temp cleanup must remove the registration"
+        );
+    }
 }
