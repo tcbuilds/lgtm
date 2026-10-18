@@ -10,6 +10,7 @@ use common::TempRepo;
 fn run_init(repo: &TempRepo, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(args)
+        .env("HOME", repo.path())
         .current_dir(repo.path())
         .output()
         .expect("lgtm init should execute")

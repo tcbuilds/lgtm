@@ -44,6 +44,7 @@ fn codex_cli_conformance_is_opt_in_and_reports_not_applicable_cleanly() {
     let repo = TempRepo::new();
     let init = Command::new(env!("CARGO_BIN_EXE_lgtm"))
         .args(["init", "--agent", "codex", "--accept-guesses"])
+        .env("HOME", repo.path())
         .current_dir(repo.path())
         .output()
         .expect("Codex init starts");
