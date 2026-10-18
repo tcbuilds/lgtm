@@ -13,7 +13,7 @@ changes that require user action. Do not list planned work as a shipped feature.
 At release time, move these entries into a dated version section and link its
 notes in `doc/releases/`.
 
-## [v13.0.0](doc/releases/v13.0.0.md) — 2026-10-18
+## [v0.13.0](doc/releases/v0.13.0.md) — 2026-10-18
 
 ### Features
 
@@ -23,8 +23,8 @@ notes in `doc/releases/`.
 
 ### Breaking changes
 
-- Move from v0.12.6 to v13.0.0, not v0.13.0. Earlier advisory API drafts used
-  inline bodies; now pass a bounded workspace JSON file through `requestPath`.
+- Earlier advisory API drafts used inline bodies; now pass a bounded workspace
+  JSON file through `requestPath`.
   Keep `preview` and `allowSend` in outer arguments. Review still accepts `{}`.
 - Prepare private requests outside recorded tool arguments. References cannot
   erase earlier logs, and rejected inline calls may already be recorded by Pi.
