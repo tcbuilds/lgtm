@@ -6,8 +6,9 @@ global, rules-only, and config migration commands. `--dry-run` reports the
 planned installation without writing it. Reload or restart Pi after installation.
 
 This is separate from the LGTM enforcement extension. It can write documents in
-any active Git repository, even one without LGTM policy. It does not install or
-change `jev-auto`. That extension is a separate personal setup.
+any active Git repository, even one without LGTM policy. Checkpointing does not
+perform Jev routing. CLI init installs the separate embedded global Jev auto pair
+alongside the checkpoint; see [Jev auto setup](jev-auto.md#install-and-verify).
 
 ## What happens before automatic compaction
 

@@ -51,9 +51,11 @@ lgtm init --agent pi
 
 Pi init writes the LGTM extension under `.pi/extensions/`, merges unpinned Pi package defaults into `.pi/settings.json`, and merges the configured language-server routes into `.pi/pi-lsp.json`. The defaults include web search, GitHub PR status, and goal support. Init and refresh remove only the exact old version pins shipped by LGTM; other package versions, package filters, settings, timeouts, and named server routes are preserved. Run `pi update --extensions` to download newer packages; `lgtm update` changes declarations, not installed npm packages. After the project is trusted, Pi loads the extension and installs missing configured packages through its normal package flow. Language-server executables are not installed by LGTM or pi-lsp; use `/lsp` and `lgtm doctor` to identify missing commands.
 
+The binary also embeds the global Jev auto router and its gates helper. Init, update, and refresh install the pair under `~/.pi/agent/extensions/jev-auto/`; no source checkout or manual copy is required. Reload Pi after installation. Routing can use the configured classifier; CLI installation itself makes no model call. See [Jev auto setup and ownership](doc/jev-auto.md#install-and-verify).
+
 Pi packages and project extensions execute with the user's permissions. Review the generated files before trusting the project. Roll back by removing only LGTM's extension and generated package/server entries; do not delete either JSON file when it also contains user configuration.
 
-To take the standards as guidance with no hooks and nothing enforced, use `lgtm init --rules-only`. It writes `.claude/rules/` for Claude Code and Pi, or the concatenated `AGENTS.md` document with `--agent codex`. Shipped rule files are refreshed on init; changed files are saved once beside the rule as `<rule>.<sha256>.bak`, while custom filenames and Codex `AGENTS.md` content are preserved.
+To take the standards as guidance with no enforcement hooks, use `lgtm init --rules-only`. It writes `.claude/rules/` for Claude Code and Pi, or the concatenated `AGENTS.md` document with `--agent codex`. Shipped rule files are refreshed on init; changed files are saved once beside the rule as `<rule>.<sha256>.bak`, while custom filenames and Codex `AGENTS.md` content are preserved.
 
 ## Initialize All Harnesses Globally
 
@@ -257,7 +259,10 @@ Repository policy and command configuration are not redetected or rewritten.
 Unrelated settings, custom files, customized Pi extensions, and edited Codex
 files are preserved. Edited shipped rule files are backed up before replacement.
 Removed files and hook events stay disabled; refresh does not add missing
-previously installed hooks. Reload or restart running agent sessions afterward.
+previously installed hooks. The global Jev auto pair is installed on first refresh
+even without registered projects. Once managed, a removed component stays removed
+on refresh; explicit init can restore recognized files. Reload or restart running
+agent sessions afterward.
 
 **One-time migration from v0.12.1 or earlier:** after upgrading, run your original
 init command once for each existing installation (`lgtm init`,
