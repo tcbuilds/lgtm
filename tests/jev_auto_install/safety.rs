@@ -70,10 +70,28 @@ fn init_preflight_rejects_unsafe_destinations_before_scaffolding() {
         use std::os::unix::fs::FileTypeExt;
 
         let scratch = Scratch::new();
-        let entrypoint = path_in(&scratch.home(), ENTRYPOINT);
+        let home = scratch.home().join("long-socket-home-".repeat(8));
+        let entrypoint = path_in(&home, ENTRYPOINT);
+        assert!(entrypoint.as_os_str().as_encoded_bytes().len() > 108);
         fs::create_dir_all(entrypoint.parent().expect("parent")).expect("parent");
-        drop(std::os::unix::net::UnixListener::bind(&entrypoint).expect("socket"));
-        reject_init(&scratch, "index.ts");
+        // Bind a relative name in the child so long macOS HOME paths fit sun_path.
+        let mut binder = Command::new("python3");
+        binder
+            .args([
+                "-c",
+                "import socket; s=socket.socket(socket.AF_UNIX); s.bind('index.ts')",
+            ])
+            .current_dir(entrypoint.parent().expect("parent"));
+        let bound = run_bounded(&mut binder);
+        assert!(bound.status.success(), "socket fixture: {}", text(&bound));
+        let output = scratch.run_home(&["init"], &home);
+        assert!(
+            !output.status.success(),
+            "socket accepted: {}",
+            text(&output)
+        );
+        assert!(text(&output).contains("index.ts"), "{}", text(&output));
+        assert_work_untouched(&scratch, "socket");
         assert!(
             fs::symlink_metadata(&entrypoint)
                 .expect("socket")
