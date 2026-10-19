@@ -82,32 +82,56 @@ fn standalone_jev_auto_routes_each_step_and_filters_only_notices() {
     );
 }
 
-#[test]
-fn real_notice_producer_preserves_hard_and_capability_boundaries() {
+// Each scenario owns a separate process and temporary project.
+fn assert_notice_producer(scenario: &str) {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    for scenario in [
-        "eligible",
-        "hard",
-        "private",
-        "mixed",
-        "custom",
-        "capability",
-        "review",
-    ] {
-        let mut node = Command::new("node");
-        node.arg("--experimental-strip-types")
-            .arg(manifest.join("tests/fixtures/pi/notice_producer.cjs"))
-            .arg(env!("CARGO_BIN_EXE_lgtm"))
-            .arg(manifest.join("templates/pi/jev-auto-gates.ts"))
-            .arg(scenario)
-            .current_dir(manifest);
-        eprintln!("Running notice producer scenario: {scenario}");
-        let status = run_with_budget(&mut node, Duration::from_secs(75));
-        assert!(
-            status.success(),
-            "real producer scenario {scenario} failed: {status}"
-        );
-    }
+    let mut node = Command::new("node");
+    node.arg("--experimental-strip-types")
+        .arg(manifest.join("tests/fixtures/pi/notice_producer.cjs"))
+        .arg(env!("CARGO_BIN_EXE_lgtm"))
+        .arg(manifest.join("templates/pi/jev-auto-gates.ts"))
+        .arg(scenario)
+        .current_dir(manifest);
+    let status = run_with_budget(&mut node, Duration::from_secs(75));
+    assert!(
+        status.success(),
+        "real producer scenario {scenario} failed: {status}"
+    );
+}
+
+#[test]
+fn real_notice_producer_eligible() {
+    assert_notice_producer("eligible");
+}
+
+#[test]
+fn real_notice_producer_hard() {
+    assert_notice_producer("hard");
+}
+
+#[test]
+fn real_notice_producer_private() {
+    assert_notice_producer("private");
+}
+
+#[test]
+fn real_notice_producer_mixed() {
+    assert_notice_producer("mixed");
+}
+
+#[test]
+fn real_notice_producer_custom() {
+    assert_notice_producer("custom");
+}
+
+#[test]
+fn real_notice_producer_capability() {
+    assert_notice_producer("capability");
+}
+
+#[test]
+fn real_notice_producer_review() {
+    assert_notice_producer("review");
 }
 
 #[test]

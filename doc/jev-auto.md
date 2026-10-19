@@ -131,27 +131,51 @@ Use the normal command gate after the repair. Passing tests alone do not prove
 that no child processes were left behind. Ask the owner only when the repair
 needs new authority or a real product decision, not merely because a check failed.
 
-## Install and verify without a release
+<a id="install-and-verify-without-a-release"></a>
+
+## Install and verify
 
 Requirements: Pi 1.3.0, Node 24 for the local checks, and authenticated access to
 `openrouter/~typesafe/jev-latest`. Missing classifier access is nonblocking.
 
-This source is a standalone personal extension, not an automatically installed
-extra extension in every LGTM project. Install both source files together:
+The LGTM binary embeds both Jev auto source files. You do not need a source
+checkout or manual file copies. Every successful CLI `lgtm init` variant installs
+this global bundle:
 
-1. Save the existing `~/.pi/agent/extensions/jev-auto.ts` outside the extensions
-   directory as a rollback copy, then remove that old entry point.
-2. Create `~/.pi/agent/extensions/jev-auto/`.
-3. Copy `templates/pi/jev-auto.ts` there as `index.ts`.
-4. Copy `templates/pi/jev-auto-gates.ts` beside it, keeping that helper filename.
-5. Build this LGTM branch and refresh a managed LGTM extension with that binary.
-   Do not claim an old installed binary supports the new notice protocol.
-6. Use `/reload`, then `/jev-auto status`.
+```text
+~/.pi/agent/extensions/jev-auto/index.ts
+~/.pi/agent/extensions/jev-auto/jev-auto-gates.ts
+```
 
-The directory layout prevents Pi from loading the helper as a second extension.
-Do not keep both the old standalone entry point and the new directory enabled.
-Rollback removes the new directory and restores the saved standalone entry point.
-An older LGTM binary and its matching generated extension retain old behavior.
+`lgtm update` and `lgtm refresh` also install it on a fresh HOME, even when there
+are no registered project hooks. An already-current update still refreshes the
+bundle. `lgtm update --check` and init dry-runs do not write files. These commands
+do not call the classifier or change provider credentials.
+
+After installation, use `/reload`, then `/jev-auto status`. Routing notices appear
+when Pi prepares model steps, not while the CLI updater runs. The directory
+layout keeps the helper from loading as a second extension. Jev auto is global;
+it is not a separate copy in each project.
+
+LGTM tracks the exact installed file hashes in
+`~/.local/state/lgtm/jev-auto/receipt.json`. Unchanged managed copies can upgrade.
+Edited files are preserved as a complete pair and reported as not upgraded.
+Refresh also preserves a deliberately removed managed component; explicit init
+can restore it only when surviving files are still recognized. Disable the
+extension in Pi settings for a persistent runtime opt-out.
+
+An exact canonical legacy pair at `extensions/jev-auto.ts` and
+`extensions/jev-auto-gates.ts` can migrate automatically. Backups stay outside
+Pi's extension discovery directory. Unknown legacy entrypoints, orphan helpers,
+and invalid management receipts produce an actionable collision error rather
+than being overwritten or duplicated. Move a confirmed custom legacy setup to
+a backup outside the extensions directory before choosing managed installation.
+
+Publication is staged and checked for detected concurrent edits, but the two
+files and receipt are not one filesystem transaction. Follow any partial-write
+recovery message; do not replace a management receipt to claim custom files are
+owned. Keep your own matching files before a downgrade: an older binary may not
+manage this bundle. Restore those files or disable the directory, then reload Pi.
 
 Run the offline checks from the repository:
 
@@ -165,5 +189,5 @@ cargo build
 
 Verify in a throwaway trusted project: a second assistant step routes, an unchanged
 step skips, a heuristic notice does not call native confirmation, and a hard
-finding still blocks. Check session entries for silent outcomes. This change does
-not cut a release, create a tag, bump a version, or install a new production binary.
+finding still blocks. Check session entries for silent outcomes. Local verification
+does not itself publish a release or replace your installed production binary.

@@ -133,6 +133,13 @@ that scope. For project package or LSP rollback, remove only the generated entri
 and preserve unrelated JSON settings. No repository `.lgtm` configuration is
 written by global init.
 
+All CLI init modes also install the binary-embedded global Jev auto pair at
+`~/.pi/agent/extensions/jev-auto/index.ts` and `jev-auto-gates.ts`. Update and
+refresh install it on a fresh HOME without a registered project. No source
+checkout or provider call is needed for installation. Edited copies and managed
+removals are preserved; unsafe legacy conflicts are reported rather than creating
+duplicate entrypoints. See [Jev auto setup](../jev-auto.md#install-and-verify).
+
 A project-root Pi session uses the project extension. When Pi starts in a nested
 cwd, the project extension is not discovered, so the global extension prefers the
 nearest root with a regular `.lgtm/config.json`; partial `.lgtm` markers are only

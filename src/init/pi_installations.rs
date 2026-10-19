@@ -242,7 +242,11 @@ pub fn refresh() -> Result<String, String> {
     let home = std::env::var_os("HOME").ok_or("HOME is required to refresh Pi installations")?;
     let binary =
         std::env::current_exe().map_err(|error| format!("resolve executable ({error})"))?;
-    refresh_at(Path::new(&home), &binary)
+    let home = Path::new(&home);
+    let jev = super::jev_auto::install(home, super::jev_auto::Intent::Refresh, false)
+        .map_err(|error| format!("refresh global Jev auto ({error})"))?;
+    let registered = refresh_at(home, &binary)?;
+    Ok(format!("{registered}\n{jev}"))
 }
 
 fn refresh_at(home: &Path, binary: &Path) -> Result<String, String> {

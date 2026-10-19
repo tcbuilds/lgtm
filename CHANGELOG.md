@@ -13,6 +13,15 @@ changes that require user action. Do not list planned work as a shipped feature.
 At release time, move these entries into a dated version section and link its
 notes in `doc/releases/`.
 
+## [v0.14.1](doc/releases/v0.14.1.md) — 2026-10-19
+
+### Bug fixes
+
+- Embed both global Jev auto source files in the binary. Init, update, and refresh
+  install them without a source checkout or manual copies. Track unchanged managed
+  pairs for upgrades, preserve custom edits and managed removals, and report legacy
+  conflicts instead of enabling duplicate entrypoints.
+
 ## [v0.14.0](doc/releases/v0.14.0.md) — 2026-10-19
 
 ### Features

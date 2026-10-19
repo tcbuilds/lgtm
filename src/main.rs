@@ -301,6 +301,10 @@ fn run(command: Command) -> ExitCode {
                 eprintln!("init failed: {error}");
                 return ExitCode::FAILURE;
             }
+            if let Err(error) = init::jev_auto::install(&home, init::jev_auto::Intent::Init, true) {
+                eprintln!("init failed: global Jev auto ({error})");
+                return ExitCode::FAILURE;
+            }
             let agent = agent.unwrap_or(InitAgentKind::Claude);
             let result = if global {
                 run_init_global(dry_run)
@@ -313,13 +317,22 @@ fn run(command: Command) -> ExitCode {
                 return result;
             }
             match init::checkpoint::install(&home, dry_run) {
+                Ok(note) => println!("  note: {note}"),
+                Err(error) => {
+                    eprintln!(
+                        "init failed: global Pi checkpoint ({error}); earlier init outputs remain installed"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            }
+            match init::jev_auto::install(&home, init::jev_auto::Intent::Init, dry_run) {
                 Ok(note) => {
                     println!("  note: {note}");
                     result
                 }
                 Err(error) => {
                     eprintln!(
-                        "init failed: global Pi checkpoint ({error}); earlier init outputs remain installed"
+                        "init failed: global Jev auto ({error}); earlier init outputs remain installed"
                     );
                     ExitCode::FAILURE
                 }
