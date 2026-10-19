@@ -7,9 +7,14 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 const binary = path.resolve(process.argv[2]);
 const gateSource = path.resolve(process.argv[3]);
+const scenario = process.argv[4];
+assert.ok(["eligible", "hard", "private", "mixed", "custom", "capability", "review"].includes(scenario), "explicit notice-producer scenario required");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "lgtm-real-notice-"));
 const prior = process.cwd();
-const watchdog = setTimeout(() => process.exit(124), 60_000);
+const watchdog = setTimeout(() => {
+  console.error(`Notice producer scenario ${scenario} exceeded its 60-second budget`);
+  process.exit(124);
+}, 60_000);
 
 (async () => {
   process.chdir(root);
@@ -81,55 +86,64 @@ fs.writeFileSync(report,JSON.stringify(rules.map(make)));process.exit(rules.leng
     for (const handler of handlers.tool_call) response = await handler({ toolName: "bash", toolCallId: "commit", input: { command: "git commit -m fixture" } }, ctx);
     return response;
   }
-  process.env.SCANNER_CASE = "generic";
-  assert.equal(await call(), undefined, "actual eligible producer did not allow with notices");
-  assert.ok(providerInputs.length > 0, "actual notice never reached Jev filter");
-  assert.equal(entries.findLast((entry) => entry.customType === "jev-auto-gate").data.visibility, "silent");
-  assert.ok(fs.readFileSync(".scanner-count", "utf8").length >= 2, "actual staged scanner was not revalidated");
-  for (const mode of ["hard", "private", "mixed"]) {
-    process.env.SCANNER_CASE = mode;
+  // Establish the working notice path before checking a denial boundary.
+  if (scenario !== "review") {
+    process.env.SCANNER_CASE = "generic";
+    assert.equal(await call(), undefined, "actual eligible producer did not allow with notices");
+    assert.ok(providerInputs.length > 0, "actual notice never reached Jev filter");
+    assert.equal(entries.findLast((entry) => entry.customType === "jev-auto-gate").data.visibility, "silent");
+    assert.ok(fs.readFileSync(".scanner-count", "utf8").length >= 2, "actual staged scanner was not revalidated");
+  }
+  if (["hard", "private", "mixed"].includes(scenario)) {
+    process.env.SCANNER_CASE = scenario;
     const before = providerInputs.length;
     const denied = await call();
-    assert.equal(denied?.block, true, mode + " finding was allowed");
+    assert.equal(denied?.block, true, scenario + " finding was allowed");
     assert.match(denied.reason, /secret|credential|gitleaks|hard|built-in/i);
     assert.equal(providerInputs.length, before, "hard finding reached classifier");
   }
-  process.env.SCANNER_CASE = "generic";
-  fs.writeFileSync(".gitleaks.toml", "[[rules]]\nid='generic-api-key'\nregex='fixture'\n");
-  assert.equal((await call())?.block, true, "custom generic rule was allowed");
-  fs.rmSync(".gitleaks.toml");
-  for (const capability of [{ name: "unknown", version: 1 }, { name: "lgtm-pi-heuristic-notices", version: 2 }]) {
-    const payload = { type: "tool_call", toolName: "bash", input: { command: "git commit -m fixture", __lgtmPolicyInput: "lgtm-pi-policy-input-v1" }, cwd: root, sessionId: "real-producer", approvalCapability: capability };
-    const reply = JSON.parse(run(binary, ["hook", "pre-tool-use", "--adapter", "pi"], { input: JSON.stringify(payload) }));
-    assert.equal(reply.block, true, "unsupported capability selected notice policy");
-    assert.equal(reply.notices, undefined);
+  if (scenario === "custom") {
+    process.env.SCANNER_CASE = "generic";
+    fs.writeFileSync(".gitleaks.toml", "[[rules]]\nid='generic-api-key'\nregex='fixture'\n");
+    assert.equal((await call())?.block, true, "custom generic rule was allowed");
+    fs.rmSync(".gitleaks.toml");
   }
-  process.env.SCANNER_CASE = "clean";
-  const config = JSON.parse(fs.readFileSync(".lgtm/config.json", "utf8"));
-  config.severity_overrides["function-size"] = "error";
-  fs.writeFileSync(".lgtm/config.json", JSON.stringify(config));
-  run(binary, ["hook", "pre-tool-use", "--adapter", "pi"], { input: JSON.stringify({
-    type: "tool_call", toolName: "write", input: { path: "src/app.rs", content: "pub fn value() -> u8 { 2 }" },
-    cwd: root, sessionId: "real-producer",
-  }) });
-  fs.writeFileSync("src/app.rs", "pub fn value() -> u8 {\n    let value = 1;\n" + "    let value = value + 1;\n".repeat(31) + "    value\n}\n");
-  const deferred = spawnSync(binary, ["hook", "post-tool-use", "--adapter", "pi"], {
-    cwd: root, env: process.env, timeout: 12_000, encoding: "utf8",
-    input: JSON.stringify({ type: "tool_result", toolName: "write",
-      input: { path: "src/app.rs", content: "pub fn value() -> u8 { 2 }" },
-      cwd: root, sessionId: "real-producer" }),
-  });
-  assert.ok([0, 1].includes(deferred.status), "post-tool hook crashed");
-  assert.match(deferred.stderr, /review failed: entity=function-size/);
-  assert.ok(!deferred.stdout.includes('"block":true'), "review warning became a tool denial");
-  const records = fs.readdirSync(".lgtm/evidence").filter((name) => name.endsWith(".jsonl"))
-    .flatMap((name) => fs.readFileSync(path.join(".lgtm/evidence", name), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)));
-  const warning = records.findLast((entry) => entry.result?.rule_id === "function-size")?.result;
-  assert.equal(warning?.status, "warning");
-  assert.equal(warning?.severity, "error");
+  if (scenario === "capability") {
+    for (const capability of [{ name: "unknown", version: 1 }, { name: "lgtm-pi-heuristic-notices", version: 2 }]) {
+      const payload = { type: "tool_call", toolName: "bash", input: { command: "git commit -m fixture", __lgtmPolicyInput: "lgtm-pi-policy-input-v1" }, cwd: root, sessionId: "real-producer", approvalCapability: capability };
+      const reply = JSON.parse(run(binary, ["hook", "pre-tool-use", "--adapter", "pi"], { input: JSON.stringify(payload) }));
+      assert.equal(reply.block, true, "unsupported capability selected notice policy");
+      assert.equal(reply.notices, undefined);
+    }
+  }
+  if (scenario === "review") {
+    process.env.SCANNER_CASE = "clean";
+    const config = JSON.parse(fs.readFileSync(".lgtm/config.json", "utf8"));
+    config.severity_overrides["function-size"] = "error";
+    fs.writeFileSync(".lgtm/config.json", JSON.stringify(config));
+    run(binary, ["hook", "pre-tool-use", "--adapter", "pi"], { input: JSON.stringify({
+      type: "tool_call", toolName: "write", input: { path: "src/app.rs", content: "pub fn value() -> u8 { 2 }" },
+      cwd: root, sessionId: "real-producer",
+    }) });
+    fs.writeFileSync("src/app.rs", "pub fn value() -> u8 {\n    let value = 1;\n" + "    let value = value + 1;\n".repeat(31) + "    value\n}\n");
+    const deferred = spawnSync(binary, ["hook", "post-tool-use", "--adapter", "pi"], {
+      cwd: root, env: process.env, timeout: 12_000, encoding: "utf8",
+      input: JSON.stringify({ type: "tool_result", toolName: "write",
+        input: { path: "src/app.rs", content: "pub fn value() -> u8 { 2 }" },
+        cwd: root, sessionId: "real-producer" }),
+    });
+    assert.ok([0, 1].includes(deferred.status), "post-tool hook crashed");
+    assert.match(deferred.stderr, /review failed: entity=function-size/);
+    assert.ok(!deferred.stdout.includes('"block":true'), "review warning became a tool denial");
+    const records = fs.readdirSync(".lgtm/evidence").filter((name) => name.endsWith(".jsonl"))
+      .flatMap((name) => fs.readFileSync(path.join(".lgtm/evidence", name), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)));
+    const warning = records.findLast((entry) => entry.result?.rule_id === "function-size")?.result;
+    assert.equal(warning?.status, "warning");
+    assert.equal(warning?.severity, "error");
+    console.log("pi_preserves_error_severity_warning: PASS");
+  }
   assert.equal(confirms, 0);
-  console.log("pi_preserves_error_severity_warning: PASS");
-  console.log("Real notice producer integration passed: generic, hard, private, mixed, custom and capability boundaries.");
+  console.log(`Real notice producer scenario passed: ${scenario}`);
 })().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => {
   clearTimeout(watchdog); process.chdir(prior); fs.rmSync(root, { recursive: true, force: true });
 });

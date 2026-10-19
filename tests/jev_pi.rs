@@ -85,16 +85,29 @@ fn standalone_jev_auto_routes_each_step_and_filters_only_notices() {
 #[test]
 fn real_notice_producer_preserves_hard_and_capability_boundaries() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut node = Command::new("node");
-    node.arg("--experimental-strip-types")
-        .arg(manifest.join("tests/fixtures/pi/notice_producer.cjs"))
-        .arg(env!("CARGO_BIN_EXE_lgtm"))
-        .arg(manifest.join("templates/pi/jev-auto-gates.ts"))
-        .current_dir(manifest);
-    assert!(
-        run_with_budget(&mut node, Duration::from_secs(75)).success(),
-        "real producer integration failed"
-    );
+    for scenario in [
+        "eligible",
+        "hard",
+        "private",
+        "mixed",
+        "custom",
+        "capability",
+        "review",
+    ] {
+        let mut node = Command::new("node");
+        node.arg("--experimental-strip-types")
+            .arg(manifest.join("tests/fixtures/pi/notice_producer.cjs"))
+            .arg(env!("CARGO_BIN_EXE_lgtm"))
+            .arg(manifest.join("templates/pi/jev-auto-gates.ts"))
+            .arg(scenario)
+            .current_dir(manifest);
+        eprintln!("Running notice producer scenario: {scenario}");
+        let status = run_with_budget(&mut node, Duration::from_secs(75));
+        assert!(
+            status.success(),
+            "real producer scenario {scenario} failed: {status}"
+        );
+    }
 }
 
 #[test]
