@@ -432,6 +432,8 @@ fn copied_binary_installs_a_loadable_router_and_gates_bundle() {
     );
 }
 
+#[path = "jev_auto_install/legacy.rs"]
+mod legacy;
 #[path = "jev_auto_install/ownership.rs"]
 mod ownership;
 #[path = "jev_auto_install/safety.rs"]

@@ -40,6 +40,10 @@ const ALL: [Slot; 7] = [
     Slot::BackupGates,
 ];
 const PAIR: [(Slot, &str); 2] = [(Slot::Gates, GATES), (Slot::Index, INDEX)];
+const LEGACY_PAIR: [(Slot, Slot); 2] = [
+    (Slot::LegacyIndex, Slot::BackupIndex),
+    (Slot::LegacyGates, Slot::BackupGates),
+];
 
 struct Layout {
     home: PathBuf,
@@ -70,10 +74,20 @@ impl Layout {
         &self.paths[slot as usize]
     }
 
+    fn set_path(&mut self, slot: Slot, path: PathBuf) {
+        self.paths[slot as usize] = path;
+    }
+
     fn preflight(&self) -> Result<(), InitError> {
         let paths = self.paths.each_ref().map(PathBuf::as_path);
         fs::preflight_targets(&self.home, &paths)?;
         fs::preflight_file_targets(&paths)
+    }
+
+    fn preflight_one(&self, slot: Slot) -> Result<(), InitError> {
+        let path = self.path(slot);
+        fs::preflight_targets(&self.home, &[path])?;
+        fs::preflight_file_targets(&[path])
     }
 
     fn observe(&self) -> Result<Vec<Option<String>>, InitError> {
@@ -241,31 +255,56 @@ impl Change {
     }
 }
 
-fn legacy(layout: &Layout, snapshot: &[Option<String>]) -> Result<bool, InitError> {
-    let index = content(snapshot, Slot::LegacyIndex);
-    let gates = content(snapshot, Slot::LegacyGates);
-    if index.is_none() && gates.is_none() {
-        return Ok(false);
-    }
-    if index != Some(INDEX) || gates != Some(GATES) {
-        return Err(refuse(
-            layout.path(Slot::LegacyIndex),
-            format!(
-                "legacy Jev auto files {} and {} conflict; move them to a backup outside extensions before retrying",
-                layout.path(Slot::LegacyIndex).display(),
-                layout.path(Slot::LegacyGates).display()
-            ),
-        ));
-    }
-    for (slot, body) in [(Slot::BackupIndex, INDEX), (Slot::BackupGates, GATES)] {
-        if content(snapshot, slot).is_some_and(|old| old != body) {
-            return Err(refuse(
-                layout.path(slot),
-                "different legacy backup exists; preserve it outside this destination before retrying",
-            ));
+// Fixed and hash-addressed backups share this private directory.
+fn legacy_backup_dir(layout: &Layout) -> PathBuf {
+    let fixed = layout.path(Slot::BackupIndex);
+    fixed.parent().unwrap_or(fixed).to_path_buf()
+}
+
+// Preserve different fixed backups and resolve one stable archive for each source.
+fn plan_migration(layout: &mut Layout, snapshot: &mut [Option<String>]) -> Result<bool, InitError> {
+    let mut present = false;
+    for (legacy_slot, backup_slot) in LEGACY_PAIR {
+        let Some(actual) = content(snapshot, legacy_slot).map(str::to_owned) else {
+            continue;
+        };
+        present = true;
+        let collides = content(snapshot, backup_slot).is_some_and(|backup| backup != actual);
+        if collides {
+            resolve_hash_backup(layout, snapshot, backup_slot, &actual)?;
         }
     }
-    Ok(true)
+    Ok(present)
+}
+
+// A deterministic sibling makes retries reuse identical backups without a naming loop.
+fn resolve_hash_backup(
+    layout: &mut Layout,
+    snapshot: &mut [Option<String>],
+    backup_slot: Slot,
+    actual: &str,
+) -> Result<(), InitError> {
+    let sibling = {
+        let fixed = layout.path(backup_slot);
+        let Some(parent) = fixed.parent() else {
+            return Err(refuse(fixed, "Jev auto legacy backup has no parent"));
+        };
+        let Some(name) = fixed.file_name() else {
+            return Err(refuse(fixed, "Jev auto legacy backup has no file name"));
+        };
+        parent.join(format!("{}.{}.bak", name.to_string_lossy(), digest(actual)))
+    };
+    layout.set_path(backup_slot, sibling);
+    layout.preflight_one(backup_slot)?;
+    let observed = layout.read(backup_slot)?;
+    if observed.as_deref().is_some_and(|text| text != actual) {
+        return Err(refuse(
+            layout.path(backup_slot),
+            "different legacy backup exists at this hash-addressed path; preserve it outside this destination before retrying",
+        ));
+    }
+    snapshot[backup_slot as usize] = observed;
+    Ok(())
 }
 
 fn changes(
@@ -275,13 +314,19 @@ fn changes(
 ) -> Result<Vec<Change>, InitError> {
     let mut changes = Vec::new();
     if migrate {
-        for (slot, body) in [(Slot::BackupIndex, INDEX), (Slot::BackupGates, GATES)] {
-            if content(snapshot, slot).is_none() {
-                changes.push(Change::Write(slot, body.as_bytes().to_vec()));
+        for (legacy_slot, backup_slot) in LEGACY_PAIR {
+            let Some(actual) = content(snapshot, legacy_slot) else {
+                continue;
+            };
+            if content(snapshot, backup_slot).is_none() {
+                changes.push(Change::Write(backup_slot, actual.as_bytes().to_vec()));
             }
         }
-        changes.push(Change::Remove(Slot::LegacyIndex));
-        changes.push(Change::Remove(Slot::LegacyGates));
+        for (legacy_slot, _backup_slot) in LEGACY_PAIR {
+            if content(snapshot, legacy_slot).is_some() {
+                changes.push(Change::Remove(legacy_slot));
+            }
+        }
     }
     for (slot, body) in PAIR {
         if content(snapshot, slot) != Some(body) {
@@ -302,8 +347,7 @@ fn changes(
 }
 
 fn verify(layout: &Layout, snapshot: &[Option<String>], slot: Slot) -> Result<(), InitError> {
-    fs::preflight_targets(&layout.home, &[layout.path(slot)])?;
-    fs::preflight_file_targets(&[layout.path(slot)])?;
+    layout.preflight_one(slot)?;
     if layout.read(slot)?.as_deref() != content(snapshot, slot) {
         return Err(refuse(
             layout.path(slot),
@@ -311,6 +355,29 @@ fn verify(layout: &Layout, snapshot: &[Option<String>], slot: Slot) -> Result<()
         ));
     }
     Ok(())
+}
+
+fn remove_legacy(
+    layout: &Layout,
+    snapshot: &[Option<String>],
+    slot: Slot,
+) -> Result<(), InitError> {
+    let backup = match slot {
+        Slot::LegacyIndex => Slot::BackupIndex,
+        Slot::LegacyGates => Slot::BackupGates,
+        _ => unreachable!("only legacy sources are removed"),
+    };
+    layout.preflight_one(backup)?;
+    if layout.read(backup)?.as_deref() != content(snapshot, slot) {
+        return Err(refuse(
+            layout.path(backup),
+            "legacy backup changed concurrently; source was not removed",
+        ));
+    }
+    std::fs::remove_file(layout.path(slot)).map_err(|source| InitError::Write {
+        path: layout.path(slot).to_path_buf(),
+        source,
+    })
 }
 
 fn publish(
@@ -347,12 +414,7 @@ fn publish(
         let slot = change.slot();
         let result = verify(layout, snapshot, slot).and_then(|()| match (change, staged) {
             (Change::Write(_, _), Some(file)) => fs::commit_write(file),
-            (Change::Remove(_), None) => {
-                std::fs::remove_file(layout.path(slot)).map_err(|source| InitError::Write {
-                    path: layout.path(slot).to_path_buf(),
-                    source,
-                })
-            }
+            (Change::Remove(_), None) => remove_legacy(layout, snapshot, slot),
             _ => unreachable!("only writes have staged files"),
         });
         if let Err(error) = result {
@@ -379,38 +441,54 @@ fn refuse(path: &Path, reason: impl Into<String>) -> InitError {
 /// CLI installation performs no provider calls and never reads a source checkout.
 /// The receipt and file replacements are cooperative checks, not one transaction.
 pub fn install(home: &Path, intent: Intent, dry_run: bool) -> Result<String, InitError> {
-    let layout = Layout::new(home)?;
+    let mut layout = Layout::new(home)?;
     layout.preflight()?;
-    let snapshot = layout.observe()?;
+    let mut snapshot = layout.observe()?;
     let receipt = Receipt::parse(&layout, content(&snapshot, Slot::Receipt))?;
-    let migrate = legacy(&layout, &snapshot)?;
+    let migrate = plan_migration(&mut layout, &mut snapshot)?;
     let decision = decide(&snapshot, receipt.as_ref(), intent);
     if !decision.publish {
         if migrate {
             return Err(refuse(
                 layout.path(Slot::Index),
                 format!(
-                    "recognized legacy Jev auto pair at {} conflicts with the preserved destination; back up conflicting files outside extensions before retrying",
-                    layout.path(Slot::LegacyIndex).display()
+                    "legacy Jev auto files {} and {} cannot be archived into the preserved destination; back up conflicting files outside extensions before retrying",
+                    layout.path(Slot::LegacyIndex).display(),
+                    layout.path(Slot::LegacyGates).display()
                 ),
             ));
         }
         return Ok(decision.note.to_string());
     }
     let changes = changes(&snapshot, receipt.as_ref(), migrate)?;
+    let backup_directory = migrate.then(|| legacy_backup_dir(&layout));
     if dry_run {
-        return Ok(format!(
+        let mut note = format!(
             "would install or refresh global Jev auto; {decision_note}",
             decision_note = decision.note
-        ));
+        );
+        if let Some(directory) = &backup_directory {
+            note.push_str(&format!(
+                "; would back up flat legacy files in {}",
+                directory.display()
+            ));
+        }
+        return Ok(note);
     }
     if changes.is_empty() {
         return Ok("global Jev auto already current; no files changed".to_string());
     }
     publish(&layout, &snapshot, changes)?;
-    Ok(format!(
+    let mut note = format!(
         "{} at {}",
         decision.note,
         layout.path(Slot::Index).display()
-    ))
+    );
+    if let Some(directory) = &backup_directory {
+        note.push_str(&format!(
+            "; flat legacy files were backed up in {}",
+            directory.display()
+        ));
+    }
+    Ok(note)
 }

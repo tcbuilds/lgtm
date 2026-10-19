@@ -164,12 +164,22 @@ Refresh also preserves a deliberately removed managed component; explicit init
 can restore it only when surviving files are still recognized. Disable the
 extension in Pi settings for a persistent runtime opt-out.
 
-An exact canonical legacy pair at `extensions/jev-auto.ts` and
-`extensions/jev-auto-gates.ts` can migrate automatically. Backups stay outside
-Pi's extension discovery directory. Unknown legacy entrypoints, orphan helpers,
-and invalid management receipts produce an actionable collision error rather
-than being overwritten or duplicated. Move a confirmed custom legacy setup to
-a backup outside the extensions directory before choosing managed installation.
+`lgtm update` also migrates old flat `extensions/jev-auto.ts` and
+`extensions/jev-auto-gates.ts` files automatically. This includes older or edited
+versions, a complete pair, and either file on its own. It saves the exact bytes
+under `~/.local/state/lgtm/jev-auto/legacy/` before removing the old files from
+Pi's extension discovery directory. It then installs the current bundle. Custom
+code is saved, not merged into the new extension.
+
+An identical backup is kept. A different existing backup is never overwritten;
+LGTM chooses a hash-suffixed backup name instead. The update reports the backup
+directory. No manual file move, source checkout, or copy is needed for this
+migration. Init and refresh use the same process.
+
+Unsafe symlinks, special files, unreadable or invalid source text, invalid
+receipts, and contradictory backup contents still cause an error without
+silently replacing data. Custom files in the newer `jev-auto/` directory retain
+their existing ownership protection; legacy migration does not overwrite them.
 
 Publication is staged and checked for detected concurrent edits, but the two
 files and receipt are not one filesystem transaction. Follow any partial-write

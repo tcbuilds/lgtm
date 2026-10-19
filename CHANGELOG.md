@@ -13,6 +13,15 @@ changes that require user action. Do not list planned work as a shipped feature.
 At release time, move these entries into a dated version section and link its
 notes in `doc/releases/`.
 
+## [v0.14.2](doc/releases/v0.14.2.md) — 2026-10-19
+
+### Bug fixes
+
+- Finish old flat Jev extension migration inside `lgtm update`. Back up older,
+  edited, or partial legacy source files outside Pi discovery, preserve existing
+  backups, and install the current bundle without manual file moves. Unsafe
+  destinations and custom directory overrides remain protected.
+
 ## [v0.14.1](doc/releases/v0.14.1.md) — 2026-10-19
 
 ### Bug fixes
