@@ -137,8 +137,10 @@ All CLI init modes also install the binary-embedded global Jev auto pair at
 `~/.pi/agent/extensions/jev-auto/index.ts` and `jev-auto-gates.ts`. Update and
 refresh install it on a fresh HOME without a registered project. No source
 checkout or provider call is needed for installation. Edited copies and managed
-removals are preserved; unsafe legacy conflicts are reported rather than creating
-duplicate entrypoints. See [Jev auto setup](../jev-auto.md#install-and-verify).
+removals are preserved. Old flat Jev source files are automatically backed up
+outside extension discovery and replaced with the current bundle, including
+older or partial legacy setups. Unsafe filesystem states and custom directory
+conflicts remain protected. See [Jev auto setup](../jev-auto.md#install-and-verify).
 
 A project-root Pi session uses the project extension. When Pi starts in a nested
 cwd, the project extension is not discovered, so the global extension prefers the
