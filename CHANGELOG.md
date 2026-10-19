@@ -13,6 +13,34 @@ changes that require user action. Do not list planned work as a shipped feature.
 At release time, move these entries into a dated version section and link its
 notes in `doc/releases/`.
 
+## [v0.14.0](doc/releases/v0.14.0.md) — 2026-10-19
+
+### Features
+
+- Install a personal Pi checkpoint extension through `lgtm init`. Before
+  automatic compaction, it saves a bounded handoff and can update an existing
+  plan using session evidence. It makes an extra model request and can add cost.
+- Add per-step tool routing and quiet heuristic-notice presentation through the
+  separately installed Jev auto extension. Hard findings and required checks
+  remain deterministic; classifier output never grants permission.
+
+### Bug fixes
+
+- Isolate test installation registries, distinguish registry limits from
+  timeouts, and retain missing-project records without recreating hooks.
+- Reserve time for test-command cleanup and reap child processes without
+  weakening containment checks.
+- Run notice-producer scenarios in separate bounded processes so a shared
+  timeout cannot expire across unrelated cases; failures name the scenario.
+
+### Upgrade notes
+
+- Run `lgtm update`, then `/reload` or restart Pi for refreshed managed hooks.
+  Run `lgtm init --agent pi` to install the new checkpoint extension; update
+  does not install or refresh that separate file yet.
+- Jev auto remains a manual two-file personal installation. See the release
+  notes for its directory layout, privacy limits, and rollback steps.
+
 ## [v0.13.1](doc/releases/v0.13.1.md) — 2026-10-18
 
 ### Bug fixes
