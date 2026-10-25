@@ -2,12 +2,11 @@
 
 use serde_json::{Value, json};
 
-use super::{
-    ApprovalCapability, EncodedResponse, HookAdapter, HookEvent, HookRequest, HookResponse,
-    OutputStream,
-};
+use super::{EncodedResponse, HookAdapter, HookEvent, HookRequest, HookResponse, OutputStream};
 
 const MAX_INPUT_BYTES: usize = 1_024 * 1_024;
+const NOTICE_PROTOCOL: &str = "lgtm-pi-heuristic-notices";
+const NOTICE_VERSION: u64 = 1;
 
 /// Adapter for the verified Pi extension event contracts.
 #[derive(Debug, Clone, Copy, Default)]
@@ -85,9 +84,6 @@ impl HookAdapter for PiAdapter {
             agent_id: None,
             agent_type: None,
             stop_hook_active: None,
-            approval_capability: value
-                .get("approvalCapability")
-                .and_then(ApprovalCapability::from_value),
         })
     }
 
@@ -102,28 +98,6 @@ impl HookAdapter for PiAdapter {
                 stream: OutputStream::Stdout,
                 exit_code: 0,
             }),
-            HookResponse::Deny { reason } => {
-                if event != HookEvent::PreToolUse {
-                    return Err(invalid_combination(event, "Deny"));
-                }
-                stdout_json(json!({"block": true, "reason": reason}))
-            }
-            HookResponse::Ask { .. } => Err(invalid_combination(event, "Ask")),
-            HookResponse::FindingApprovalRequired(challenge) => {
-                if event != HookEvent::PreToolUse {
-                    return Err(invalid_combination(event, "FindingApprovalRequired"));
-                }
-                stdout_json(json!({
-                    "approval": {
-                        "findings": challenge.findings,
-                        "identity": challenge.identity,
-                        "protocol": ApprovalCapability::NAME,
-                        "version": ApprovalCapability::VERSION,
-                    },
-                    "block": true,
-                    "reason": "staged commit contains redacted heuristic findings requiring confirmation",
-                }))
-            }
             HookResponse::HeuristicNotices(notices) => {
                 if !matches!(
                     event,
@@ -132,8 +106,8 @@ impl HookAdapter for PiAdapter {
                     return Err(invalid_combination(event, "HeuristicNotices"));
                 }
                 stdout_json(json!({"notices": {
-                    "protocol": ApprovalCapability::NOTICE_NAME,
-                    "version": ApprovalCapability::VERSION,
+                    "protocol": NOTICE_PROTOCOL,
+                    "version": NOTICE_VERSION,
                     "identity": notices.identity,
                     "items": notices.items,
                 }}))
@@ -165,7 +139,6 @@ impl HookAdapter for PiAdapter {
                 }))
             }
             HookResponse::InjectContext(_) => Err(invalid_combination(event, "InjectContext")),
-            HookResponse::BlockStop { .. } => Err(invalid_combination(event, "BlockStop")),
             HookResponse::Summary(_) => Err(invalid_combination(event, "Summary")),
         }
     }
@@ -231,7 +204,6 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::{PiApprovalChallenge, PiApprovalFinding};
 
     fn exact(event: HookEvent, response: HookResponse, expected: &str) {
         let encoded = PiAdapter
@@ -243,15 +215,8 @@ mod tests {
     }
 
     #[test]
-    fn encodes_pi_allow_and_tool_denial() {
+    fn encodes_pi_allow() {
         exact(HookEvent::PreToolUse, HookResponse::Allow, "");
-        exact(
-            HookEvent::PreToolUse,
-            HookResponse::Deny {
-                reason: "blocked by policy".to_string(),
-            },
-            r#"{"block":true,"reason":"blocked by policy"}"#,
-        );
     }
 
     #[test]
@@ -291,67 +256,6 @@ mod tests {
         assert_eq!(request.tool_input, Some(json!({"path": "src/lib.rs"})));
         assert_eq!(request.cwd.as_deref(), Some("/repo"));
         assert_eq!(request.session_id.as_deref(), Some("session-1"));
-        assert_eq!(request.approval_capability, None);
-    }
-
-    #[test]
-    fn negotiates_only_the_exact_versioned_approval_capability() {
-        let request = PiAdapter
-            .parse_request(
-                HookEvent::PreToolUse,
-                r#"{"type":"tool_call","toolName":"bash","input":{"command":"git commit -m test"},"cwd":"/repo","sessionId":"session-1","approvalCapability":{"name":"lgtm-pi-finding-approval","version":1}}"#,
-            )
-            .expect("capability payload parses");
-        assert_eq!(
-            request.approval_capability,
-            Some(ApprovalCapability::PiFindingApprovalV1)
-        );
-
-        for capability in [
-            r#"{"name":"lgtm-pi-finding-approval","version":2}"#,
-            r#"{"name":"unknown","version":1}"#,
-            r#"{"name":"lgtm-pi-finding-approval","version":1,"extra":true}"#,
-        ] {
-            let payload = format!(
-                r#"{{"type":"tool_call","toolName":"bash","input":{{"command":"git commit -m test"}},"cwd":"/repo","sessionId":"session-1","approvalCapability":{capability}}}"#
-            );
-            let request = PiAdapter
-                .parse_request(HookEvent::PreToolUse, &payload)
-                .expect("unknown capability remains an ordinary request");
-            assert_eq!(request.approval_capability, None);
-        }
-    }
-
-    #[test]
-    fn encodes_redacted_finding_approval_only_for_pi_pre_tool_use() {
-        let challenge = PiApprovalChallenge {
-            identity: "a".repeat(64),
-            findings: vec![PiApprovalFinding {
-                rule_id: "generic-api-key".to_string(),
-                path: "src/app.rs".to_string(),
-                start_line: 4,
-                start_column: 2,
-                end_line: 4,
-                end_column: 9,
-                candidate_id: "b".repeat(64),
-            }],
-        };
-        exact(
-            HookEvent::PreToolUse,
-            HookResponse::FindingApprovalRequired(challenge),
-            r#"{"approval":{"findings":[{"candidateId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","endColumn":9,"endLine":4,"path":"src/app.rs","ruleId":"generic-api-key","startColumn":2,"startLine":4}],"identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","protocol":"lgtm-pi-finding-approval","version":1},"block":true,"reason":"staged commit contains redacted heuristic findings requiring confirmation"}"#,
-        );
-        assert!(
-            PiAdapter
-                .encode_response(
-                    HookEvent::PostToolUse,
-                    HookResponse::FindingApprovalRequired(PiApprovalChallenge {
-                        identity: "a".repeat(64),
-                        findings: Vec::new(),
-                    }),
-                )
-                .is_err()
-        );
     }
 
     #[test]
@@ -392,7 +296,7 @@ mod tests {
             PiAdapter
                 .encode_response(
                     HookEvent::Stop,
-                    HookResponse::Deny {
+                    HookResponse::PostToolFeedback {
                         reason: "no".to_string(),
                     },
                 )

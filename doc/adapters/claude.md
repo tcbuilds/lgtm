@@ -1,72 +1,60 @@
-# Claude Code staged-commit confirmation
+# Claude Code observer hooks
 
-LGTM scans the **staged index**, not unstaged working-tree bytes, before a
-supported direct `git commit`. Required repository checks run first. Scanner
-errors and incomplete scans block commits. Detected provider credentials, private
-keys, and findings from unknown or custom rules are not eligible for approval.
-Trusted scanner configuration and ignore rules still apply. Only findings from the default
-built-in `generic-api-key` rule can request confirmation.
+This guide describes the observer-only source change. It is not a claim that
+an installed release or running Claude session has already changed.
 
-In Claude's `default` or `acceptEdits` permission mode, eligible findings produce
-native PreToolUse `permissionDecision: "ask"`. The prompt names redacted
-rule/path/line/candidate identifiers, not secret values or scanner descriptions.
-`updatedInput` preserves the other Bash input fields and replaces the command
-with the absolute LGTM executable's `guarded-commit --request ...` invocation.
-Other permission modes, including missing or unknown modes, deny.
+## Automatic behavior
 
-## Exact content, not a waiver
+- Session and prompt hooks provide relevant engineering guidance.
+- PreToolUse records a baseline and shell tracking when possible. It does not
+  deny commands, reject edit paths, rewrite Git commands, or request approval.
+- PostToolUse can scan touched files and record findings. Its response is
+  nonblocking `hookSpecificOutput.additionalContext`, not a block decision.
+- Stop reports that no completion checks ran. It does not inspect claims, run
+  repository commands, or prevent completion.
 
-The request contains bounded commit arguments and an expected identity. It is a
-**precondition, not an approval token**. No file, transcript entry, `approved`
-flag, or previous invocation grants authority. Direct agent requests for the
-wrapper are checked again and still require native Ask.
+A post-tool finding cannot undo a completed side effect. LGTM says this in the
+feedback. Secret values remain redacted.
 
-Immediately before executing Git, the wrapper reruns the repository gates and
-staged scan. It requires the same pending assessment, including repository,
-HEAD, index/tree, arguments, findings, scanner/Git identity, scanner config and
-ignore bytes, LGTM policy/config/waivers/execution policy, and session. It also
-binds the LGTM executable bytes. Any drift, including becoming clean, requires a
-new ordinary commit attempt. It executes fixed allowlisted Git arguments without
-a shell, with a 60-second execution deadline. Errors are nonzero; after an
-execution timeout or error, inspect HEAD before retrying because Git may already
-have created the commit.
+## Request a check
 
-Stage separately, then issue one direct commit. Compound shell commands,
-repository selectors, content-selection flags, and noncanonical wrapper calls
-are unsupported. Confirmation applies only to that commit; it does not disable
-secret checking in later hooks or create a rule waiver.
+Run verification when you or CI need it:
 
-## Trust boundary and limitations
+```bash
+lgtm check --tier full
+lgtm check --workspace WORKSPACE_ID --tier targeted
+```
 
-Claude's trusted permission system owns approval. LGTM does not invent an
-`interactive` hook field or treat `permission_mode` as proof of a human prompt.
-Unattended sessions without a permission decision deny the Ask. Externally
-configured PermissionRequest hooks or SDK permission callbacks can make their
-own decisions; do not configure automatic approval for this command if human
-confirmation is required. See the official
+Use an actual workspace ID from `.lgtm/config.json`. Error-level failed checks
+return exit 2. Operational errors return nonzero. Warnings and unavailable
+checks remain visible; an exit-0 result alone is not proof that every check
+passed. Evidence is stored under `.lgtm/evidence/`.
+
+Commits use ordinary Git commands. The guarded-commit wrapper, staged-index
+assessment, approval challenges, and post-confirmation revalidation are removed.
+There is no waiver or permissive mode that restores that automatic flow.
+
+## Host permissions and privacy
+
+Claude still owns its permissions and sandbox. LGTM does not grant permission,
+bypass a denied operation, or remove owner-authored settings. Init's existing
+settings merge and ownership protections remain separate from the observer
+response. See the official
 [hooks reference](https://code.claude.com/docs/en/hooks).
 
-This is not an OS sandbox against a malicious same-UID process, an altered hook
-configuration, arbitrary indirect execution, or a replacement executable. Git
-hooks and concurrent processes can still mutate state after the final check;
-revalidation narrows that window but is not an atomic Git transaction. Staged
-scanning is added/changed-content coverage, not an audit of all history. Trusted
-scanner suppressions remain operator policy.
+Timeouts, bounded input/output, secret redaction, and process cleanup remain in
+place. A failure in LGTM must be visible without vetoing the development tool.
 
 ## Verification and rollout
 
-Run `cargo test --test guarded_commit --test commit_secret_scope` with gitleaks
-installed. Tests cover real scanner results and wrapper execution; they do not
-prove Claude's native UI behavior.
+Run `cargo test --test pre_tool_use --test hook_safety --test adapter_golden
+--test post_tool_use --test commands` for the observer and explicit-check
+contracts. Tests send hook requests; they do not execute destructive commands.
 
-Before relying on interactive approval, use a disposable repository and the
-installed Claude version to verify: the rewritten command is shown at Ask;
-Cancel does not commit; confirming unchanged synthetic heuristic content
-commits; changing the index while the prompt is open prevents execution; and
-headless/bypass-permission runs do not silently authorize unresolved findings.
-Native interactive smoke verification remains a manual release check.
+Source changes alone do not replace an installed binary or loaded hooks.
+Update and refresh only through an owner-approved rollout, then restart the
+agent as needed. Keep custom settings and existing backups. Rollback requires
+the matching prior binary and hook files; it restores the older behavior.
 
-Install the rebuilt binary and retain the normal Claude PreToolUse hook. No
-approval storage or configuration migration is required. Roll back the binary
-and hook together to the previous supported version; unresolved findings then
-remain denied rather than approved.
+See [the architecture decision](../adr/0017-observer-hooks-and-explicit-checks.md)
+for scope and trade-offs.

@@ -30,6 +30,29 @@ fn run_hook(repo: &TempRepo, event: &str, payload: Value) -> Output {
     child.wait_with_output().expect("Codex hook completes")
 }
 
+fn run_check(repo: &TempRepo) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["check", "--tier", "full"])
+        .current_dir(repo.path())
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", repo.path().join("bin").display()),
+        )
+        .output()
+        .expect("explicit check completes")
+}
+
+fn assert_completion_notice(repo: &TempRepo, output: &Output) {
+    assert!(output.status.success(), "completion failed: {output:?}");
+    let response: Value = serde_json::from_slice(&output.stdout).expect("completion notice JSON");
+    assert!(response.get("decision").is_none());
+    let message = response["systemMessage"]
+        .as_str()
+        .expect("completion message");
+    assert!(message.contains("no checks ran"), "{message}");
+    assert!(!repo.exists(".lgtm/evidence/evidence.jsonl"));
+}
+
 fn tool_payload(repo: &TempRepo, event: &str, tool: &str, path: &str) -> Value {
     json!({
         "hookEventName": event,
@@ -51,7 +74,7 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-if grep -q 'PLANTED_SECRET_MARKER' "$source"; then
+if grep -q 'PLANTED_''SECRET_MARKER' "$source"; then
   printf '[{"RuleID":"test-secret","Description":"test finding","File":"%s","StartLine":1}]' "$source" > "$report"
   exit 2
 fi
@@ -144,7 +167,7 @@ fn stop_payload(repo: &TempRepo, transcript_path: Option<Value>) -> Value {
 }
 
 #[test]
-fn codex_chat_only_lifecycle_is_silent_and_omits_unknown_intent() {
+fn codex_chat_only_lifecycle_reports_without_checks_and_omits_unknown_intent() {
     let repo = TempRepo::new();
     initialize_repo(&repo);
 
@@ -162,27 +185,21 @@ fn codex_chat_only_lifecycle_is_silent_and_omits_unknown_intent() {
     assert!(!String::from_utf8_lossy(&prompt.stdout).contains("Detected task intent: unknown"));
 
     let stop = run_hook(&repo, "stop", stop_payload(&repo, None));
-    assert!(stop.status.success());
-    assert!(
-        stop.stdout.is_empty(),
-        "stdout: {}",
-        String::from_utf8_lossy(&stop.stdout)
-    );
-    assert!(
-        stop.stderr.is_empty(),
-        "stderr: {}",
-        String::from_utf8_lossy(&stop.stderr)
-    );
+    assert_completion_notice(&repo, &stop);
+    assert!(stop.stderr.is_empty(), "stderr: {:?}", stop.stderr);
 }
 
 // Production command containment is available on Linux; macOS must surface
 // the unavailable-containment result rather than assert a command exit status.
 #[cfg(target_os = "linux")]
 #[test]
-fn codex_exec_command_commit_runs_full_gate() {
+fn codex_commit_observation_does_not_run_an_explicit_check() {
     let repo = TempRepo::new();
     repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
-    repo.write("bin/full-check", "#!/bin/sh\nexit 9\n");
+    repo.write(
+        "bin/full-check",
+        "#!/bin/sh\nprintf checked > full-check-ran\nexit 9\n",
+    );
     let executable = repo.path().join("bin/full-check");
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
         .expect("fixture executable");
@@ -226,18 +243,22 @@ fn codex_exec_command_commit_runs_full_gate() {
         }),
     );
 
-    assert!(output.status.success(), "Codex deny uses a JSON response");
-    let response: Value = serde_json::from_slice(&output.stdout).expect("deny JSON");
-    assert_eq!(response["hookSpecificOutput"]["permissionDecision"], "deny");
-    let reason = response["hookSpecificOutput"]["permissionDecisionReason"]
-        .as_str()
-        .expect("deny reason");
-    assert!(reason.contains("pre-commit full gate failed"));
-    assert!(reason.contains("exit status 9"));
+    assert!(output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "commit observation emitted a permission response"
+    );
+    assert!(!repo.exists("full-check-ran"));
+    assert!(!repo.exists(".lgtm/evidence/evidence.jsonl"));
+
+    let check = run_check(&repo);
+    assert_eq!(check.status.code(), Some(2));
+    assert_eq!(repo.read("full-check-ran"), "checked");
+    assert!(String::from_utf8_lossy(&check.stdout).contains("exit status 9"));
 }
 
 #[test]
-fn codex_config_only_turn_has_no_test_association_noise() {
+fn codex_config_only_turn_reports_without_completion_checks() {
     let repo = TempRepo::new();
     repo.write("settings.json", "{}\n");
     initialize_repo(&repo);
@@ -245,13 +266,11 @@ fn codex_config_only_turn_has_no_test_association_noise() {
 
     record_edit(&repo, "settings.json", "{\"enabled\":true}\n", true);
     let stop = run_hook(&repo, "stop", stop_payload(&repo, Some(transcript)));
-    assert!(stop.status.success());
-    let response: Value = serde_json::from_slice(&stop.stdout).expect("Stop summary JSON");
-    assert_eq!(response["systemMessage"], "lgtm: passed");
+    assert_completion_notice(&repo, &stop);
 }
 
 #[test]
-fn codex_source_edit_keeps_actionable_test_association_signal() {
+fn codex_source_edit_keeps_post_tool_test_association_feedback() {
     let repo = TempRepo::new();
     repo.write("src/lib.rs", "pub fn value() -> u8 { 1 }\n");
     initialize_repo(&repo);
@@ -259,15 +278,24 @@ fn codex_source_edit_keeps_actionable_test_association_signal() {
 
     record_edit(&repo, "src/lib.rs", "pub fn value() -> u8 { 2 }\n", true);
     let stop = run_hook(&repo, "stop", stop_payload(&repo, Some(transcript)));
-    assert!(stop.status.success());
-    let response: Value = serde_json::from_slice(&stop.stdout).expect("Stop summary JSON");
-    let summary = response["systemMessage"].as_str().expect("summary text");
-    assert!(summary.contains("UNVERIFIED new-behavior-tests-required"));
-    assert!(summary.contains("src/lib.rs"));
+    assert_completion_notice(&repo, &stop);
+    let records = repo.read(".lgtm/evidence/current-task.results.jsonl");
+    let association = records
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|record| record["result"]["rule_id"] == "new-behavior-tests-required")
+        .expect("post-tool association feedback");
+    assert_eq!(association["result"]["status"], "unverified");
+    assert!(
+        association["result"]["message"]
+            .as_str()
+            .expect("association message")
+            .contains("src/lib.rs")
+    );
 }
 
 #[test]
-fn codex_stop_defers_claims_until_assistant_transcript_exists() {
+fn codex_stop_does_not_verify_pending_assistant_claims() {
     let repo = TempRepo::new();
     repo.write("src/lib.rs", "pub fn value() -> u8 { 1 }\n");
     repo.write(
@@ -285,13 +313,11 @@ fn codex_stop_defers_claims_until_assistant_transcript_exists() {
         true,
     );
     let stop = run_hook(&repo, "stop", stop_payload(&repo, Some(transcript)));
-    assert!(stop.status.success());
-    let response: Value = serde_json::from_slice(&stop.stdout).expect("Stop summary JSON");
-    assert_eq!(response["systemMessage"], "lgtm: passed");
+    assert_completion_notice(&repo, &stop);
 }
 
 #[test]
-fn codex_source_edit_without_baseline_stays_unverified() {
+fn codex_completion_does_not_require_a_baseline() {
     let repo = TempRepo::new();
     repo.write("src/lib.rs", "pub fn value() -> u8 { 1 }\n");
     initialize_repo(&repo);
@@ -299,14 +325,12 @@ fn codex_source_edit_without_baseline_stays_unverified() {
 
     record_edit(&repo, "src/lib.rs", "pub fn value() -> u8 { 2 }\n", false);
     let stop = run_hook(&repo, "stop", stop_payload(&repo, Some(transcript)));
-    assert!(stop.status.success());
-    let response: Value = serde_json::from_slice(&stop.stdout).expect("Stop summary JSON");
-    let summary = response["systemMessage"].as_str().expect("summary text");
-    assert!(summary.contains("UNVERIFIED preserve-unrelated-user-changes"));
+    assert_completion_notice(&repo, &stop);
+    assert!(!repo.exists(".lgtm/evidence/current-task.baseline.json"));
 }
 
 #[test]
-fn codex_source_edit_without_transcript_stays_unverified() {
+fn codex_completion_does_not_require_an_assistant_transcript() {
     let repo = TempRepo::new();
     repo.write("src/lib.rs", "pub fn value() -> u8 { 1 }\n");
     repo.write(
@@ -323,14 +347,11 @@ fn codex_source_edit_without_transcript_stays_unverified() {
         true,
     );
     let stop = run_hook(&repo, "stop", stop_payload(&repo, None));
-    assert!(stop.status.success());
-    let response: Value = serde_json::from_slice(&stop.stdout).expect("Stop summary JSON");
-    let summary = response["systemMessage"].as_str().expect("summary text");
-    assert!(summary.contains("UNVERIFIED evidence-claims-honest"));
+    assert_completion_notice(&repo, &stop);
 }
 
 #[test]
-fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
+fn codex_hooks_observe_and_explicit_checks_record_real_evidence() {
     let repo = TempRepo::new();
     install_fake_gitleaks(&repo);
     repo.write(
@@ -362,16 +383,15 @@ fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
         "SubagentStart"
     );
 
-    let denied = run_hook(
+    let observed = run_hook(
         &repo,
         "pre-tool-use",
         tool_payload(&repo, "PreToolUse", "Edit", "../outside.py"),
     );
-    assert!(denied.status.success());
-    let denied_json: Value = serde_json::from_slice(&denied.stdout).expect("deny JSON");
-    assert_eq!(
-        denied_json["hookSpecificOutput"]["permissionDecision"],
-        "deny"
+    assert!(observed.status.success());
+    assert!(
+        observed.stdout.is_empty(),
+        "outside-path observation must not deny"
     );
 
     let command_denied = run_hook(
@@ -386,11 +406,9 @@ fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
         }),
     );
     assert!(command_denied.status.success());
-    let command_json: Value =
-        serde_json::from_slice(&command_denied.stdout).expect("command deny JSON");
-    assert_eq!(
-        command_json["hookSpecificOutput"]["decision"]["behavior"],
-        "deny"
+    assert!(
+        command_denied.stdout.is_empty(),
+        "legacy policy must not deny a command"
     );
 
     let flagged = run_hook(
@@ -400,9 +418,19 @@ fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
     );
     assert!(flagged.status.success());
     let flagged_json: Value = serde_json::from_slice(&flagged.stdout).expect("flag JSON");
-    assert_eq!(flagged_json["decision"], "block");
+    assert!(flagged_json.get("decision").is_none());
+    assert_eq!(
+        flagged_json["hookSpecificOutput"]["hookEventName"],
+        "PostToolUse"
+    );
+    assert!(
+        flagged_json["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("feedback context")
+            .contains("no-committed-secrets")
+    );
 
-    let blocked = run_hook(
+    let completion = run_hook(
         &repo,
         "stop",
         json!({
@@ -411,14 +439,9 @@ fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
             "cwd": repo.path(),
         }),
     );
-    assert!(
-        blocked.status.success(),
-        "Codex blocks through JSON, not exit 2"
-    );
-    let blocked_json: Value = serde_json::from_slice(&blocked.stdout).expect("Stop block JSON");
-    assert_eq!(blocked_json["decision"], "block");
+    assert_completion_notice(&repo, &completion);
 
-    let subagent_blocked = run_hook(
+    let subagent_completion = run_hook(
         &repo,
         "subagent-stop",
         json!({
@@ -430,10 +453,7 @@ fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
             "stop_hook_active": false,
         }),
     );
-    assert!(subagent_blocked.status.success());
-    let subagent_json: Value =
-        serde_json::from_slice(&subagent_blocked.stdout).expect("subagent block JSON");
-    assert_eq!(subagent_json["decision"], "block");
+    assert_completion_notice(&repo, &subagent_completion);
 
     let subagent_repeated = run_hook(
         &repo,
@@ -447,23 +467,18 @@ fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
             "stop_hook_active": true,
         }),
     );
-    assert!(subagent_repeated.status.success());
-    let repeated_json: Value =
-        serde_json::from_slice(&subagent_repeated.stdout).expect("subagent summary JSON");
-    assert!(repeated_json["systemMessage"].as_str().is_some());
+    assert_completion_notice(&repo, &subagent_repeated);
+
+    let failed_check = run_check(&repo);
+    assert_eq!(failed_check.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&failed_check.stdout).contains("lgtm check failed"));
 
     repo.write("src/app.py", "value = 1\n");
-    let clean = run_hook(
-        &repo,
-        "stop",
-        json!({
-            "hookEventName": "Stop",
-            "session_id": "codex-e2e",
-            "cwd": repo.path(),
-        }),
+    let clean_check = run_check(&repo);
+    assert!(
+        clean_check.status.success(),
+        "clean explicit check failed: {clean_check:?}"
     );
-    assert!(clean.status.success());
-    assert!(String::from_utf8_lossy(&clean.stdout).contains("failed=0"));
 
     let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
     assert!(evidence.lines().count() >= 2);
@@ -472,7 +487,7 @@ fn codex_hooks_deny_flag_block_allow_and_record_evidence() {
     let validator = jsonschema::validator_for(&schema).expect("evidence schema compiles");
     for line in evidence.lines() {
         let record: Value = serde_json::from_str(line).expect("evidence JSON");
-        assert_eq!(record["task_id"], "codex-e2e");
+        assert_eq!(record["task_id"], "unknown-session");
         assert!(record["results"].is_array());
         let errors: Vec<_> = validator
             .iter_errors(&record)

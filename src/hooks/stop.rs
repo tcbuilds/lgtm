@@ -1,4 +1,4 @@
-//! Stop hook: rerun required secret checks and enforce unresolved MUST failures.
+//! Automatic completion notices and explicitly requested policy checks.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -9,10 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::adapter::{
-    ApprovalCapability, ClaudeAdapter, HookAdapter, HookResponse, PiAdapter, PiApprovalChallenge,
-    PiApprovalFinding,
-};
+use crate::adapter::{ClaudeAdapter, HookAdapter, HookResponse, PiAdapter};
 use crate::checks::tiers::{self, Hook, Tier};
 use crate::checks::{EnforcementResult, Location, ResultEvidence, Status};
 use crate::checks::{commands, gitleaks, ruff, semgrep};
@@ -40,11 +37,6 @@ const CURRENT_TASK_PERSISTENCE_MESSAGE: &str =
 const CURRENT_TASK_RETENTION_REASON: &str = "current-task evidence was truncated at the bounded retention limit; repair or regenerate evidence";
 const CURRENT_TASK_RECORD_TRUNCATION_REASON: &str = "current-task evidence record details were truncated at a bounded limit; repair or regenerate evidence";
 const CURRENT_TASK_PERSISTENCE_REASON: &str = "current-task evidence could not be persisted within the bounded ledger limit; repair or regenerate evidence";
-const PI_PRE_COMMIT_GATE_BUDGET: Duration = Duration::from_secs(300);
-const MAX_PI_APPROVAL_FINDINGS: usize = 32;
-const MAX_PI_APPROVAL_TEXT_BYTES: usize = 512;
-const MAX_PI_APPROVAL_COORDINATE: u64 = 1_000_000_000;
-
 #[cfg(test)]
 thread_local! {
     static TOUCHED_PATH_RESOLUTION_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -64,8 +56,6 @@ struct HookInput {
     workspace: Option<String>,
     #[serde(default)]
     tier: Option<String>,
-    #[serde(default)]
-    stop_hook_active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,12 +136,6 @@ struct TaskEvidence<'a> {
     tier: &'a str,
 }
 
-struct GateLimits {
-    total_deadline: Option<Instant>,
-    precomputed_check_paths: Option<(Vec<String>, CheckPathScanStatus, bool)>,
-    commit_scope: bool,
-}
-
 struct EvidenceMeta<'a> {
     adapter: &'a dyn HookAdapter,
     root: &'a Path,
@@ -186,303 +170,53 @@ struct StoredTaskEvidence {
     tier: Option<String>,
 }
 
-struct InternalGateAdapter;
-
-impl HookAdapter for InternalGateAdapter {
-    fn harness_name(&self) -> &'static str {
-        "internal-gate"
-    }
-
-    fn parse_request(
-        &self,
-        _event: crate::adapter::HookEvent,
-        _stdin_json: &str,
-    ) -> Result<crate::adapter::HookRequest, String> {
-        Err("internal gate adapter does not parse harness input".to_string())
-    }
-
-    fn encode_response(
-        &self,
-        event: crate::adapter::HookEvent,
-        response: HookResponse,
-    ) -> Result<crate::adapter::EncodedResponse, String> {
-        if event != crate::adapter::HookEvent::Stop {
-            return Err("internal gate adapter only supports Stop".to_string());
-        }
-        let (body, exit_code) = match response {
-            HookResponse::Summary(_) => (String::new(), 0),
-            HookResponse::BlockStop { reason } => (reason, 2),
-            _ => return Err("internal gate adapter received an invalid response".to_string()),
-        };
-        Ok(crate::adapter::EncodedResponse {
-            body,
-            stream: crate::adapter::OutputStream::Stdout,
-            exit_code,
-        })
-    }
-}
-
 pub fn run(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
     let adapter = ClaudeAdapter;
     run_with_adapter(input, output, &adapter)
 }
 
-/// Run the complete gate immediately before an agent executes `git commit`.
+/// Run the complete check pipeline for an explicit `lgtm check` request.
 ///
-/// A matching successful full-tier record is reused for the same session and
-/// exact file/config state on non-deadline-bound gates, so a denied Claude or
-/// Codex commit retry does not rerun unchanged tests. Deadline-bound Pi gates
-/// always rerun. `Ok(None)` means the commit may proceed; `Ok(Some(reason))`
-/// means the full gate found a blocking failure.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PreCommitGateDecision {
-    Allow,
-    Deny(String),
-    FindingApprovalRequired(PiApprovalChallenge),
-    HeuristicNotices(crate::adapter::PiHeuristicNotices),
-    ClaudeApprovalRequired {
-        identity: String,
-        findings: Vec<gitleaks::commit::CommitFinding>,
-    },
-}
-
-pub(crate) fn run_pre_commit_gate_for_adapter(
-    root: &Path,
-    session_id: Option<&str>,
-    harness: &str,
-    commit_argv: &[String],
-    approval_capability: Option<ApprovalCapability>,
-) -> Result<PreCommitGateDecision, String> {
-    let command_budget = pre_commit_gate_budget(harness);
-    let total_deadline = (harness == "pi")
-        .then(|| Instant::now().checked_add(command_budget))
-        .flatten();
-    if let Some(reason) =
-        run_pre_commit_gate_with_scope(root, session_id, command_budget, total_deadline, true)?
-    {
-        return Ok(PreCommitGateDecision::Deny(reason));
-    }
-    let assessment = gitleaks::assess_commit(
-        root,
-        commit_argv,
-        session_id,
-        harness,
-        total_deadline.unwrap_or_else(|| {
-            Instant::now()
-                .checked_add(command_budget)
-                .unwrap_or_else(Instant::now)
-        }),
-    );
-    match assessment {
-        gitleaks::CommitAssessment::Pass { .. } => Ok(PreCommitGateDecision::Allow),
-        gitleaks::CommitAssessment::Deny { reason, .. } => Ok(PreCommitGateDecision::Deny(reason)),
-        gitleaks::CommitAssessment::PendingHeuristicApproval { identity, findings }
-            if harness == "pi"
-                && approval_capability == Some(ApprovalCapability::PiHeuristicNoticesV1) =>
-        {
-            let challenge = build_pi_approval_challenge(&identity.digest, &findings)?;
-            let items = challenge
-                .findings
-                .into_iter()
-                .map(|finding| crate::adapter::PiHeuristicNotice {
-                    kind: crate::adapter::PiNoticeKind::GenericSecret,
-                    rule_id: finding.rule_id,
-                    path: Some(finding.path),
-                    line: Some(finding.start_line),
-                    candidate_id: Some(finding.candidate_id),
-                })
-                .collect();
-            Ok(PreCommitGateDecision::HeuristicNotices(
-                crate::adapter::PiHeuristicNotices {
-                    identity: Some(challenge.identity),
-                    items,
-                },
-            ))
-        }
-        gitleaks::CommitAssessment::PendingHeuristicApproval { identity, findings }
-            if harness == "pi"
-                && approval_capability == Some(ApprovalCapability::PiFindingApprovalV1) =>
-        {
-            match build_pi_approval_challenge(&identity.digest, &findings) {
-                Ok(challenge) => Ok(PreCommitGateDecision::FindingApprovalRequired(challenge)),
-                Err(reason) => Ok(PreCommitGateDecision::Deny(reason)),
-            }
-        }
-        gitleaks::CommitAssessment::PendingHeuristicApproval { identity, findings }
-            if harness == "claude-code" =>
-        {
-            Ok(PreCommitGateDecision::ClaudeApprovalRequired {
-                identity: identity.digest,
-                findings,
-            })
-        }
-        assessment @ gitleaks::CommitAssessment::PendingHeuristicApproval { .. } => {
-            Ok(PreCommitGateDecision::Deny(assessment.blocking_reason()))
-        }
-    }
-}
-
-pub(crate) fn build_pi_approval_challenge(
-    identity: &str,
-    findings: &[gitleaks::commit::CommitFinding],
-) -> Result<PiApprovalChallenge, String> {
-    if identity.len() != 64 || !identity.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("staged commit heuristic assessment has an invalid identity".to_string());
-    }
-    if findings.is_empty() || findings.len() > MAX_PI_APPROVAL_FINDINGS {
-        return Err(
-            "staged commit heuristic findings exceed the bounded approval limit".to_string(),
-        );
-    }
-    let mut redacted = Vec::with_capacity(findings.len());
-    for finding in findings {
-        if finding.rule_id != "generic-api-key"
-            || finding.start_line > MAX_PI_APPROVAL_COORDINATE
-            || finding.start_column > MAX_PI_APPROVAL_COORDINATE
-            || finding.end_line > MAX_PI_APPROVAL_COORDINATE
-            || finding.end_column > MAX_PI_APPROVAL_COORDINATE
-        {
-            return Err(
-                "staged commit heuristic assessment contains an ineligible finding".to_string(),
-            );
-        }
-        validate_approval_text(&finding.file, "finding path")?;
-        redacted.push(PiApprovalFinding {
-            rule_id: finding.rule_id.clone(),
-            path: finding.file.clone(),
-            start_line: finding.start_line,
-            start_column: finding.start_column,
-            end_line: finding.end_line,
-            end_column: finding.end_column,
-            candidate_id: approval_candidate_id(finding),
-        });
-    }
-    Ok(PiApprovalChallenge {
-        identity: identity.to_string(),
-        findings: redacted,
-    })
-}
-
-fn validate_approval_text(value: &str, label: &str) -> Result<(), String> {
-    if value.is_empty()
-        || value.len() > MAX_PI_APPROVAL_TEXT_BYTES
-        || value.chars().any(char::is_control)
-    {
-        return Err(format!("staged commit {label} is not safely displayable"));
-    }
-    Ok(())
-}
-
-fn approval_candidate_id(finding: &gitleaks::commit::CommitFinding) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"lgtm.pi-finding-approval.candidate.v1");
-    for value in [
-        finding.rule_id.as_str(),
-        finding.file.as_str(),
-        &finding.start_line.to_string(),
-        &finding.start_column.to_string(),
-        &finding.end_line.to_string(),
-        &finding.end_column.to_string(),
-        finding.fingerprint.as_str(),
-        finding.blob_identity.as_str(),
-    ] {
-        hasher.update((value.len() as u64).to_le_bytes());
-        hasher.update(value.as_bytes());
-    }
-    format!("{:x}", hasher.finalize())
-}
-
-fn pre_commit_gate_budget(harness: &str) -> Duration {
-    if harness == "pi" {
-        PI_PRE_COMMIT_GATE_BUDGET
-    } else {
-        commands::STOP_COMMAND_BUDGET
-    }
-}
-
-#[cfg(test)]
-fn run_pre_commit_gate_with_budget(
-    root: &Path,
-    session_id: Option<&str>,
-    command_budget: Duration,
-) -> Result<Option<String>, String> {
-    run_pre_commit_gate_with_limits(root, session_id, command_budget, None)
-}
-
-#[cfg(test)]
-fn run_pre_commit_gate_with_limits(
-    root: &Path,
-    session_id: Option<&str>,
-    command_budget: Duration,
-    total_deadline: Option<Instant>,
-) -> Result<Option<String>, String> {
-    run_pre_commit_gate_with_scope(root, session_id, command_budget, total_deadline, false)
-}
-
-fn run_pre_commit_gate_with_scope(
-    root: &Path,
-    session_id: Option<&str>,
-    command_budget: Duration,
-    total_deadline: Option<Instant>,
-    commit_scope: bool,
-) -> Result<Option<String>, String> {
-    let (paths, path_scan_status, reuse_uncertain) =
-        check_paths_with_deadline(root, total_deadline)?;
-    // Deadline-bound Pi gates and uncertain candidate sets must rerun rather
-    // than authorize from evidence that omits paths or crossed the deadline.
-    if !commit_scope
-        && total_deadline.is_none()
-        && path_scan_status.is_complete()
-        && !reuse_uncertain
-        && matching_full_evidence(root, session_id, &paths, reuse_uncertain).is_some()
-    {
-        return Ok(None);
-    }
-    let payload = serde_json::json!({
-        "cwd": root,
-        "session_id": session_id,
-        "check": true,
-        "tier": "full",
-    });
-    let mut input = std::io::Cursor::new(payload.to_string());
-    let mut output = Vec::new();
-    let code = run_inner_with_options(
-        &mut input,
-        &mut output,
-        &InternalGateAdapter,
+/// This is the only Stop entry point that requests checks. Blocking failures
+/// keep the existing nonzero CLI result, and unexpected errors fail loudly
+/// instead of passing quietly.
+pub fn run_check(input: &mut impl Read, output: &mut impl Write) -> ExitCode {
+    match run_inner(
+        input,
+        output,
+        &ClaudeAdapter,
         crate::adapter::HookEvent::Stop,
-        command_budget,
-        true,
-        GateLimits {
-            total_deadline,
-            precomputed_check_paths: Some((paths, path_scan_status, reuse_uncertain)),
-            commit_scope,
-        },
-    )?;
-    if code == ExitCode::SUCCESS {
-        return Ok(None);
+    ) {
+        Ok(code) => code,
+        Err(reason) => {
+            // Keep the cause visible within bounds; arbitrary payload text must
+            // not reach stderr.
+            let bounded = bounded_summary_message(&reason).replace('\n', " ");
+            let _ = writeln!(
+                std::io::stderr(),
+                "check failed: entity=hook reason={bounded} retryable=true"
+            );
+            ExitCode::FAILURE
+        }
     }
-    let reason = String::from_utf8(output)
-        .map_err(|_| "pre-commit gate produced non-UTF-8 output".to_string())?;
-    Ok(Some(reason.trim().to_string()))
 }
 
-/// Run Stop with an explicitly selected harness adapter.
+/// Report automatic Stop completion with an explicitly selected harness adapter.
 pub fn run_with_adapter(
     input: &mut impl Read,
     output: &mut impl Write,
     adapter: &dyn HookAdapter,
 ) -> ExitCode {
-    run_for_event(input, output, adapter, crate::adapter::HookEvent::Stop)
+    report_automatic_completion(input, output, adapter, crate::adapter::HookEvent::Stop)
 }
 
-/// Run Stop checks for a Codex subagent stop event.
+/// Report automatic completion for a Codex subagent stop event.
 pub fn run_subagent_stop_with_adapter(
     input: &mut impl Read,
     output: &mut impl Write,
     adapter: &dyn HookAdapter,
 ) -> ExitCode {
-    run_for_event(
+    report_automatic_completion(
         input,
         output,
         adapter,
@@ -490,22 +224,45 @@ pub fn run_subagent_stop_with_adapter(
     )
 }
 
-fn run_for_event(
+/// Report completion without running checks.
+///
+/// The payload is still read and validated at the existing bounded limits, but
+/// every field is ignored. Automatic completion never runs repository commands,
+/// scans files, resolves policy, reads transcripts, or returns a blocking
+/// status, and no payload field, including `check`, can opt it in.
+fn report_automatic_completion(
     input: &mut impl Read,
     output: &mut impl Write,
     adapter: &dyn HookAdapter,
     event: crate::adapter::HookEvent,
 ) -> ExitCode {
-    match run_inner(input, output, adapter, event) {
-        Ok(code) => code,
-        Err(reason) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "stop failed: entity=hook reason={reason} retryable=true"
-            );
-            ExitCode::SUCCESS
-        }
+    if read_input(input).is_err() {
+        write_stop_notice_diagnostic("hook input was malformed or oversized");
+        return ExitCode::SUCCESS;
     }
+    let response = HookResponse::Summary(
+        "lgtm: automatic completion report. Checks are on demand; no checks ran at completion. Run `lgtm check` or a CI check to request them."
+            .to_string(),
+    );
+    let encoded = match adapter.encode_response(event, response) {
+        Ok(encoded) => encoded,
+        Err(_) => {
+            write_stop_notice_diagnostic("automatic summary could not be encoded");
+            return ExitCode::SUCCESS;
+        }
+    };
+    if crate::adapter::emit(output, &mut std::io::stderr(), &encoded).is_err() {
+        write_stop_notice_diagnostic("automatic summary could not be written");
+    }
+    ExitCode::SUCCESS
+}
+
+/// Report an automatic-path problem without changing the hook outcome.
+fn write_stop_notice_diagnostic(reason: &str) {
+    let _ = writeln!(
+        std::io::stderr(),
+        "stop notice failed: entity=hook reason={reason} retryable=false"
+    );
 }
 
 fn run_inner(
@@ -524,19 +281,7 @@ fn run_inner_with_budget(
     event: crate::adapter::HookEvent,
     command_budget: Duration,
 ) -> Result<ExitCode, String> {
-    run_inner_with_options(
-        input,
-        output,
-        adapter,
-        event,
-        command_budget,
-        false,
-        GateLimits {
-            total_deadline: None,
-            precomputed_check_paths: None,
-            commit_scope: false,
-        },
-    )
+    run_inner_with_options(input, output, adapter, event, command_budget, None)
 }
 
 fn run_inner_with_options(
@@ -545,13 +290,9 @@ fn run_inner_with_options(
     adapter: &dyn HookAdapter,
     event: crate::adapter::HookEvent,
     command_budget: Duration,
-    pre_commit: bool,
-    limits: GateLimits,
+    total_deadline: Option<Instant>,
 ) -> Result<ExitCode, String> {
     debug_assert_eq!(tiers::for_hook(Hook::Stop), Tier::Targeted);
-    let total_deadline = limits.total_deadline;
-    let precomputed_check_paths = limits.precomputed_check_paths;
-    let commit_scope = limits.commit_scope;
     let started_at_ms = unix_ms();
     let hook_input = read_input(input)?;
     let root = resolve_root(hook_input.cwd.as_deref())?;
@@ -563,10 +304,8 @@ fn run_inner_with_options(
     });
     let (paths, deleted, had_edits, ledger_issue, path_scan_status, mut reuse_uncertain) =
         if hook_input.check {
-            let (paths, status, reuse_uncertain) = match precomputed_check_paths {
-                Some(paths) => paths,
-                None => check_paths_with_deadline(&root, total_deadline)?,
-            };
+            let (paths, status, reuse_uncertain) =
+                check_paths_with_deadline(&root, total_deadline)?;
             (paths, BTreeSet::new(), false, None, status, reuse_uncertain)
         } else {
             let touched = touched_paths(&root, hook_input.session_id.as_deref())?;
@@ -613,13 +352,12 @@ fn run_inner_with_options(
     let run_file_checks = (hook_input.check || had_edits)
         && path_scan_status.is_complete()
         && !deadline_expired(total_deadline);
-    let mut results =
-        if run_file_checks && !commit_scope && (!paths.is_empty() || deleted.is_empty()) {
-            rerun_checks(&paths, total_deadline)
-        } else {
-            Vec::new()
-        };
-    if let Some(result) = check_path_scan_result(path_scan_status, pre_commit) {
+    let mut results = if run_file_checks && (!paths.is_empty() || deleted.is_empty()) {
+        rerun_checks(&paths, total_deadline)
+    } else {
+        Vec::new()
+    };
+    if let Some(result) = check_path_scan_result(path_scan_status) {
         results.push(result);
     }
     if let Some(reason) = ledger_issue.as_deref() {
@@ -716,15 +454,7 @@ fn run_inner_with_options(
     );
     reuse_uncertain |= command_digest_uncertain;
     let mut post_policy_command_gate_results =
-        take_post_policy_command_gate_results(&mut command_run.results, pre_commit);
-    if pre_commit {
-        post_policy_command_gate_results.extend(
-            coverage
-                .iter()
-                .filter(|item| item.status != "passed" && item.status != "not_applicable")
-                .map(|item| commands::coverage_failure(&item.workspace_id, &item.status)),
-        );
-    }
+        take_post_policy_command_gate_results(&mut command_run.results);
     results.extend(command_run.results);
     results.extend(commands::coverage_results(&coverage));
     if !hook_input.check {
@@ -756,12 +486,7 @@ fn run_inner_with_options(
             .chain(&post_policy_command_gate_results)
             .any(is_config_result)
     {
-        let mut mutation = commands::config_mutation_unverified();
-        if pre_commit {
-            mutation.status = Status::Failed;
-            mutation.severity = Severity::Error;
-        }
-        results.push(mutation);
+        results.push(commands::config_mutation_unverified());
     }
     results.append(&mut post_policy_command_gate_results);
     if let Some(reason) = workspace_error {
@@ -770,12 +495,7 @@ fn run_inner_with_options(
     if deadline_expired_for_gate(path_scan_status, total_deadline)
         && !results.iter().any(is_aggregate_budget_result)
     {
-        let mut timeout = commands::budget_unverified();
-        if pre_commit {
-            timeout.status = Status::Failed;
-            timeout.severity = Severity::Error;
-        }
-        results.push(timeout);
+        results.push(commands::budget_unverified());
     }
     reuse_uncertain |= append_task_evidence(
         EvidenceMeta {
@@ -803,12 +523,7 @@ fn run_inner_with_options(
     if deadline_expired_for_gate(path_scan_status, total_deadline)
         && !results.iter().any(is_aggregate_budget_result)
     {
-        let mut timeout = commands::budget_unverified();
-        if pre_commit {
-            timeout.status = Status::Failed;
-            timeout.severity = Severity::Error;
-        }
-        results.push(timeout);
+        results.push(commands::budget_unverified());
         reuse_uncertain |= append_task_evidence(
             EvidenceMeta {
                 adapter,
@@ -837,12 +552,7 @@ fn run_inner_with_options(
     // trusted config path changed while the first record was being made
     // durable, append a non-reusable denial record before deciding the gate.
     if trusted_config_changed(&root, &config_snapshot) && !results.iter().any(is_config_result) {
-        let mut mutation = commands::config_mutation_unverified();
-        if pre_commit {
-            mutation.status = Status::Failed;
-            mutation.severity = Severity::Error;
-        }
-        results.push(mutation);
+        results.push(commands::config_mutation_unverified());
         let _ = append_task_evidence(
             EvidenceMeta {
                 adapter,
@@ -871,11 +581,11 @@ fn run_inner_with_options(
         .iter()
         .filter(|result| result.is_failure() && result.severity == Severity::Error)
         .collect();
-    if failures.is_empty() || hook_input.stop_hook_active {
+    if failures.is_empty() {
         write_summary(output, adapter, event, &results)?;
         return Ok(ExitCode::SUCCESS);
     }
-    write_block_decision(output, adapter, event, &failures)
+    write_check_failure(output, &failures)
 }
 
 fn deadline_expired(deadline: Option<Instant>) -> bool {
@@ -1318,17 +1028,11 @@ fn is_non_reusable_command_gate_result(result: &EnforcementResult) -> bool {
 
 fn take_post_policy_command_gate_results(
     results: &mut Vec<EnforcementResult>,
-    pre_commit: bool,
 ) -> Vec<EnforcementResult> {
     let mut protected = Vec::new();
     results.retain(|result| {
         if is_non_reusable_command_gate_result(result) {
-            let mut result = result.clone();
-            if pre_commit {
-                result.status = Status::Failed;
-                result.severity = Severity::Error;
-            }
-            protected.push(result);
+            protected.push(result.clone());
             false
         } else {
             true
@@ -1886,10 +1590,7 @@ const EXCLUDED_CHECK_SUBTREES: [&str; 5] = [
     ".killer-whale",
 ];
 
-fn check_path_scan_result(
-    status: CheckPathScanStatus,
-    pre_commit: bool,
-) -> Option<EnforcementResult> {
+fn check_path_scan_result(status: CheckPathScanStatus) -> Option<EnforcementResult> {
     let (message, remediation) = match status {
         CheckPathScanStatus::Complete | CheckPathScanStatus::Deadline => return None,
         CheckPathScanStatus::EntryLimit => (
@@ -1911,11 +1612,7 @@ fn check_path_scan_result(
     };
     Some(EnforcementResult {
         rule_id: CHECK_PATH_SCAN_RULE_ID.to_string(),
-        status: if pre_commit {
-            Status::Failed
-        } else {
-            Status::Unverified
-        },
+        status: Status::Unverified,
         severity: Severity::Error,
         message: format!("Repository source scan {message}."),
         locations: Vec::new(),
@@ -2541,24 +2238,19 @@ fn bounded_summary_message(message: &str) -> String {
     bounded
 }
 
-fn write_block_decision(
+fn write_check_failure(
     output: &mut impl Write,
-    adapter: &dyn HookAdapter,
-    event: crate::adapter::HookEvent,
     failures: &[&EnforcementResult],
 ) -> Result<ExitCode, String> {
-    use crate::adapter::HookResponse;
-    let mut reason = "lgtm Stop blocked: unresolved MUST violations:".to_string();
+    let mut reason = "lgtm check failed: unresolved error-level checks:".to_string();
     for result in failures {
         reason.push_str(&format!("\n- {}: {}", result.rule_id, result.message));
         if let Some(remediation) = &result.remediation {
             reason.push_str(&format!("\n  Repair: {remediation}"));
         }
     }
-    let encoded = adapter.encode_response(event, HookResponse::BlockStop { reason })?;
-    crate::adapter::emit(output, &mut std::io::stderr(), &encoded)
-        .map_err(|error| format!("write block decision ({error})"))?;
-    Ok(ExitCode::from(encoded.exit_code))
+    writeln!(output, "{reason}").map_err(|error| format!("write check failure ({error})"))?;
+    Ok(ExitCode::from(2))
 }
 
 #[cfg(test)]
@@ -3116,7 +2808,7 @@ mod tests {
             digest_paths_until(&paths, None).is_none(),
             "the independent digest bound disables reuse without truncating source scans"
         );
-        assert!(check_path_scan_result(status, true).is_none());
+        assert!(check_path_scan_result(status).is_none());
     }
 
     #[test]
@@ -3131,21 +2823,7 @@ mod tests {
             reuse_uncertain,
             "an expired scan cannot authorize digest reuse"
         );
-        assert!(check_path_scan_result(status, true).is_none());
-        let result = run_pre_commit_gate_with_limits(
-            &fixture.path,
-            Some("expired-check-path-deadline"),
-            Duration::from_secs(1),
-            Some(Instant::now()),
-        )
-        .expect("expired gate returns a decision");
-        assert!(result.is_some(), "expired gate must deny");
-        assert!(
-            result
-                .as_deref()
-                .is_some_and(|reason| reason.contains("aggregate execution budget expired")),
-            "expired deadline must remain an aggregate timeout: {result:?}"
-        );
+        assert!(check_path_scan_result(status).is_none());
     }
 
     #[test]
@@ -4504,83 +4182,6 @@ mod tests {
     }
 
     #[test]
-    fn pi_precommit_budget_is_fixed_and_exceeds_legacy_timeout() {
-        assert_eq!(pre_commit_gate_budget("pi"), Duration::from_secs(300));
-        assert!(pre_commit_gate_budget("pi") > Duration::from_secs(30));
-        assert_eq!(
-            pre_commit_gate_budget("claude"),
-            commands::STOP_COMMAND_BUDGET
-        );
-    }
-
-    #[test]
-    fn expired_total_precommit_deadline_denies_instead_of_passing() {
-        let root =
-            std::env::temp_dir().join(format!("lgtm-stop-total-deadline-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("temporary root");
-        let result = run_pre_commit_gate_with_limits(
-            &root,
-            Some("deadline-session"),
-            Duration::from_secs(1),
-            Some(Instant::now()),
-        )
-        .expect("expired gate should return a decision");
-        assert!(result.is_some(), "an expired pre-commit gate must deny");
-        std::fs::remove_dir_all(root).expect("temporary root removal");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn expired_precommit_denies_when_evidence_ancestry_cannot_persist() {
-        use std::os::unix::fs::symlink;
-
-        let root =
-            std::env::temp_dir().join(format!("lgtm-stop-expired-evidence-{}", std::process::id()));
-        let evidence_target = root.join("foreign-evidence");
-        std::fs::create_dir_all(&evidence_target).expect("foreign evidence directory");
-        std::fs::create_dir_all(root.join(".lgtm")).expect("lgtm directory");
-        symlink(&evidence_target, root.join(".lgtm/evidence")).expect("evidence symlink");
-
-        let result = run_pre_commit_gate_with_limits(
-            &root,
-            Some("expired-evidence-session"),
-            Duration::from_secs(1),
-            Some(Instant::now()),
-        )
-        .expect("expired gate should still return a block");
-        assert!(
-            result.is_some(),
-            "evidence persistence must not erase the block"
-        );
-        std::fs::remove_dir_all(root).expect("temporary root removal");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn precommit_evidence_ancestry_failure_before_deadline_remains_an_error() {
-        use std::os::unix::fs::symlink;
-
-        let root =
-            std::env::temp_dir().join(format!("lgtm-stop-live-evidence-{}", std::process::id()));
-        let evidence_target = root.join("foreign-evidence");
-        std::fs::create_dir_all(&evidence_target).expect("foreign evidence directory");
-        std::fs::create_dir_all(root.join(".lgtm")).expect("lgtm directory");
-        symlink(&evidence_target, root.join(".lgtm/evidence")).expect("evidence symlink");
-
-        let result = run_pre_commit_gate_with_limits(
-            &root,
-            Some("live-evidence-session"),
-            Duration::from_secs(1),
-            Instant::now().checked_add(Duration::from_secs(30)),
-        );
-        assert!(
-            result.is_err(),
-            "persistence failures before the deadline must remain errors"
-        );
-        std::fs::remove_dir_all(root).expect("temporary root removal");
-    }
-
-    #[test]
     fn incomplete_command_gate_evidence_is_not_reused_but_unrelated_unverified_is() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -4781,21 +4382,11 @@ mod tests {
 
         assert!(matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_some());
         assert!(matching_full_evidence(&fixture.path, Some(session_id), &[], true).is_none());
-        assert_eq!(
-            run_pre_commit_gate_with_budget(&fixture.path, Some(session_id), Duration::ZERO)
-                .expect("certain evidence can skip the exhausted command budget"),
-            None
-        );
         let mut sentinel_record = record.clone();
         sentinel_record["touched_files_digest"] = serde_json::json!(UNCERTAIN_TOUCHED_FILES_DIGEST);
         std::fs::write(&evidence_path, format!("{sentinel_record}\n"))
             .expect("sentinel evidence fixture");
         assert!(matching_full_evidence(&fixture.path, Some(session_id), &[], false).is_none());
-        assert!(
-            run_pre_commit_gate_with_budget(&fixture.path, Some(session_id), Duration::ZERO)
-                .expect("uncertain evidence must run the exhausted command budget")
-                .is_some()
-        );
         for (field, value) in [
             (
                 "touched_files_digest",
@@ -4841,216 +4432,6 @@ mod tests {
                 "null nested {field} must prevent reuse"
             );
         }
-    }
-
-    #[test]
-    fn deadline_bound_precommit_does_not_reuse_full_evidence() {
-        let root = std::env::temp_dir().join(format!(
-            "lgtm-deadline-evidence-reuse-{}",
-            std::process::id()
-        ));
-        let evidence_path = root.join(".lgtm/evidence/evidence.jsonl");
-        std::fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
-            .expect("evidence directory");
-        let record = serde_json::json!({
-            "task_id": "deadline-reuse-session",
-            "rules": {
-                "passed": 0,
-                "failed": 0,
-                "warning": 0,
-                "skipped": 0,
-                "not_applicable": 0,
-                "unverified": 0,
-                "overridden": 0,
-                "waived": 0
-            },
-            "results": [],
-            "commands": [],
-            "coverage": [{
-                "workspace_id": "repository",
-                "status": "not_applicable",
-                "tool": null,
-                "scope": null,
-                "line_percent": null,
-                "branch_percent": null,
-                "measured_at_ms": null
-            }],
-            "policy_version": crate::policy::POLICY_BUNDLE_VERSION,
-            "binary_version": env!("CARGO_PKG_VERSION"),
-            "platform": commands::platform_id(),
-            "containment_version": commands::CONTAINMENT_VERSION,
-            "touched_files_digest": digest_paths(&[]),
-            "config_digest": digest_bytes(""),
-            "tier": "full"
-        });
-        std::fs::write(&evidence_path, format!("{record}\n")).expect("passing evidence record");
-        assert!(
-            matching_full_evidence(&root, Some("deadline-reuse-session"), &[], false).is_some(),
-            "fixture must be reusable without the deadline-bound gate"
-        );
-
-        let result = run_pre_commit_gate_with_limits(
-            &root,
-            Some("deadline-reuse-session"),
-            Duration::from_secs(1),
-            Instant::now().checked_add(Duration::from_secs(30)),
-        )
-        .expect("deadline-bound gate runs");
-        assert!(result.is_none(), "fresh gate should pass the empty fixture");
-        let records = std::fs::read_to_string(&evidence_path)
-            .expect("evidence")
-            .lines()
-            .count();
-        assert!(
-            records >= 2,
-            "deadline-bound gate must append a fresh record"
-        );
-        std::fs::remove_dir_all(root).expect("temporary evidence directory removal");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pre_commit_gate_denies_aggregate_budget_exhaustion() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "lgtm-pre-commit-budget-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
-        let command = root.join(".lgtm/bin/slow");
-        std::fs::write(&command, "#!/bin/sh\nexec /bin/sleep 1\n").expect("fixture command");
-        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
-            .expect("fixture permissions");
-        std::fs::write(
-            root.join(".lgtm/config.json"),
-            serde_json::json!({
-                "version": "2",
-                "profile": "prototype",
-                "workspaces": [{
-                    "id": "root",
-                    "language": "shell",
-                    "root": ".",
-                    "commands": [{
-                        "argv": [command.to_string_lossy()],
-                        "cwd": ".",
-                        "timeout_seconds": 30,
-                        "tier": "full",
-                        "purpose": "test",
-                        "source": "fixture",
-                        "confidence": "high"
-                    }],
-                    "coverage": []
-                }],
-                "disabled_rules": [],
-                "severity_overrides": {}
-            })
-            .to_string(),
-        )
-        .expect("fixture config");
-        std::fs::write(
-            root.join(".lgtm/waivers.json"),
-            serde_json::json!({
-                "waivers": [{
-                    "rule_id": "required-repository-commands",
-                    "reason": "fixture waiver must not authorize a truncated gate",
-                    "owner": "test-owner",
-                    "expires": "2999-01-01"
-                }]
-            })
-            .to_string(),
-        )
-        .expect("fixture waiver");
-
-        let reason = run_pre_commit_gate_with_budget(
-            &root,
-            Some("pre-commit-budget"),
-            Duration::from_millis(50),
-        )
-        .expect("pre-commit gate runs")
-        .expect("aggregate cutoff denies commit");
-
-        assert!(reason.contains("aggregate execution budget expired"));
-        let evidence =
-            std::fs::read_to_string(root.join(".lgtm/evidence/evidence.jsonl")).expect("evidence");
-        let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("record");
-        assert_eq!(record["profile"], "prototype");
-        assert_eq!(record["waivers"].as_array().map(Vec::len), Some(1));
-        assert!(record["results"].as_array().is_some_and(|results| {
-            results.iter().any(|result| {
-                result["status"] == "failed"
-                    && result["evidence"]["check"] == commands::budget_unverified().evidence.check
-            })
-        }));
-
-        std::fs::remove_dir_all(root).expect("temporary fixture removal");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn coverage_only_cutoff_denies_pre_commit_with_stable_aggregate_evidence() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "lgtm-coverage-only-budget-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
-        let coverage = root.join(".lgtm/bin/coverage");
-        std::fs::write(&coverage, "#!/bin/sh\nexec /bin/sleep 1\n").expect("coverage command");
-        std::fs::set_permissions(&coverage, std::fs::Permissions::from_mode(0o700))
-            .expect("fixture permissions");
-        std::fs::write(
-            root.join(".lgtm/config.json"),
-            serde_json::json!({
-                "version": "2",
-                "profile": "default",
-                "workspaces": [{
-                    "id": "root",
-                    "language": "shell",
-                    "root": ".",
-                    "commands": [],
-                    "coverage": [{
-                        "argv": [coverage.to_string_lossy()],
-                        "cwd": ".",
-                        "timeout_seconds": 30,
-                        "scope": "unit",
-                        "line_threshold_percent": 80,
-                        "branch_threshold_percent": 80
-                    }]
-                }],
-                "disabled_rules": [],
-                "severity_overrides": {}
-            })
-            .to_string(),
-        )
-        .expect("fixture config");
-
-        let reason = run_pre_commit_gate_with_budget(
-            &root,
-            Some("coverage-only-budget"),
-            Duration::from_millis(50),
-        )
-        .expect("pre-commit gate runs")
-        .expect("coverage cutoff denies commit");
-        assert!(reason.contains("aggregate execution budget expired"));
-
-        let evidence =
-            std::fs::read_to_string(root.join(".lgtm/evidence/evidence.jsonl")).expect("evidence");
-        let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("record");
-        assert_eq!(record["coverage"][0]["status"], "unverified");
-        assert!(record["results"].as_array().is_some_and(|results| {
-            results.iter().any(|result| {
-                result["status"] == "failed"
-                    && result["evidence"]["check"] == "command.aggregate_budget"
-            })
-        }));
-
-        std::fs::remove_dir_all(root).expect("temporary fixture removal");
     }
 
     #[test]
@@ -5113,152 +4494,7 @@ mod tests {
         )
         .expect_err("profile validation rejects the invalid V2 config");
         assert!(check_error.contains("config V2 is invalid"));
-
-        let pre_commit_error =
-            run_pre_commit_gate_with_budget(&root, Some("invalid-v2"), Duration::from_secs(1))
-                .expect_err("pre-commit fails closed on invalid profile config");
-        assert!(pre_commit_error.contains("config V2 is invalid"));
         assert!(!root.join(".lgtm/evidence/evidence.jsonl").exists());
-
-        std::fs::remove_dir_all(root).expect("temporary fixture removal");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn config_replacement_denies_pre_commit_and_binds_original_bytes() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        // This tests config binding, not timeouts. Allow parallel test scheduling.
-        const CONFIG_REPLACEMENT_BUDGET: Duration = Duration::from_secs(5);
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "lgtm-config-replacement-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
-        let command = root.join(".lgtm/bin/replace-config");
-        std::fs::write(
-            &command,
-            format!(
-                "#!/bin/sh\nprintf '{{}}\\n' > {}\n",
-                root.join(".lgtm/config.json").display()
-            ),
-        )
-        .expect("replacement command");
-        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
-            .expect("fixture permissions");
-        let original = serde_json::json!({
-            "version": "2",
-            "profile": "default",
-            "workspaces": [{
-                "id": "root",
-                "language": "shell",
-                "root": ".",
-                "commands": [{
-                    "argv": [command.to_string_lossy()],
-                    "cwd": ".",
-                    "timeout_seconds": 30,
-                    "tier": "full",
-                    "purpose": "test",
-                    "source": "fixture",
-                    "confidence": "high"
-                }],
-                "coverage": []
-            }],
-            "disabled_rules": [],
-            "severity_overrides": {}
-        })
-        .to_string();
-        std::fs::write(root.join(".lgtm/config.json"), &original).expect("fixture config");
-        let original_digest = digest_bytes(&original);
-
-        let reason = run_pre_commit_gate_with_budget(
-            &root,
-            Some("config-replacement"),
-            CONFIG_REPLACEMENT_BUDGET,
-        )
-        .expect("pre-commit gate runs")
-        .expect("config replacement denies commit");
-        assert!(reason.contains("changed after repository commands were configured"));
-
-        let evidence =
-            std::fs::read_to_string(root.join(".lgtm/evidence/evidence.jsonl")).expect("evidence");
-        let record: serde_json::Value = serde_json::from_str(evidence.trim()).expect("record");
-        assert_eq!(record["config_digest"], original_digest);
-        assert_eq!(record["commands"][0]["config_digest"], original_digest);
-        assert_eq!(record["commands"][0]["exit_code"], 0);
-        assert!(record["results"].as_array().is_some_and(|results| {
-            results.iter().any(|result| {
-                result["status"] == "failed" && result["evidence"]["check"] == "command.config"
-            })
-        }));
-        assert!(matching_full_evidence(&root, Some("config-replacement"), &[], false).is_none());
-
-        std::fs::remove_dir_all(root).expect("temporary fixture removal");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn joined_last_command_is_nonpassing_and_not_reusable() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "lgtm-joined-command-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(root.join(".lgtm/bin")).expect("fixture directories");
-        let command = root.join(".lgtm/bin/joined-command");
-        // Detached-descendant containment is exercised at the production
-        // supervisor boundary; this fixture joins its child before failing.
-        std::fs::write(
-            &command,
-            "#!/bin/sh\n( sleep 0.05 ) & child=$!; wait \"$child\"; exit 7\n",
-        )
-        .expect("joined failing command");
-        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700))
-            .expect("fixture permissions");
-        let original = serde_json::json!({
-            "version": "2",
-            "profile": "default",
-            "workspaces": [{
-                "id": "root",
-                "language": "shell",
-                "root": ".",
-                "commands": [{
-                    "argv": [command.to_string_lossy()],
-                    "cwd": ".",
-                    "timeout_seconds": 30,
-                    "tier": "full",
-                    "purpose": "test",
-                    "source": "fixture",
-                    "confidence": "high"
-                }],
-                "coverage": []
-            }],
-            "disabled_rules": [],
-            "severity_overrides": {}
-        })
-        .to_string();
-        std::fs::write(root.join(".lgtm/config.json"), &original).expect("fixture config");
-
-        let decision = run_pre_commit_gate_with_budget(
-            &root,
-            Some("delayed-config-replacement"),
-            Duration::from_secs(1),
-        )
-        .expect("pre-commit gate runs")
-        .expect("joined failing command denies pre-commit");
-        assert!(decision.contains("exit status 7"));
-        assert_eq!(
-            std::fs::read_to_string(root.join(".lgtm/config.json")).expect("config remains"),
-            original
-        );
-        assert!(
-            matching_full_evidence(&root, Some("delayed-config-replacement"), &[], false).is_none()
-        );
 
         std::fs::remove_dir_all(root).expect("temporary fixture removal");
     }
@@ -5399,46 +4635,5 @@ mod tests {
         }));
 
         std::fs::remove_dir_all(root).ok();
-    }
-
-    #[test]
-    fn pi_approval_challenge_redacts_secret_fingerprint_and_binds_identity() {
-        let challenge = build_pi_approval_challenge(
-            &"a".repeat(64),
-            &[gitleaks::commit::CommitFinding {
-                rule_id: "generic-api-key".to_string(),
-                file: "src/app.rs".to_string(),
-                start_line: 4,
-                start_column: 2,
-                end_line: 4,
-                end_column: 9,
-                fingerprint: "raw-secret-fingerprint".to_string(),
-                blob_identity: "b".repeat(40),
-            }],
-        )
-        .expect("eligible finding is representable");
-        assert_eq!(challenge.identity, "a".repeat(64));
-        assert_eq!(challenge.findings.len(), 1);
-        assert_eq!(challenge.findings[0].path, "src/app.rs");
-        assert!(!challenge.findings[0].candidate_id.contains("raw-secret"));
-        assert_eq!(challenge.findings[0].candidate_id.len(), 64);
-    }
-
-    #[test]
-    fn pi_approval_challenge_rejects_ineligible_or_unbounded_findings() {
-        let mut finding = gitleaks::commit::CommitFinding {
-            rule_id: "aws-access-token".to_string(),
-            file: "src/app.rs".to_string(),
-            start_line: 1,
-            start_column: 1,
-            end_line: 1,
-            end_column: 2,
-            fingerprint: "fingerprint".to_string(),
-            blob_identity: "b".repeat(40),
-        };
-        assert!(build_pi_approval_challenge(&"a".repeat(64), &[finding.clone()]).is_err());
-        finding.rule_id = "generic-api-key".to_string();
-        finding.file = "x".repeat(MAX_PI_APPROVAL_TEXT_BYTES + 1);
-        assert!(build_pi_approval_challenge(&"a".repeat(64), &[finding]).is_err());
     }
 }

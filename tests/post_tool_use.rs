@@ -1,7 +1,7 @@
 //! Integration tests for `lgtm hook post-tool-use`.
 //!
 //! Each test runs the compiled binary end to end: it pipes a PostToolUse hook
-//! payload to stdin and asserts on the exit code, stdout decision envelope, and
+//! payload to stdin and asserts on the exit code, stdout advisory context, and
 //! the evidence JSONL written under the resolved repo root. The planted-secret
 //! test exercises the real gitleaks binary, so it is skipped (not failed) when
 //! gitleaks is not installed — a missing tool must never wedge the suite, the
@@ -59,7 +59,7 @@ fn gitleaks_available() -> bool {
 const LEDGER: &str = ".lgtm/evidence/current-task.results.jsonl";
 
 #[test]
-fn planted_secret_emits_block_naming_the_rule() {
+fn planted_secret_emits_nonblocking_feedback_naming_the_rule() {
     if !gitleaks_available() {
         eprintln!("skipping: gitleaks not installed");
         return;
@@ -91,27 +91,38 @@ fn planted_secret_emits_block_naming_the_rule() {
     let (code, stdout, _stderr) = run_hook(&stdin);
     assert_eq!(code, 0, "post-tool-use must always exit 0");
 
-    let decision: Value =
-        serde_json::from_str(stdout.trim()).expect("a secret finding must emit a JSON decision");
-    assert_eq!(
-        decision["decision"],
-        json!("block"),
-        "a secret finding must block"
+    let feedback: Value =
+        serde_json::from_str(stdout.trim()).expect("a finding must emit JSON feedback");
+    assert!(
+        feedback.get("decision").is_none(),
+        "feedback must not veto a tool"
     );
-    let reason = decision["reason"]
+    assert_eq!(
+        feedback["hookSpecificOutput"]["hookEventName"],
+        "PostToolUse"
+    );
+    let reason = feedback["hookSpecificOutput"]["additionalContext"]
         .as_str()
-        .expect("block reason must be a string");
+        .expect("feedback context must be a string");
     assert!(
         reason.contains("no-committed-secrets"),
-        "block reason must name the rule: {reason}"
+        "feedback must name the rule: {reason}"
     );
     assert!(
         reason.to_lowercase().contains("rotate"),
-        "block reason must carry remediation: {reason}"
+        "feedback must carry remediation: {reason}"
     );
     assert!(
         reason.starts_with("PostToolUse feedback: the tool already ran;"),
-        "post-tool feedback must disclose that side effects already occurred: {reason}"
+        "feedback must disclose that side effects already occurred: {reason}"
+    );
+    assert!(
+        !stdout.contains(&aws_key),
+        "feedback must redact the credential"
+    );
+    assert!(
+        !stdout.contains(generic_key),
+        "feedback must redact the generic key"
     );
 
     let ledger = repo.read(LEDGER);

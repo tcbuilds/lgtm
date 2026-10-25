@@ -1,17 +1,15 @@
 //! Golden adapter-contract tests for all five Claude Code lifecycle hooks.
 //!
 //! These lock today's exact stdin -> (stdout, stderr, exit-code) behavior for
-//! every normalized outcome the adapter can emit: allow, inject-context, deny,
-//! and block/stop. They drive the compiled binary end to end, so they are
-//! decoupled from the adapter's internal structure and must pass unchanged
-//! across the adapter-neutral refactor. If any golden output changes, the
-//! refactor is wrong; fix the refactor, never the golden.
+//! every normalized observer outcome: allow, context, advisory feedback, and
+//! completion notices. They drive the compiled binary end to end and pin the
+//! nonblocking wire contract independently of the adapter's internal structure.
 //!
 //! Assertion contract: every case asserts the exact stdout bytes (full-string
 //! equality, never parsed-JSON, so key order, escaping, and the trailing
 //! newline are all locked), the exact exit code, and stderr. Stderr is asserted
 //! byte-for-byte where it is deterministic (empty, or a fixed diagnostic line).
-//! The only stderr that is not byte-stable is a PostToolUse block's operator
+//! The only stderr that is not byte-stable is PostToolUse feedback's operator
 //! diagnostics: their exact set depends on which external scanners (gitleaks,
 //! ruff, semgrep) and whether a git repo are present on the runner, so those
 //! cases assert the deterministic invariant instead — no decision leaks to
@@ -21,10 +19,10 @@
 //! Determinism: every fixture is a throwaway repo with pinned config, and paths
 //! that appear in output are derived in-test from the temp dir we control.
 //!
-//! Block-path coverage: two PostToolUse block goldens exist. The native module
-//! dependency cycle (`post_tool_use_blocks_native_module_cycle`) requires no
-//! external tool and runs on every runner. The secret-scan block
-//! (`post_tool_use_blocks_secret_on_stdout_exit_zero`) additionally locks the
+//! Feedback coverage: the native module dependency cycle
+//! (`post_tool_use_reports_native_module_cycle`) requires no external tool and
+//! runs on every runner. Secret feedback
+//! (`post_tool_use_reports_secret_on_stdout_exit_zero`) additionally locks the
 //! `gitleaks` path and runs only where `gitleaks` is installed, matching the
 //! hook's own missing-tool contract.
 
@@ -215,7 +213,7 @@ fn pre_tool_use_allows_non_edit_tool_silently() {
 }
 
 #[test]
-fn pre_tool_use_denies_traversal_with_exact_envelope() {
+fn pre_tool_use_does_not_deny_traversal() {
     let repo = TempRepo::new();
     repo.write(".lgtm/config.json", "{}");
     let stdin = json!({
@@ -227,20 +225,14 @@ fn pre_tool_use_denies_traversal_with_exact_envelope() {
     .to_string();
 
     let (code, stdout, stderr) = run_hook("pre-tool-use", &stdin);
-    assert_eq!(code, 0, "a pre-tool-use deny is exit 0 with an envelope");
+    assert_eq!(code, 0, "the observer must not deny an outside path");
     assert_eq!(
-        stdout,
-        concat!(
-            "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",",
-            "\"permissionDecision\":\"deny\",",
-            "\"permissionDecisionReason\":\"target escapes repository\"},",
-            "\"systemMessage\":\"target escapes repository\"}\n"
-        ),
-        "deny envelope must be byte-for-byte stable: exact key order, escaping, and a single trailing newline"
+        stdout, "",
+        "the observer must not emit a permission response"
     );
     assert_eq!(
-        stderr, "",
-        "a pre-tool-use deny must emit nothing on stderr: {stderr:?}"
+        stderr,
+        "pre-tool-use unverified: entity=target reason=target escapes repository retryable=false\n"
     );
 }
 
@@ -267,13 +259,11 @@ fn post_tool_use_allows_non_edit_tool_silently() {
     );
 }
 
-/// Native block golden that requires no external tool: PostToolUse scans the
-/// single edited file, and a self-importing Python module forms a one-node
-/// dependency cycle the native `module-boundary-review` check fails on. This
-/// exercises the block path (decision on stdout, exit 0) on every runner,
-/// independent of gitleaks. Stdout carries no path, so it is fully static.
+/// Native advisory feedback needs no external tool. A self-importing Python
+/// module fails the module-boundary check, but cannot veto the completed tool.
+/// Stdout carries no path, so the golden is fully static.
 #[test]
-fn post_tool_use_blocks_native_module_cycle() {
+fn post_tool_use_reports_native_module_cycle() {
     let repo = TempRepo::new();
     repo.write("cycle.py", "from .cycle import value\n\nvalue = 1\n");
     let cycle_path = repo.path().join("cycle.py");
@@ -286,24 +276,24 @@ fn post_tool_use_blocks_native_module_cycle() {
     .to_string();
 
     let (code, stdout, stderr) = run_hook("post-tool-use", &stdin);
-    assert_eq!(code, 0, "a native-check block must still exit 0");
+    assert_eq!(code, 0, "native feedback must exit 0");
     assert_eq!(
         stdout,
         concat!(
-            r#"{"decision":"block","reason":"PostToolUse feedback: the tool already ran; Module dependency cycle detected (1 file(s)). "#,
-            r#"Break the cycle or add an adapter boundary between modules."}"#,
+            r#"{"hookSpecificOutput":{"additionalContext":"PostToolUse feedback: the tool already ran; Module dependency cycle detected (1 file(s)). "#,
+            r#"Break the cycle or add an adapter boundary between modules.","hookEventName":"PostToolUse"}}"#,
             "\n"
         ),
-        "the native module-cycle block must be byte-for-byte stable"
+        "native module-cycle feedback must be byte-for-byte stable"
     );
     assert_operator_diagnostics(&stderr);
 }
 
 #[test]
-fn post_tool_use_blocks_secret_on_stdout_exit_zero() {
+fn post_tool_use_reports_secret_on_stdout_exit_zero() {
     if !gitleaks_available() {
         eprintln!(
-            "SKIP post_tool_use_blocks_secret_on_stdout_exit_zero: gitleaks not on PATH; the secret-block path is unexercised on this runner. The tool-free native block path is covered by post_tool_use_blocks_native_module_cycle."
+            "SKIP post_tool_use_reports_secret_on_stdout_exit_zero: gitleaks not on PATH; the secret-feedback path is unexercised on this runner. The tool-free native feedback path is covered by post_tool_use_reports_native_module_cycle."
         );
         return;
     }
@@ -315,7 +305,7 @@ fn post_tool_use_blocks_secret_on_stdout_exit_zero() {
         &format!("aws_access_key = \"{aws_key}\"\ngeneric = \"api_key = '{generic_key}'\"\n"),
     );
     let leak_path = repo.path().join("leak.py");
-    // The block reason embeds the canonicalized edited path; derive it the same
+    // The feedback message embeds the canonicalized edited path; derive it the same
     // way the hook does (resolve_target canonicalizes) so the assertion is exact
     // rather than loosened.
     let canonical_leak = std::fs::canonicalize(&leak_path)
@@ -331,19 +321,25 @@ fn post_tool_use_blocks_secret_on_stdout_exit_zero() {
     .to_string();
 
     let (code, stdout, stderr) = run_hook("post-tool-use", &stdin);
-    assert_eq!(code, 0, "post-tool-use block must still exit 0");
+    assert_eq!(code, 0, "post-tool feedback must exit 0");
     assert_eq!(
         stdout,
         format!(
-            "{{\"decision\":\"block\",\"reason\":\"PostToolUse feedback: the tool already ran; no-committed-secrets: gitleaks found 2 potential secrets in the touched files ({canonical_leak}). Detected rule ids: aws-access-token, generic-api-key. The secret values are redacted; remove them and rotate any exposed credential. Remove the secret from the file, load it from an environment variable or secret manager, and rotate the exposed credential.\"}}\n"
+            "{}\n",
+            json!({"hookSpecificOutput": {
+                "additionalContext": format!("PostToolUse feedback: the tool already ran; no-committed-secrets: gitleaks found 2 potential secrets in the touched files ({canonical_leak}). Detected rule ids: aws-access-token, generic-api-key. The secret values are redacted; remove them and rotate any exposed credential. Remove the secret from the file, load it from an environment variable or secret manager, and rotate the exposed credential."),
+                "hookEventName": "PostToolUse"
+            }})
         ),
-        "the gitleaks secret-block must be byte-for-byte stable, path included"
+        "secret feedback must be byte-for-byte stable, path included"
     );
     assert_operator_diagnostics(&stderr);
 }
 
 /// Pinned Stop config with one always-passing `true` verification command.
 const STOP_CONFIG: &str = r#"{"version":"2","profile":"default","workspaces":[{"id":"verify","language":"shell","root":".","commands":[{"argv":["true"],"cwd":".","timeout_seconds":30,"tier":"full","purpose":"verify","source":"test","confidence":"high"}],"coverage":[]}],"disabled_rules":[],"severity_overrides":{}}"#;
+
+const AUTOMATIC_COMPLETION_NOTICE: &str = "lgtm: automatic completion report. Checks are on demand; no checks ran at completion. Run `lgtm check` or a CI check to request them.\n";
 
 /// Write a Stop fixture whose transcript carries a single assistant `claim`.
 fn stop_fixture(claim: &str) -> (TempRepo, String) {
@@ -366,38 +362,28 @@ fn stop_fixture(claim: &str) -> (TempRepo, String) {
 }
 
 #[test]
-fn stop_without_edits_or_claims_is_silent() {
-    let (_repo, stdin) = stop_fixture("Implementation complete.");
+fn stop_without_edits_or_claims_reports_without_checks() {
+    let (repo, stdin) = stop_fixture("Implementation complete.");
 
     let (code, stdout, stderr) = run_hook("stop", &stdin);
     assert_eq!(code, 0, "a clean Stop must exit 0");
-    assert_eq!(stdout, "", "a no-op Stop must stay silent");
+    assert_eq!(stdout, AUTOMATIC_COMPLETION_NOTICE);
     assert_eq!(
         stderr, "",
         "a clean Stop must emit nothing on stderr: {stderr:?}"
     );
+    assert!(!repo.exists(".lgtm/evidence/evidence.jsonl"));
 }
 
 #[test]
-fn stop_blocks_on_stderr_with_exit_two() {
-    let (_repo, stdin) = stop_fixture("`cargo test` passed");
+fn unsupported_completion_claim_does_not_block_or_run_checks() {
+    let (repo, stdin) = stop_fixture("`cargo test` passed");
 
     let (code, stdout, stderr) = run_hook("stop", &stdin);
-    assert_eq!(code, 2, "a blocked Stop must exit 2");
-    assert_eq!(
-        stdout, "",
-        "a blocked Stop must not emit a decision on stdout: {stdout:?}"
-    );
-    assert_eq!(
-        stderr,
-        concat!(
-            r#"{"decision":"block","reason":"lgtm Stop blocked: unresolved MUST violations:\n"#,
-            r#"- evidence-claims-honest: A verification claim lacks matching current full-gate command evidence with exit status 0.\n"#,
-            r#"  Repair: Run the claimed command successfully through the full pre-commit gate, or correct the claim."}"#,
-            "\n"
-        ),
-        "the Stop block envelope must be byte-for-byte stable on stderr"
-    );
+    assert_eq!(code, 0, "automatic completion cannot veto a claim");
+    assert_eq!(stdout, AUTOMATIC_COMPLETION_NOTICE);
+    assert_eq!(stderr, "");
+    assert!(!repo.exists(".lgtm/evidence/evidence.jsonl"));
 }
 
 #[test]
@@ -425,7 +411,7 @@ fn every_hook_fails_open_on_malformed_stdin() {
         ),
         (
             "stop",
-            "stop failed: entity=hook reason=parse stdin (key must be a string at line 1 column 3) retryable=true\n",
+            "stop notice failed: entity=hook reason=hook input was malformed or oversized retryable=false\n",
         ),
     ];
     for (event, stderr_golden) in expected_stderr {

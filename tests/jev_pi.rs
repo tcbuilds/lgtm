@@ -100,33 +100,8 @@ fn assert_notice_producer(scenario: &str) {
 }
 
 #[test]
-fn real_notice_producer_eligible() {
-    assert_notice_producer("eligible");
-}
-
-#[test]
-fn real_notice_producer_hard() {
-    assert_notice_producer("hard");
-}
-
-#[test]
-fn real_notice_producer_private() {
-    assert_notice_producer("private");
-}
-
-#[test]
-fn real_notice_producer_mixed() {
-    assert_notice_producer("mixed");
-}
-
-#[test]
-fn real_notice_producer_custom() {
-    assert_notice_producer("custom");
-}
-
-#[test]
-fn real_notice_producer_capability() {
-    assert_notice_producer("capability");
+fn staged_commit_observer_never_invokes_secret_scanner_or_approval() {
+    assert_notice_producer("commit");
 }
 
 #[test]

@@ -19,49 +19,6 @@ use std::io::Write;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Versioned Pi handling capabilities; heuristic notices never grant approval.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApprovalCapability {
-    /// Pi finding approval protocol version 1.
-    PiFindingApprovalV1,
-    /// Nonblocking presentation of deterministically eligible heuristic notices.
-    PiHeuristicNoticesV1,
-}
-
-impl ApprovalCapability {
-    pub const NAME: &'static str = "lgtm-pi-finding-approval";
-    pub const VERSION: u64 = 1;
-    pub const NOTICE_NAME: &'static str = "lgtm-pi-heuristic-notices";
-
-    /// Parse the exact wire object; unknown fields and versions are unsupported.
-    pub fn from_value(value: &Value) -> Option<Self> {
-        let object = value.as_object()?;
-        if object.len() != 2 || object.get("version").and_then(Value::as_u64) != Some(Self::VERSION)
-        {
-            return None;
-        }
-        match object.get("name").and_then(Value::as_str)? {
-            Self::NAME => Some(Self::PiFindingApprovalV1),
-            Self::NOTICE_NAME => Some(Self::PiHeuristicNoticesV1),
-            _ => None,
-        }
-    }
-
-    /// Return the canonical wire representation used by the normalized Pi input.
-    pub fn as_value(self) -> Value {
-        match self {
-            Self::PiFindingApprovalV1 => serde_json::json!({
-                "name": Self::NAME,
-                "version": Self::VERSION,
-            }),
-            Self::PiHeuristicNoticesV1 => serde_json::json!({
-                "name": Self::NOTICE_NAME,
-                "version": Self::VERSION,
-            }),
-        }
-    }
-}
-
 /// Closed, producer-selected advisory classes. Hard failures cannot enter this channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -82,32 +39,11 @@ pub struct PiHeuristicNotice {
     pub candidate_id: Option<String>,
 }
 
-/// A deterministic allow-with-notices result. Commit identities require revalidation.
+/// Bounded metadata for nonblocking advisory presentation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PiHeuristicNotices {
     pub identity: Option<String>,
     pub items: Vec<PiHeuristicNotice>,
-}
-
-/// One redacted candidate shown by the live Pi confirmation UI.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PiApprovalFinding {
-    pub rule_id: String,
-    pub path: String,
-    pub start_line: u64,
-    pub start_column: u64,
-    pub end_line: u64,
-    pub end_column: u64,
-    pub candidate_id: String,
-}
-
-/// Exact, redacted identity of one pending staged-commit assessment.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PiApprovalChallenge {
-    pub identity: String,
-    pub findings: Vec<PiApprovalFinding>,
 }
 
 /// Lifecycle events lgtm can normalize across harnesses.
@@ -164,15 +100,12 @@ pub struct HookRequest {
     pub agent_type: Option<String>,
     /// Whether Codex already continued this hook, when present.
     pub stop_hook_active: Option<bool>,
-    /// A strictly validated capability advertised by a supported caller.
-    pub approval_capability: Option<ApprovalCapability>,
 }
 
 /// A normalized, closed set of hook outcomes.
 ///
-/// Policy code produces one of these; the adapter maps it to harness bytes. The
-/// set is closed so a harness cannot invent a status the Stop gate never
-/// authorized.
+/// Observer code produces one of these; adapters map advisory output to harness
+/// bytes. Permission and completion vetoes are not part of this interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookResponse {
     /// Proceed with no agent-facing output.
@@ -183,33 +116,11 @@ pub enum HookResponse {
     InjectMessage(String),
     /// Replace the system prompt before the agent loop starts.
     InjectSystemPrompt(String),
-    /// Deny a tool call before it runs, with an operator-facing reason.
-    Deny {
-        /// Why the tool call was denied.
-        reason: String,
-    },
-    /// Ask Claude's native permission UI to approve a complete replacement
-    /// tool-input object. Other adapters reject this response instead of
-    /// approximating an interactive prompt.
-    Ask {
-        /// Why native approval is required.
-        reason: String,
-        /// The complete replacement input Claude must show and execute.
-        updated_input: Value,
-    },
-    /// Block session/stop completion until a MUST violation is resolved.
-    BlockStop {
-        /// The unresolved violations that block completion.
-        reason: String,
-    },
     /// Report a finding after a tool already completed.
     PostToolFeedback {
         /// The feedback and remediation text for the agent.
         reason: String,
     },
-    /// Ask a verified Pi extension to obtain native confirmation for exact
-    /// redacted staged-commit findings.
-    FindingApprovalRequired(PiApprovalChallenge),
     /// Present only already-nonblocking, producer-selected heuristic findings.
     HeuristicNotices(PiHeuristicNotices),
     /// Report a clean completion summary without changing the decision.
@@ -221,7 +132,7 @@ pub enum HookResponse {
 pub enum OutputStream {
     /// The agent-facing stdout channel.
     Stdout,
-    /// The operator-facing stderr channel (used by Stop's exit-2 block).
+    /// The operator-facing stderr channel.
     Stderr,
 }
 

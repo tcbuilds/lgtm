@@ -8,7 +8,7 @@ const { pathToFileURL } = require("node:url");
 const binary = path.resolve(process.argv[2]);
 const gateSource = path.resolve(process.argv[3]);
 const scenario = process.argv[4];
-assert.ok(["eligible", "hard", "private", "mixed", "custom", "capability", "review"].includes(scenario), "explicit notice-producer scenario required");
+assert.ok(["commit", "review"].includes(scenario), "explicit observer scenario required");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "lgtm-real-notice-"));
 const prior = process.cwd();
 const watchdog = setTimeout(() => {
@@ -35,9 +35,6 @@ if(process.argv.includes('version')) {console.log('fixture-1');process.exit(0);}
 const report=process.argv[process.argv.indexOf('--report-path')+1];
 const make=(rule)=>({RuleID:rule,Description:'fixture',File:'src/app.rs',StartLine:1,StartColumn:1,EndLine:1,EndColumn:2,Fingerprint:rule+':fixture'});
 let rules=['generic-api-key'];
-if(process.env.SCANNER_CASE==='hard')rules=['aws-access-token'];
-if(process.env.SCANNER_CASE==='private')rules=['private-key'];
-if(process.env.SCANNER_CASE==='mixed')rules=['generic-api-key','private-key'];
 if(process.env.SCANNER_CASE==='clean')rules=[];
 fs.appendFileSync('.scanner-count','x');
 fs.writeFileSync(report,JSON.stringify(rules.map(make)));process.exit(rules.length ? 2 : 0);
@@ -86,35 +83,20 @@ fs.writeFileSync(report,JSON.stringify(rules.map(make)));process.exit(rules.leng
     for (const handler of handlers.tool_call) response = await handler({ toolName: "bash", toolCallId: "commit", input: { command: "git commit -m fixture" } }, ctx);
     return response;
   }
-  // Establish the working notice path before checking a denial boundary.
-  if (scenario !== "review") {
+  if (scenario === "commit") {
     process.env.SCANNER_CASE = "generic";
-    assert.equal(await call(), undefined, "actual eligible producer did not allow with notices");
-    assert.ok(providerInputs.length > 0, "actual notice never reached Jev filter");
-    assert.equal(entries.findLast((entry) => entry.customType === "jev-auto-gate").data.visibility, "silent");
-    assert.ok(fs.readFileSync(".scanner-count", "utf8").length >= 2, "actual staged scanner was not revalidated");
-  }
-  if (["hard", "private", "mixed"].includes(scenario)) {
-    process.env.SCANNER_CASE = scenario;
-    const before = providerInputs.length;
-    const denied = await call();
-    assert.equal(denied?.block, true, scenario + " finding was allowed");
-    assert.match(denied.reason, /secret|credential|gitleaks|hard|built-in/i);
-    assert.equal(providerInputs.length, before, "hard finding reached classifier");
-  }
-  if (scenario === "custom") {
-    process.env.SCANNER_CASE = "generic";
-    fs.writeFileSync(".gitleaks.toml", "[[rules]]\nid='generic-api-key'\nregex='fixture'\n");
-    assert.equal((await call())?.block, true, "custom generic rule was allowed");
-    fs.rmSync(".gitleaks.toml");
-  }
-  if (scenario === "capability") {
-    for (const capability of [{ name: "unknown", version: 1 }, { name: "lgtm-pi-heuristic-notices", version: 2 }]) {
-      const payload = { type: "tool_call", toolName: "bash", input: { command: "git commit -m fixture", __lgtmPolicyInput: "lgtm-pi-policy-input-v1" }, cwd: root, sessionId: "real-producer", approvalCapability: capability };
-      const reply = JSON.parse(run(binary, ["hook", "pre-tool-use", "--adapter", "pi"], { input: JSON.stringify(payload) }));
-      assert.equal(reply.block, true, "unsupported capability selected notice policy");
-      assert.equal(reply.notices, undefined);
-    }
+    const beforeHead = run("git", ["rev-parse", "HEAD"]);
+    fs.writeFileSync("src/app.rs", "pub fn value() -> u8 { 2 }\n");
+    run("git", ["add", "src/app.rs"]);
+    assert.equal(await call(), undefined, "commit observer returned a tool veto");
+    assert.equal(fs.existsSync(".lgtm/evidence/shell-tracking.json"), true,
+      "the observer request did not reach Rust shell tracking");
+    assert.equal(fs.existsSync(".scanner-count"), false, "commit observer ran a secret scan");
+    assert.equal(providerInputs.length, 0, "commit observer invoked the classifier");
+    assert.equal(entries.some((entry) => entry.customType === "jev-auto-gate"), false,
+      "commit observer started a notice/approval transaction");
+    assert.equal(run("git", ["rev-parse", "HEAD"]), beforeHead,
+      "commit observer executed the requested Git command");
   }
   if (scenario === "review") {
     process.env.SCANNER_CASE = "clean";

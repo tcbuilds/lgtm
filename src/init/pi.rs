@@ -57,6 +57,9 @@ const KNOWN_TEMPLATE_DIGESTS: &[&str] = &[
     // Canonical v0.13.0 project and global extensions.
     "94930f303d7556618ca14e4c5c83845fb1c4054ecd41f6dc414898c3dd489832",
     "54d143beac8424999b4d93748c87cbf492f8bdd4d0bca3911bb91e34e52bf6f4",
+    // Canonical pre-removal v0.14.2 project and global extensions.
+    "09d706e7bc7259513a5757f79c1a95ea996866a535334222c68cd59bd24a1064",
+    "b4a0bb18dd4e4783e348139b68df044066b183ab21b9b9eab51d8e8174786500",
 ];
 const JEV_COMMON_TEMPLATE: &str = include_str!("../../templates/pi/jev_common.js");
 const JEV_TEMPLATE: &str = include_str!("../../templates/pi/jev.js");
@@ -84,18 +87,10 @@ const TOOL_INPUT_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const MAX_BINARY_BYTES = 128 * 1024 * 1024;
 const NORMAL_TIMEOUT_MS = 10_000;
-const PRE_TOOL_TIMEOUT_MS = 310_000;
 const POLICY_INPUT_MARKER = "lgtm-pi-policy-input-v1";
-const APPROVAL_CAPABILITY = Object.freeze({
-  name: "lgtm-pi-heuristic-notices",
-  version: 1,
-});
-const APPROVAL_PROTOCOL = "lgtm-pi-finding-approval";
 const NOTICE_PROTOCOL = "lgtm-pi-heuristic-notices";
 const NOTICE_TIMEOUT_MS = 1_500;
-const MAX_APPROVAL_FINDINGS = 32;
-const MAX_APPROVAL_TEXT_BYTES = 512;
-const MAX_APPROVAL_COORDINATE = 1_000_000_000;
+const MAX_NOTICE_COORDINATE = 1_000_000_000;
 const FAILURE_ENTRY = "lgtm";
 const MAX_NOTIFIED_FAILURES = 32;
 const SCHEMA_ANNOTATIONS = ["description", "title", "$comment", "examples", "default", "deprecated", "readOnly", "writeOnly"];
@@ -209,6 +204,8 @@ function projectTemplateIsCanonical() {
   }
 }
 
+// Optional Jev requests use this provenance check before sending advisory data.
+// It never decides whether a development tool or commit may run.
 function currentBinaryDigest() {
   try {
     const metadata = lstatSync(LGTM_BINARY);
@@ -443,7 +440,6 @@ function buildPayload(eventType, event, ctx, pi) {
   } else if (eventType === "tool_call") {
     payload.toolName = event.toolName;
     payload.input = policyToolInput(event.toolName, event.input);
-    payload.approvalCapability = APPROVAL_CAPABILITY;
     payload.toolCallId = event.toolCallId;
   } else if (eventType === "tool_result") {
     payload.toolName = event.toolName;
@@ -453,7 +449,7 @@ function buildPayload(eventType, event, ctx, pi) {
   return payload;
 }
 
-function appendFailure(pi, ctx, eventType, reason, approvalState, generation) {
+function appendFailure(pi, ctx, eventType, reason, sessionState, generation) {
   const entry = {
     extensionVersion: 1,
     protocolVersion: 1,
@@ -468,16 +464,16 @@ function appendFailure(pi, ctx, eventType, reason, approvalState, generation) {
   } catch {
     // The original hook failure remains fail-open even if Pi cannot persist it.
   }
-  if (generation !== approvalState.generation) return;
+  if (generation !== sessionState.generation) return;
   const warningKey = entry.reason;
-  if (approvalState.notifiedFailures.has(warningKey)
-      || approvalState.notifiedFailures.size >= MAX_NOTIFIED_FAILURES) return;
-  approvalState.notifiedFailures.add(warningKey);
+  if (sessionState.notifiedFailures.has(warningKey)
+      || sessionState.notifiedFailures.size >= MAX_NOTIFIED_FAILURES) return;
+  sessionState.notifiedFailures.add(warningKey);
   try {
     // Presentation is optional; a classifier never changes this failure or its gate decision.
     void presentGateNotices(pi, ctx, eventType, { identity: null, items: [{
       kind: "unverified", ruleId: `pi-${warningKey}`, path: null, line: null, candidateId: null,
-    }] }, approvalState, approvalState.controller.signal);
+    }] }, sessionState, sessionState.controller.signal);
   } catch {
     // UI notification is optional and must not change the hook decision.
   }
@@ -526,10 +522,7 @@ function invoke(binary, root, eventType, payload, signal) {
     let settled = false;
     let terminationReason;
     let reapTimer;
-    const timeoutMs = eventType === "tool_call" && payload.toolName === "bash"
-      ? PRE_TOOL_TIMEOUT_MS
-      : NORMAL_TIMEOUT_MS;
-    const timer = setTimeout(() => terminate("timeout"), timeoutMs);
+    const timer = setTimeout(() => terminate("timeout"), NORMAL_TIMEOUT_MS);
 
     function finish(result) {
       if (settled) return;
@@ -624,13 +617,9 @@ function validateResponse(eventType, response) {
     return validNoticeResponse(eventType, response) ? undefined : "invalid_notice_response";
   }
   if (eventType === "tool_call") {
-    if (Object.prototype.hasOwnProperty.call(response, "approval")) {
-      return validApprovalResponse(response) ? undefined : "invalid_approval_response";
-    }
-    if (responseKeys(response) !== "block\u0000reason"
-        || response.block !== true || typeof response.reason !== "string"
-        || !withinJsonBudget(response, 4096)) return "invalid_tool_call_response";
-    return undefined;
+    // Legacy denial and approval payloads are invalid advisory responses here;
+    // they are rejected instead of being forwarded as a tool veto.
+    return "invalid_tool_call_response";
   }
   if (eventType === "tool_result") {
     if (responseKeys(response) !== "content" || !Array.isArray(response.content)
@@ -643,44 +632,6 @@ function validateResponse(eventType, response) {
     return undefined;
   }
   return "unexpected_response";
-}
-
-function validApprovalResponse(response) {
-  if (responseKeys(response) !== "approval\u0000block\u0000reason"
-      || response.block !== true
-      || typeof response.reason !== "string"
-      || boundedReason(response.reason) !== response.reason
-      || !withinJsonBudget(response, 64 * 1024)) return false;
-  const approval = response.approval;
-  if (!approval || typeof approval !== "object" || Array.isArray(approval)
-      || responseKeys(approval) !== "findings\u0000identity\u0000protocol\u0000version"
-      || approval.protocol !== APPROVAL_PROTOCOL || approval.version !== 1
-      || typeof approval.identity !== "string"
-      || !/^[0-9a-f]{64}$/.test(approval.identity)
-      || !Array.isArray(approval.findings)
-      || approval.findings.length < 1
-      || approval.findings.length > MAX_APPROVAL_FINDINGS) return false;
-  return approval.findings.every((finding) => {
-    if (!finding || typeof finding !== "object" || Array.isArray(finding)
-        || responseKeys(finding) !== "candidateId\u0000endColumn\u0000endLine\u0000path\u0000ruleId\u0000startColumn\u0000startLine"
-        || finding.ruleId !== "generic-api-key"
-        || typeof finding.path !== "string"
-        || finding.path.length === 0
-        || Buffer.byteLength(finding.path, "utf8") > MAX_APPROVAL_TEXT_BYTES
-        || /[\u0000-\u001f\u007f]/.test(finding.path)
-        || typeof finding.candidateId !== "string"
-        || !/^[0-9a-f]{64}$/.test(finding.candidateId)) return false;
-    return [finding.startLine, finding.startColumn, finding.endLine, finding.endColumn]
-      .every((coordinate) => Number.isSafeInteger(coordinate)
-        && coordinate >= 0 && coordinate <= MAX_APPROVAL_COORDINATE);
-  });
-}
-
-function approvalChallenge(response) {
-  return response && typeof response === "object" && !Array.isArray(response)
-    && response.block === true && response.approval && validApprovalResponse(response)
-    ? response.approval
-    : undefined;
 }
 
 function validNoticeResponse(eventType, response) {
@@ -700,7 +651,7 @@ function validNoticeResponse(eventType, response) {
         || !["generic-secret", "review", "unverified"].includes(item.kind)
         || typeof item.ruleId !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(item.ruleId)
         || (item.path !== null && (typeof item.path !== "string" || item.path.length > 512 || /[\u0000-\u001f\u007f]/.test(item.path)))
-        || (item.line !== null && (!Number.isSafeInteger(item.line) || item.line < 0 || item.line > MAX_APPROVAL_COORDINATE))
+        || (item.line !== null && (!Number.isSafeInteger(item.line) || item.line < 0 || item.line > MAX_NOTICE_COORDINATE))
         || (item.candidateId !== null && (typeof item.candidateId !== "string" || !/^[0-9a-f]{64}$/.test(item.candidateId)))) return false;
     return eventType === "tool_call"
       ? item.kind === "generic-secret" && item.ruleId === "generic-api-key" && item.path !== null && item.candidateId !== null
@@ -755,15 +706,6 @@ async function presentGateNotices(pi, ctx, eventType, notices, state, signal) {
   }
 }
 
-function isDirectCommitCandidate(event) {
-  const command = event?.toolName === "bash" ? event.input?.command : undefined;
-  return typeof command === "string" && /(^|\s)git\s+commit(?:\s|$)/.test(command);
-}
-
-function blocked(reason) {
-  return { block: true, reason: boundedReason(reason) };
-}
-
 function validToolResultContentItem(item) {
   if (!item || typeof item !== "object" || Array.isArray(item)) return false;
   if (item.type === "text") return typeof item.text === "string";
@@ -816,77 +758,23 @@ function mergeToolResult(event, response, ctx) {
     ...(binding ? { lgtmRead: binding } : {}) } };
 }
 
-async function refreshCommitRuntime(pi, root, ctx, signal) {
-  if (!trustedRuntimeVersion() || !verifiedAllToolContracts(pi)) {
-    return blocked("Pi commit runtime is unverified; commit denied");
-  }
-  const payload = buildPayload("session_start", {}, ctx, pi);
-  if (payload.trusted !== true || payload.toolContractsVerified !== true) {
-    return blocked("Pi commit runtime evidence is unavailable; commit denied");
-  }
-  const result = await invoke(LGTM_BINARY, root, "session_start", payload, signal);
-  if (result.failure || result.diagnostics || !trustedRuntimeVersion()) {
-    return blocked("Pi commit runtime could not be refreshed; commit denied");
-  }
-  return undefined;
-}
-
-function signalWasAborted(ctx) {
-  try {
-    return ctx.signal?.aborted === true;
-  } catch {
-    return true;
-  }
-}
-
-function approvalContextIsCurrent(ctx, approvalState, authority) {
-  return !signalWasAborted(ctx)
-    && approvalState.generation === authority.generation
-    && approvalState.sessionId === authority.sessionId
-    && sessionId(ctx) === authority.sessionId;
-}
-
-async function presentAndRevalidateNotices(pi, root, ctx, payload, notices, state, signal) {
-  const authority = { sessionId: sessionId(ctx), generation: state.generation };
-  if (!authority.sessionId || !approvalContextIsCurrent(ctx, state, authority) || !trustedRuntimeVersion()) {
-    return blocked("Pi notice attestation changed; staged commit denied");
-  }
-  await presentGateNotices(pi, ctx, "tool_call", notices, state, signal);
-  if (!approvalContextIsCurrent(ctx, state, authority) || !trustedRuntimeVersion()) {
-    return blocked("Pi notice context changed; staged commit denied");
-  }
-  const retry = await invoke(LGTM_BINARY, root, "tool_call", payload, signal);
-  if (!approvalContextIsCurrent(ctx, state, authority) || !trustedRuntimeVersion()
-      || retry.failure || retry.diagnostics) {
-    return blocked("staged commit notices could not be revalidated; commit denied");
-  }
-  if (retry.response === undefined) return undefined;
-  if (!retry.response.notices) return retry.response;
-  if (retry.response.notices.identity !== notices.identity
-      || JSON.stringify(retry.response.notices.items) !== JSON.stringify(notices.items)) {
-    return blocked("staged commit findings changed during notice triage; commit denied");
-  }
-  return undefined;
-}
-
-async function handle(pi, eventType, event, ctx, approvalState) {
-  let generation = approvalState.generation;
+async function handle(pi, eventType, event, ctx, sessionState) {
+  let generation = sessionState.generation;
   try {
     const currentSessionId = sessionId(ctx);
     if (eventType === "session_start"
-        || (approvalState.sessionId && approvalState.sessionId !== currentSessionId)) {
-      approvalState.generation += 1;
-      approvalState.controller.abort();
-      approvalState.controller = new AbortController();
-      approvalState.notifiedFailures.clear();
-      approvalState.noticeKeys.clear();
+        || (sessionState.sessionId && sessionState.sessionId !== currentSessionId)) {
+      sessionState.generation += 1;
+      sessionState.controller.abort();
+      sessionState.controller = new AbortController();
+      sessionState.notifiedFailures.clear();
+      sessionState.noticeKeys.clear();
     }
-    approvalState.sessionId = currentSessionId;
-    generation = approvalState.generation;
-    const hasOperationSignal = ctx.signal instanceof AbortSignal;
-    const signal = hasOperationSignal
-      ? AbortSignal.any([ctx.signal, approvalState.controller.signal])
-      : approvalState.controller.signal;
+    sessionState.sessionId = currentSessionId;
+    generation = sessionState.generation;
+    const signal = ctx.signal instanceof AbortSignal
+      ? AbortSignal.any([ctx.signal, sessionState.controller.signal])
+      : sessionState.controller.signal;
     const root = resolveScopeRoot(ctx.cwd);
     if (!root) return undefined;
     const policyEvent = eventType === "tool_call" || eventType === "tool_result";
@@ -895,12 +783,12 @@ async function handle(pi, eventType, event, ctx, approvalState) {
       let trusted = false;
       try { trusted = ctx.isProjectTrusted?.() === true; } catch {}
       if (!trusted) {
-        appendFailure(pi, ctx, eventType, "project_untrusted", approvalState, generation);
+        appendFailure(pi, ctx, eventType, "project_untrusted", sessionState, generation);
         return undefined;
       }
     }
     if (!policyFilesPresent(root)) {
-      appendFailure(pi, ctx, eventType, "policy_unverified", approvalState, generation);
+      appendFailure(pi, ctx, eventType, "policy_unverified", sessionState, generation);
       return undefined;
     }
     if (policyEvent) {
@@ -909,68 +797,34 @@ async function handle(pi, eventType, event, ctx, approvalState) {
         : ["read", "bash", "edit", "write"].includes(event.toolName);
       if (!supported) return undefined;
       if (!verifiedToolContract(pi, event)) {
-        appendFailure(pi, ctx, eventType, "tool_provenance_unverified", approvalState, generation);
+        appendFailure(pi, ctx, eventType, "tool_provenance_unverified", sessionState, generation);
         return undefined;
       }
       if (eventType === "tool_result" && !validToolResultEvent(event)) {
-        appendFailure(pi, ctx, eventType, "tool_result_unverified", approvalState, generation);
+        appendFailure(pi, ctx, eventType, "tool_result_unverified", sessionState, generation);
         return undefined;
       }
     }
     if (settledEvent && !verifiedAllToolContracts(pi)) {
-      appendFailure(pi, ctx, eventType, "tool_provenance_unverified", approvalState, generation);
+      appendFailure(pi, ctx, eventType, "tool_provenance_unverified", sessionState, generation);
       return undefined;
-    }
-    if (eventType === "tool_call" && isDirectCommitCandidate(event)) {
-      if (!hasOperationSignal) {
-        return blocked("Pi operation cancellation is unavailable; update Pi before running the commit gate");
-      }
-      try {
-        const refreshFailure = await refreshCommitRuntime(pi, root, ctx, signal);
-        if (refreshFailure) return refreshFailure;
-      } catch {
-        return blocked("Pi commit runtime refresh failed; commit denied");
-      }
     }
     const payload = buildPayload(eventType, event, ctx, pi);
     const result = await invoke(LGTM_BINARY, root, eventType, payload, signal);
     if (result.failure) {
-      appendFailure(pi, ctx, eventType, result.failure, approvalState, generation);
-      if (result.failure === "aborted" && eventType === "tool_call") {
-        return blocked("LGTM check was cancelled; tool execution denied");
-      }
-      if (result.failure === "invalid_approval_response") {
-        return blocked("Pi approval response was malformed; staged commit denied");
-      }
-      if (eventType === "tool_call" && isDirectCommitCandidate(event)) {
-        return blocked("LGTM could not verify the staged commit; commit denied");
-      }
+      appendFailure(pi, ctx, eventType, result.failure, sessionState, generation);
       return undefined;
     }
     if (result.diagnostics) {
-      appendFailure(pi, ctx, eventType, "child_diagnostics", approvalState, generation);
-      if (eventType === "tool_call"
-          && (isDirectCommitCandidate(event) || approvalChallenge(result.response))) {
-        return blocked("LGTM diagnostics made staged commit approval unverified; commit denied");
-      }
+      appendFailure(pi, ctx, eventType, "child_diagnostics", sessionState, generation);
     }
     if (result.response?.notices) {
-      if (eventType === "tool_call") {
-        if (!isDirectCommitCandidate(event)) return blocked("Unexpected commit notice response; tool denied");
-        return await presentAndRevalidateNotices(pi, root, ctx, payload, result.response.notices, approvalState, signal);
-      }
-      await presentGateNotices(pi, ctx, eventType, result.response.notices, approvalState, signal);
+      await presentGateNotices(pi, ctx, eventType, result.response.notices, sessionState, signal);
       return eventType === "tool_result" ? mergeToolResult(event, undefined, ctx) : undefined;
     }
-    if (eventType === "tool_call" && approvalChallenge(result.response)) {
-      return blocked("Legacy finding confirmation is not supported by this extension; refresh LGTM");
-    }
-    return eventType === "tool_result" ? mergeToolResult(event, result.response, ctx) : result.response;
+    return eventType === "tool_result" ? mergeToolResult(event, result.response, ctx) : undefined;
   } catch {
-    appendFailure(pi, ctx, eventType, "handler", approvalState, generation);
-    if (eventType === "tool_call" && isDirectCommitCandidate(event)) {
-      return blocked("LGTM commit handler failed; commit denied");
-    }
+    appendFailure(pi, ctx, eventType, "handler", sessionState, generation);
     return undefined;
   }
 }
@@ -993,7 +847,7 @@ export default function lgtm(pi) {
   if (SCOPE === "project" && projectBinaryIsRunnable() && projectTemplateIsCanonical()) {
     globalThis[PROJECT_SCOPE_LOADED] = true;
   }
-  const approvalState = {
+  const sessionState = {
     sessionId: undefined,
     generation: 0,
     controller: new AbortController(),
@@ -1001,30 +855,30 @@ export default function lgtm(pi) {
     noticeKeys: new Map(),
   };
   pi.on("session_start", (event, ctx) => {
-    registerLgtmJev(pi, () => approvalState.controller.signal);
-    registerLgtmJevReview(pi, () => approvalState.controller.signal);
-    registerLgtmJevScope(pi, () => approvalState.controller.signal);
-    registerLgtmJevTriage(pi, () => approvalState.controller.signal);
-    registerLgtmJevCompaction(pi, () => approvalState.controller.signal);
-    registerLgtmJevUntrusted(pi, () => approvalState.controller.signal);
-    return handle(pi, "session_start", event, ctx, approvalState);
+    registerLgtmJev(pi, () => sessionState.controller.signal);
+    registerLgtmJevReview(pi, () => sessionState.controller.signal);
+    registerLgtmJevScope(pi, () => sessionState.controller.signal);
+    registerLgtmJevTriage(pi, () => sessionState.controller.signal);
+    registerLgtmJevCompaction(pi, () => sessionState.controller.signal);
+    registerLgtmJevUntrusted(pi, () => sessionState.controller.signal);
+    return handle(pi, "session_start", event, ctx, sessionState);
   });
   pi.on("session_shutdown", () => {
-    approvalState.controller.abort();
-    approvalState.generation += 1;
-    approvalState.sessionId = undefined;
-    approvalState.notifiedFailures.clear();
-    approvalState.noticeKeys.clear();
+    sessionState.controller.abort();
+    sessionState.generation += 1;
+    sessionState.sessionId = undefined;
+    sessionState.notifiedFailures.clear();
+    sessionState.noticeKeys.clear();
   });
   pi.on("tool_call", (event, ctx) =>
-    handle(pi, "tool_call", event, ctx, approvalState));
+    handle(pi, "tool_call", event, ctx, sessionState));
   pi.on("tool_result", async (event, ctx) => {
-    const response = await handle(pi, "tool_result", event, ctx, approvalState);
+    const response = await handle(pi, "tool_result", event, ctx, sessionState);
     // Deterministic post checks still run; only advisory-native error output is suppressed.
     return jevNativeFailure(event) ?? response;
   });
   pi.on("agent_settled", (event, ctx) =>
-    handle(pi, "agent_settled", event, ctx, approvalState));
+    handle(pi, "agent_settled", event, ctx, sessionState));
 }
 
 // lgtm-pi-extension: end

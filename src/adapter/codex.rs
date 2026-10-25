@@ -47,7 +47,6 @@ impl HookAdapter for CodexAdapter {
             agent_id: string_field(&value, "agent_id"),
             agent_type: string_field(&value, "agent_type"),
             stop_hook_active: value.get("stop_hook_active").and_then(Value::as_bool),
-            approval_capability: None,
         })
     }
 
@@ -86,43 +85,17 @@ impl HookAdapter for CodexAdapter {
             HookResponse::InjectSystemPrompt(_) => {
                 Err(invalid_combination(event, "InjectSystemPrompt"))
             }
-            HookResponse::Deny { reason } => match event {
-                HookEvent::PreToolUse => stdout_json(json!({
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": reason,
-                    }
-                })),
-                HookEvent::PermissionRequest => stdout_json(json!({
-                    "hookSpecificOutput": {
-                        "hookEventName": "PermissionRequest",
-                        "decision": {
-                            "behavior": "deny",
-                            "message": reason,
-                        }
-                    }
-                })),
-                _ => Err(invalid_combination(event, "Deny")),
-            },
-            HookResponse::Ask { .. } => Err(invalid_combination(event, "Ask")),
-            HookResponse::BlockStop { reason } => match event {
-                HookEvent::PostToolUse | HookEvent::Stop | HookEvent::SubagentStop => {
-                    stdout_json(json!({ "decision": "block", "reason": reason }))
-                }
-                _ => Err(invalid_combination(event, "BlockStop")),
-            },
             HookResponse::PostToolFeedback { reason } => match event {
-                HookEvent::PostToolUse => {
-                    stdout_json(json!({ "decision": "block", "reason": reason }))
-                }
+                HookEvent::PostToolUse => stdout_json(json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": "PostToolUse",
+                        "additionalContext": reason,
+                    }
+                })),
                 _ => Err(invalid_combination(event, "PostToolFeedback")),
             },
             HookResponse::HeuristicNotices(_) => {
                 Err(invalid_combination(event, "HeuristicNotices"))
-            }
-            HookResponse::FindingApprovalRequired(_) => {
-                Err(invalid_combination(event, "FindingApprovalRequired"))
             }
             HookResponse::Summary(summary) => match event {
                 HookEvent::Stop | HookEvent::SubagentStop => stdout_json(json!({
@@ -192,40 +165,13 @@ mod tests {
     }
 
     #[test]
-    fn deny_uses_codex_pre_tool_use_json() {
-        exact(
-            HookEvent::PreToolUse,
-            HookResponse::Deny {
-                reason: "target escapes repository".to_string(),
-            },
-            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"target escapes repository"}}"#,
-        );
-        exact(
-            HookEvent::PermissionRequest,
-            HookResponse::Deny {
-                reason: "policy denied approval".to_string(),
-            },
-            r#"{"hookSpecificOutput":{"decision":{"behavior":"deny","message":"policy denied approval"},"hookEventName":"PermissionRequest"}}"#,
-        );
-    }
-
-    #[test]
-    fn block_stop_uses_stdout_exit_zero_for_stop_and_post_tool_use() {
-        for event in [HookEvent::Stop, HookEvent::PostToolUse] {
-            exact(
-                event,
-                HookResponse::BlockStop {
-                    reason: "unresolved MUST violation".to_string(),
-                },
-                r#"{"decision":"block","reason":"unresolved MUST violation"}"#,
-            );
-        }
+    fn post_tool_feedback_uses_nonblocking_additional_context() {
         exact(
             HookEvent::PostToolUse,
             HookResponse::PostToolFeedback {
-                reason: "PostToolUse feedback: the tool already ran; review".to_string(),
+                reason: "review".to_string(),
             },
-            r#"{"decision":"block","reason":"PostToolUse feedback: the tool already ran; review"}"#,
+            r#"{"hookSpecificOutput":{"additionalContext":"review","hookEventName":"PostToolUse"}}"#,
         );
     }
 
@@ -287,25 +233,17 @@ mod tests {
         let invalid = [
             (
                 HookEvent::Stop,
-                HookResponse::Deny {
-                    reason: "reason".to_string(),
+                HookResponse::InjectContext("context".to_string()),
+            ),
+            (
+                HookEvent::PreToolUse,
+                HookResponse::PostToolFeedback {
+                    reason: "feedback".to_string(),
                 },
             ),
             (
                 HookEvent::SessionStart,
-                HookResponse::BlockStop {
-                    reason: "reason".to_string(),
-                },
-            ),
-            (
-                HookEvent::PreToolUse,
-                HookResponse::BlockStop {
-                    reason: "reason".to_string(),
-                },
-            ),
-            (
-                HookEvent::Stop,
-                HookResponse::InjectContext("context".to_string()),
+                HookResponse::Summary("summary".to_string()),
             ),
         ];
         for (event, response) in invalid {

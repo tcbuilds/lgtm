@@ -1,60 +1,13 @@
-//! Default destructive-command policy seeded by `lgtm init`.
+//! Empty compatibility policy for older managed installations.
 //!
-//! `lgtm init` writes `.lgtm/execpolicy.json` when the file is absent so a fresh
-//! repository has hard-stop coverage for irreversible shell commands instead of
-//! an empty policy. An existing file is never rewritten, reordered, or merged
-//! into: it is preserved verbatim, matching how [`super::config::render_config`]
-//! treats a user-edited `.lgtm/config.json`.
+//! LGTM no longer installs automatic command bans. Keep an empty policy file so
+//! existing installation discovery can recognize an initialized repository.
+//! Preserve an existing repository policy byte-for-byte; it does not authorize
+//! LGTM to change the host agent's permissions.
 
 use super::*;
 
-/// Destructive argv prefixes seeded into a fresh `.lgtm/execpolicy.json` as a
-/// guardrail against accidental destruction, never as a security boundary.
-///
-/// [`crate::hooks::pre_tool_use::command`] matches these as an executable plus
-/// a required flag set and required leading operands, so flag order and
-/// spelling do not matter and a leading `sudo` does not evade the entry. The
-/// list is deliberately narrow: every entry names an operation that destroys
-/// data or history irrecoverably, because a false block on a legitimate command
-/// costs more than the marginal coverage a broader pattern would buy.
-///
-/// The bounded evasion surface is shell indirection, `env` split-string,
-/// option-arity displacement, executables matched as written, and short-flag
-/// clustering limited to `CLUSTERABLE_SHORT_FLAGS`. The checker reads a
-/// command string while the shell reads it differently; that parser differential
-/// cannot be closed by enumerating spellings. A future AST parser or allowlist
-/// could narrow the gap, but neither is today's behavior. Prior art such as
-/// AnswerDotAI/safecmd uses a shell AST plus an allowlist for this reason.
-///
-/// Two exclusions are deliberate. `git push --force-with-lease` is absent
-/// because it refuses to overwrite commits the pusher has not seen, which makes
-/// it the safe alternative an agent should reach for once `--force` is denied.
-/// Bare `git clean -fd` is absent because it leaves gitignored files (including
-/// local `.env` files) alone; only the `-x` forms that also delete ignored files
-/// are blocked.
-pub(crate) const DEFAULT_PROHIBITED_COMMANDS: &[&[&str]] = &[
-    &["rm", "-rf"],
-    &["rm", "-fr"],
-    &["rm", "-Rf"],
-    &["rm", "-fR"],
-    &["git", "push", "--force"],
-    &["git", "push", "-f"],
-    &["git", "reset", "--hard"],
-    &["git", "clean", "-fdx"],
-    &["git", "clean", "-xdf"],
-    &["dd"],
-    &["mkfs"],
-    &["chmod", "-R", "777"],
-    &["shred"],
-];
-
-/// Render the desired `.lgtm/execpolicy.json` bytes, or `None` when a policy
-/// already exists.
-///
-/// Returns the bytes to write alongside the contents that will be on disk once
-/// this init completes, so the Codex rules compiler can consume a policy created
-/// in the same run rather than only seeing it on a second init. A file that
-/// exists but is blank is treated as absent and seeded.
+/// Create an empty compatibility policy only when no nonblank file exists.
 pub(super) fn render_defaults(
     path: &Path,
     notes: &mut Vec<String>,
@@ -65,33 +18,12 @@ pub(super) fn render_defaults(
         notes.push("preserved existing .lgtm/execpolicy.json".to_string());
         return Ok((None, contents));
     }
-    let document = default_document();
+    let document = "{\n  \"prohibited_commands\": []\n}\n".to_string();
     notes.push(
-        "seeded .lgtm/execpolicy.json with default destructive-command prefixes; edit it to suit this repository"
+        "created empty .lgtm/execpolicy.json compatibility data; no automatic command bans"
             .to_string(),
     );
-    Ok((Some(document.clone().into_bytes()), document))
-}
-
-/// Serialize [`DEFAULT_PROHIBITED_COMMANDS`] into the on-disk policy document.
-///
-/// Each argv prefix is emitted on a single line rather than through
-/// `to_string_pretty`, which would put every argv item on its own line and turn
-/// a thirteen-rule policy into sixty lines nobody wants to hand-edit. The result
-/// is still ordinary JSON.
-fn default_document() -> String {
-    let rules: Vec<String> = DEFAULT_PROHIBITED_COMMANDS
-        .iter()
-        .map(|prefix| {
-            let encoded =
-                serde_json::to_string(prefix).expect("a list of string literals always serializes");
-            format!("    {encoded}")
-        })
-        .collect();
-    format!(
-        "{{\n  \"prohibited_commands\": [\n{}\n  ]\n}}\n",
-        rules.join(",\n")
-    )
+    Ok((Some(document.as_bytes().to_vec()), document))
 }
 
 #[cfg(test)]
@@ -109,33 +41,20 @@ mod tests {
     }
 
     #[test]
-    fn fresh_repo_gets_the_default_destructive_prefixes() {
+    fn fresh_repo_gets_an_empty_compatibility_policy() {
         let dir = temp_dir("fresh");
-        let path = dir.join("execpolicy.json");
         let mut notes = Vec::new();
-
-        let (rendered, contents) = render_defaults(&path, &mut notes).expect("render must succeed");
-        let bytes = rendered.expect("an absent policy must be seeded");
-        assert_eq!(String::from_utf8(bytes).expect("UTF-8 policy"), contents);
-
-        let parsed: Value = serde_json::from_str(&contents).expect("default policy is valid JSON");
-        let commands = parsed["prohibited_commands"]
-            .as_array()
-            .expect("prohibited_commands array");
-        assert!(commands.contains(&json!(["rm", "-rf"])));
-        assert!(commands.contains(&json!(["git", "push", "--force"])));
-        assert!(commands.contains(&json!(["git", "reset", "--hard"])));
+        let (rendered, contents) =
+            render_defaults(&dir.join("execpolicy.json"), &mut notes).expect("render succeeds");
+        assert_eq!(rendered, Some(contents.as_bytes().to_vec()));
+        let parsed: Value = serde_json::from_str(&contents).expect("valid policy JSON");
+        assert_eq!(parsed, json!({"prohibited_commands": []}));
         assert!(
-            !commands.contains(&json!(["git", "push", "--force-with-lease"])),
-            "the safe lease-checked force push must stay allowed"
+            notes
+                .iter()
+                .any(|note| note.contains("no automatic command bans"))
         );
-        assert!(
-            !commands.contains(&json!(["git", "clean", "-fd"])),
-            "cleaning untracked-but-not-ignored files must stay allowed"
-        );
-        assert!(notes.iter().any(|note| note.contains("seeded")));
-
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -145,42 +64,25 @@ mod tests {
         let authored = "{\"prohibited_commands\":[[\"terraform\",\"destroy\"]]}\n";
         std::fs::write(&path, authored).expect("fixture writable");
         let mut notes = Vec::new();
-
-        let (rendered, contents) = render_defaults(&path, &mut notes).expect("render must succeed");
-        assert!(
-            rendered.is_none(),
-            "an existing policy must never be rewritten or reordered"
-        );
+        let (rendered, contents) = render_defaults(&path, &mut notes).expect("render succeeds");
+        assert!(rendered.is_none());
         assert_eq!(contents, authored);
         assert!(notes.iter().any(|note| note.contains("preserved")));
-
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn blank_policy_is_treated_as_absent_and_seeded() {
+    fn blank_policy_is_treated_as_absent() {
         let dir = temp_dir("blank");
         let path = dir.join("execpolicy.json");
         std::fs::write(&path, "   \n").expect("fixture writable");
-        let mut notes = Vec::new();
-
-        let (rendered, _) = render_defaults(&path, &mut notes).expect("render must succeed");
-        assert!(rendered.is_some(), "a blank policy must be seeded");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn every_default_prefix_is_a_non_empty_argv_list() {
-        for prefix in DEFAULT_PROHIBITED_COMMANDS {
-            assert!(
-                !prefix.is_empty(),
-                "an empty prefix would match every command"
-            );
-            assert!(
-                prefix.iter().all(|item| !item.is_empty()),
-                "{prefix:?} contains an empty argv item"
-            );
-        }
+        let (rendered, contents) =
+            render_defaults(&path, &mut Vec::new()).expect("render succeeds");
+        assert!(rendered.is_some());
+        assert_eq!(
+            serde_json::from_str::<Value>(&contents).expect("valid policy JSON"),
+            json!({"prohibited_commands": []})
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

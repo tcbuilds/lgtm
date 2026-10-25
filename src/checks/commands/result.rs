@@ -76,7 +76,7 @@ fn result_with_check(
         ),
         locations: Vec::new(),
         remediation: (status != Status::Passed)
-            .then(|| "Fix the command or repository failure, then retry Stop.".to_string()),
+            .then(|| "Fix the command or repository failure, then rerun the explicit `lgtm check` request.".to_string()),
         evidence: ResultEvidence {
             check: check.to_string(),
             tool_version: None,
@@ -106,7 +106,7 @@ pub fn config_mutation_unverified() -> EnforcementResult {
 pub(crate) fn invalid_workspace(reason: &str) -> EnforcementResult {
     let mut invalid = result("workspace selector", Status::Failed, reason);
     invalid.remediation = Some(
-        "Select a configured workspace id or omit the workspace selector, then retry Stop."
+        "Select a configured workspace id or omit the workspace selector, then rerun `lgtm check`."
             .to_string(),
     );
     invalid
@@ -137,7 +137,7 @@ fn coverage_result(evidence: &CoverageEvidence) -> Option<EnforcementResult> {
     let mut projected = result_with_check(&identity, status, reason, COVERAGE_CHECK);
     if status != Status::Passed {
         projected.remediation = Some(format!(
-            "Run the coverage tool for workspace `{}` scope `{}`, satisfy its configured thresholds, then retry Stop.",
+            "Run the coverage tool for workspace `{}` scope `{}`, satisfy its configured thresholds, then rerun the explicit `lgtm check` request.",
             sanitize(&evidence.workspace_id),
             sanitize(evidence.scope.as_deref().unwrap_or("unspecified"))
         ));
@@ -159,15 +159,6 @@ pub fn containment_unverified() -> EnforcementResult {
         "configured-command descendant containment",
         Status::Unverified,
         "could not be established or proven complete",
-    )
-}
-
-pub fn coverage_failure(workspace_id: &str, status: &str) -> EnforcementResult {
-    result_with_check(
-        &format!("coverage for workspace {workspace_id}"),
-        Status::Failed,
-        &format!("did not pass ({status})"),
-        COVERAGE_CHECK,
     )
 }
 

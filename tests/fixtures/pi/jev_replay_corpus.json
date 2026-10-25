@@ -25,7 +25,7 @@
     { "id": "diff-subprocess", "path": "src/checks/diff.rs", "question": "subprocess", "label": true, "category": "useful" },
     { "id": "gitleaks-subprocess", "path": "src/checks/gitleaks/api.rs", "question": "subprocess", "label": true, "category": "useful" },
     { "id": "semgrep-subprocess", "path": "src/checks/semgrep.rs", "question": "subprocess", "label": true, "category": "useful" },
-    { "id": "guarded-subprocess", "path": "src/guarded_commit.rs", "question": "subprocess", "label": true, "category": "useful" },
+    { "id": "git-snapshot-subprocess", "path": "src/hooks/shell_tracking/snapshot/git.rs", "question": "subprocess", "label": true, "category": "useful" },
     { "id": "adapter-subprocess", "path": "src/adapter/mod.rs", "question": "subprocess", "label": false, "category": "irrelevant" },
     { "id": "config-subprocess", "path": "src/checks/commands/config.rs", "question": "subprocess", "label": false, "category": "irrelevant" },
     { "id": "packet-subprocess", "path": "src/compile/packet.rs", "question": "subprocess", "label": false, "category": "irrelevant" },

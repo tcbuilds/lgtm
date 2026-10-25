@@ -1,68 +1,33 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:lgtm:schema:adapter",
-  "title": "LGTM adapter response contract",
-  "oneOf": [
-    {
+  "title": "LGTM advisory adapter response contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "hookSpecificOutput"
+  ],
+  "properties": {
+    "hookSpecificOutput": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["decision", "reason"],
+      "required": [
+        "hookEventName",
+        "additionalContext"
+      ],
       "properties": {
-        "decision": {"const": "block"},
-        "reason": {"type": "string", "minLength": 1}
-      }
-    },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["hookSpecificOutput", "systemMessage"],
-      "properties": {
-        "hookSpecificOutput": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["hookEventName", "permissionDecision", "permissionDecisionReason"],
-          "properties": {
-            "hookEventName": {"const": "PreToolUse"},
-            "permissionDecision": {"const": "deny"},
-            "permissionDecisionReason": {"type": "string", "minLength": 1}
-          }
+        "hookEventName": {
+          "enum": [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PostToolUse"
+          ]
         },
-        "systemMessage": {"type": "string", "minLength": 1}
-      }
-    },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["hookSpecificOutput"],
-      "properties": {
-        "hookSpecificOutput": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["hookEventName", "permissionDecision", "permissionDecisionReason", "updatedInput"],
-          "properties": {
-            "hookEventName": {"const": "PreToolUse"},
-            "permissionDecision": {"const": "ask"},
-            "permissionDecisionReason": {"type": "string", "minLength": 1},
-            "updatedInput": {"type": "object"}
-          }
-        }
-      }
-    },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["hookSpecificOutput"],
-      "properties": {
-        "hookSpecificOutput": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["hookEventName", "additionalContext"],
-          "properties": {
-            "hookEventName": {"const": "UserPromptSubmit"},
-            "additionalContext": {"type": "string", "minLength": 1}
-          }
+        "additionalContext": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }
-  ]
+  }
 }

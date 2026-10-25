@@ -1,5 +1,8 @@
 # How LGTM tracks shell changes
 
+This guide describes the observer-only source change. It does not mean that an
+installed binary or a running agent has already been updated.
+
 ## The problem
 
 A shell command can change files without using an Edit or Write tool. For example,
@@ -14,8 +17,10 @@ session.”
 2. After the call, LGTM compares file content hashes and executable bits.
 3. LGTM records files that changed during that matched call. It includes new
    files, deleted files, and both paths of a rename.
-4. Existing files receive fast checks. Stop runs its normal checks. Deleted paths
-   take part in diff checks, but are not sent to content scanners.
+4. Existing files receive advisory fast checks. Deleted paths can take part in
+   an explicitly requested diff audit, but are not sent to content scanners.
+5. Stop reports completion without running checks. Use `lgtm check` when you
+   want repository verification.
 
 An unchanged dirty file is not recorded as a shell edit. The initial baseline
 still protects that file as pre-existing work. A changed dirty file is recorded.
@@ -23,7 +28,8 @@ This is file-level tracking. It does not prove that every pre-existing line was
 preserved.
 
 LGTM stores paths, hashes, and call identities. The snapshot does not store file
-contents or command text. Direct commits keep their separate, fresh staged gate.
+contents or command text. Direct commits are not intercepted or scanned by
+PreToolUse.
 
 ## Install the fix
 
@@ -73,7 +79,8 @@ dirty files as pre-existing work; it does not verify the interrupted work.
 ## Verify and roll back
 
 Run `cargo test --test shell_tracking --test init_pi` to exercise CLI tracking,
-real Stop checks, managed migration, and generated Pi event handling.
+nonblocking Stop notices, tracking uncertainty, explicit diff audits, managed
+migration, and generated Pi event handling.
 
 For rollback, restore the previous binary and its matching managed hook backup.
 Do not pair an old binary with new hook behavior. Keep current-task evidence

@@ -17,15 +17,8 @@ fn exact(event: HookEvent, response: HookResponse, expected: &str) {
 }
 
 #[test]
-fn pi_adapter_pins_allow_deny_and_context_bytes() {
+fn pi_adapter_pins_allow_and_advisory_context_bytes() {
     exact(HookEvent::PreToolUse, HookResponse::Allow, "");
-    exact(
-        HookEvent::PreToolUse,
-        HookResponse::Deny {
-            reason: "blocked".to_string(),
-        },
-        r#"{"block":true,"reason":"blocked"}"#,
-    );
     exact(
         HookEvent::BeforeAgentStart,
         HookResponse::InjectMessage("guidance".to_string()),
@@ -109,7 +102,7 @@ fn pi_adapter_rejects_invalid_payloads_and_response_pairs() {
         PiAdapter
             .encode_response(
                 HookEvent::Stop,
-                HookResponse::Deny {
+                HookResponse::PostToolFeedback {
                     reason: "unsupported".to_string(),
                 },
             )
@@ -147,8 +140,27 @@ fn run_pi_hook(repo: &TempRepo, event: &str, payload: &str) -> std::process::Out
     child.wait_with_output().expect("Pi hook should finish")
 }
 
+/// Assert one Pi pre-tool observation left the permission decision to the host.
+///
+/// The automatic pre-tool path never answers the host agent's permission
+/// decision, so valid tool metadata must exit successfully with no response on
+/// stdout even when policy is missing, malformed, or prohibits the action.
+fn assert_passthrough_without_permission_response(output: &std::process::Output, context: &str) {
+    assert!(
+        output.status.success(),
+        "{context} must exit successfully: status={:?} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "{context} must not emit a permission response: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
 #[test]
-fn every_pi_tool_policy_event_rejects_each_malformed_policy_file() {
+fn every_pi_tool_policy_event_ignores_each_malformed_policy_file() {
     for malformed in ["config.json", "execpolicy.json"] {
         let repo = TempRepo::new();
         init_pi_repo(&repo);
@@ -161,27 +173,19 @@ fn every_pi_tool_policy_event_rejects_each_malformed_policy_file() {
                 repo.path().display()
             ),
         );
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "malformed {malformed} must be unverified"
-        );
-        assert!(
-            output.stdout.is_empty(),
-            "malformed {malformed} must not deny on stdout"
-        );
+        assert_passthrough_without_permission_response(&output, &format!("malformed {malformed}"));
     }
 }
 
 #[test]
-fn pi_tool_calls_reach_shared_policy_with_lowercase_normalization() {
+fn pi_lowercase_tool_calls_reach_the_observer_without_a_permission_response() {
     let repo = TempRepo::new();
     init_pi_repo(&repo);
     repo.write(
         ".lgtm/execpolicy.json",
         r#"{"prohibited_commands":[["rm","-rf"]]}"#,
     );
-    let denied = run_pi_hook(
+    let prohibited = run_pi_hook(
         &repo,
         "pre-tool-use",
         &format!(
@@ -189,12 +193,9 @@ fn pi_tool_calls_reach_shared_policy_with_lowercase_normalization() {
             repo.path().display()
         ),
     );
-    assert!(denied.status.success());
-    let stdout = String::from_utf8_lossy(&denied.stdout);
-    assert!(stdout.contains("\"block\":true"));
-    assert!(stdout.contains("command matches prohibited_commands policy"));
+    assert_passthrough_without_permission_response(&prohibited, "a prohibited command");
 
-    let allowed = run_pi_hook(
+    let benign = run_pi_hook(
         &repo,
         "pre-tool-use",
         &format!(
@@ -202,12 +203,11 @@ fn pi_tool_calls_reach_shared_policy_with_lowercase_normalization() {
             repo.path().display()
         ),
     );
-    assert!(allowed.status.success());
-    assert!(allowed.stdout.is_empty());
+    assert_passthrough_without_permission_response(&benign, "a benign command");
 }
 
 #[test]
-fn pi_edit_and_write_paths_reach_shared_prohibited_path_policy() {
+fn prohibited_pi_edit_and_write_paths_reach_the_observer_without_a_permission_response() {
     let repo = TempRepo::new();
     init_pi_repo(&repo);
     repo.write(
@@ -223,8 +223,10 @@ fn pi_edit_and_write_paths_reach_shared_prohibited_path_policy() {
                 repo.path().display()
             ),
         );
-        assert!(output.status.success());
-        assert!(String::from_utf8_lossy(&output.stdout).contains("\"block\":true"));
+        assert_passthrough_without_permission_response(
+            &output,
+            &format!("a prohibited {tool} path"),
+        );
     }
 }
 
@@ -246,7 +248,7 @@ fn malformed_pi_tool_input_exits_nonzero_without_stdout() {
 }
 
 #[test]
-fn pi_missing_policy_is_fail_open_and_signals_unverified_to_the_shim() {
+fn missing_policy_does_not_fail_or_block_the_pi_pre_tool_observer() {
     for missing in [".lgtm/config.json", ".lgtm/execpolicy.json"] {
         let repo = TempRepo::new();
         init_pi_repo(&repo);
@@ -259,16 +261,12 @@ fn pi_missing_policy_is_fail_open_and_signals_unverified_to_the_shim() {
                 repo.path().display()
             ),
         );
-        assert!(
-            !output.status.success(),
-            "missing {missing} must be unverified"
-        );
-        assert!(String::from_utf8_lossy(&output.stderr).contains("unverified"));
+        assert_passthrough_without_permission_response(&output, &format!("missing {missing}"));
     }
 }
 
 #[test]
-fn pi_policy_failure_is_fail_open_and_signals_unverified_to_the_shim() {
+fn malformed_policy_does_not_fail_or_block_the_pi_pre_tool_observer() {
     let repo = TempRepo::new();
     init_pi_repo(&repo);
     repo.write(".lgtm/execpolicy.json", "{not valid json");
@@ -280,13 +278,11 @@ fn pi_policy_failure_is_fail_open_and_signals_unverified_to_the_shim() {
             repo.path().display()
         ),
     );
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("unverified"));
+    assert_passthrough_without_permission_response(&output, "a malformed execpolicy");
 }
 
 #[test]
-fn pi_rejects_unsupported_legacy_severity_before_attestation() {
+fn unsupported_legacy_severity_does_not_fail_or_block_the_pi_pre_tool_observer() {
     let repo = TempRepo::new();
     init_pi_repo(&repo);
     repo.write(
@@ -301,9 +297,7 @@ fn pi_rejects_unsupported_legacy_severity_before_attestation() {
             repo.path().display()
         ),
     );
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("unverified"));
+    assert_passthrough_without_permission_response(&output, "an unsupported legacy severity");
 }
 
 #[test]

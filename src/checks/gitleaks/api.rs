@@ -4,16 +4,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-#[path = "commit.rs"]
-pub(crate) mod commit;
 #[path = "report.rs"]
 pub(crate) mod report;
 #[path = "result.rs"]
 mod result;
 #[path = "runner.rs"]
 pub(crate) mod runner;
-
-pub(crate) use commit::{CommitAssessment, assess_commit};
 
 use report::{ReportDir, ScanOutcome};
 use result::{failed, passed, passed_with_version, unverified};

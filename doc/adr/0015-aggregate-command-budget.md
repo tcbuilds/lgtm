@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted for explicit-check execution budgets. Automatic Stop and commit-gate
+behavior is superseded by [ADR-0017](0017-observer-hooks-and-explicit-checks.md).
 
 ## Date
 

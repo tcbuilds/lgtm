@@ -31,114 +31,6 @@ fn encode_supervisor_bytes(bytes: &[u8]) -> String {
         .collect()
 }
 
-fn run_post_tool_use(repo: &TempRepo, session_id: &str, file: &str) -> std::process::Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["hook", "post-tool-use"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("PostToolUse hook starts");
-    write!(
-        child.stdin.take().expect("stdin available"),
-        "{}",
-        json!({
-            "cwd": repo.path(),
-            "session_id": session_id,
-            "tool_name": "Write",
-            "tool_input": {"file_path": repo.path().join(file)}
-        })
-    )
-    .expect("payload writes");
-    child.wait_with_output().expect("PostToolUse hook exits")
-}
-
-fn run_git_fixture(repo: &TempRepo, arguments: &[&str]) {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(arguments)
-        .output()
-        .expect("git fixture command starts");
-    assert!(
-        output.status.success(),
-        "git {arguments:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn install_fake_gitleaks(repo: &TempRepo) {
-    repo.write(
-        "bin/gitleaks",
-        "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then echo test-1.0; exit 0; fi\nreport=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --report-path) report=\"$2\"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\n[ -z \"$report\" ] || printf '[]' > \"$report\"\nexit 0\n",
-    );
-    let executable = repo.path().join("bin/gitleaks");
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-        .expect("fake gitleaks executable");
-}
-
-fn install_pending_fake_gitleaks(repo: &TempRepo) {
-    repo.write(
-        "bin/gitleaks",
-        "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then echo test-1.0; exit 0; fi\nreport=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --report-path) report=\"$2\"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\nprintf '%s' '[{\"RuleID\":\"generic-api-key\",\"Description\":\"fixture\",\"File\":\"src/app.rs\",\"StartLine\":1,\"StartColumn\":1,\"EndLine\":1,\"EndColumn\":2,\"Fingerprint\":\"fixture\"}]' > \"$report\"\nexit 2\n",
-    );
-    let executable = repo.path().join("bin/gitleaks");
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-        .expect("pending fake gitleaks executable");
-}
-
-fn ensure_commit_fixture(repo: &TempRepo) {
-    if !repo.path().join(".git").exists() {
-        run_git_fixture(repo, &["init", "-q"]);
-        run_git_fixture(
-            repo,
-            &[
-                "config",
-                "user.email",
-                "254259785+tcbuilds@users.noreply.github.com",
-            ],
-        );
-        run_git_fixture(repo, &["config", "user.name", "LGTM tests"]);
-        run_git_fixture(repo, &["add", "-A"]);
-        run_git_fixture(repo, &["commit", "-qm", "fixture"]);
-    }
-    if !repo.path().join("bin/gitleaks").exists() {
-        install_fake_gitleaks(repo);
-    }
-}
-
-fn run_pre_tool_use_command(
-    repo: &TempRepo,
-    session_id: &str,
-    command: &str,
-) -> std::process::Output {
-    ensure_commit_fixture(repo);
-    let inherited_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut search_path = vec![repo.path().join("bin")];
-    search_path.extend(std::env::split_paths(&inherited_path));
-    let path = std::env::join_paths(search_path).expect("fixture PATH");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["hook", "pre-tool-use"])
-        .env("PATH", path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("PreToolUse hook starts");
-    write!(
-        child.stdin.take().expect("stdin available"),
-        "{}",
-        json!({
-            "cwd": repo.path(),
-            "session_id": session_id,
-            "tool_name": "Bash",
-            "tool_input": {"command": command}
-        })
-    )
-    .expect("payload writes");
-    child.wait_with_output().expect("PreToolUse hook exits")
-}
-
 fn write_coverage_fixture(repo: &TempRepo, report: &str, line_threshold: u8, branch_threshold: u8) {
     repo.write(
         "bin/coverage",
@@ -234,39 +126,29 @@ fn write_workspace_coverage_fixture(repo: &TempRepo) {
     );
 }
 
-fn run_full_stop(repo: &TempRepo, session_id: &str, stop_hook_active: bool) -> Output {
-    run_full_stop_with_environment(repo, session_id, stop_hook_active, None, None, None)
+fn run_full_check(repo: &TempRepo) -> Output {
+    run_full_check_with_environment(repo, None, None, None)
 }
 
-fn run_full_stop_with_path_and_home(
+fn run_full_check_with_path_and_home(
     repo: &TempRepo,
-    session_id: &str,
-    stop_hook_active: bool,
     path: Option<&std::ffi::OsStr>,
     home: Option<&std::ffi::OsStr>,
 ) -> Output {
-    run_full_stop_with_environment(repo, session_id, stop_hook_active, path, home, None)
+    run_full_check_with_environment(repo, path, home, None)
 }
 
-fn run_full_stop_with_environment(
+fn run_full_check_with_environment(
     repo: &TempRepo,
-    session_id: &str,
-    stop_hook_active: bool,
     path: Option<&std::ffi::OsStr>,
     home: Option<&std::ffi::OsStr>,
     ci: Option<&std::ffi::OsStr>,
 ) -> Output {
-    let payload = json!({
-        "cwd": repo.path(),
-        "session_id": session_id,
-        "check": true,
-        "tier": "full",
-        "stop_hook_active": stop_hook_active
-    });
     let mut command = Command::new(env!("CARGO_BIN_EXE_lgtm"));
     command
-        .args(["hook", "stop"])
-        .stdin(Stdio::piped())
+        .args(["check", "--tier", "full"])
+        .current_dir(repo.path())
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(path) = path {
@@ -278,39 +160,7 @@ fn run_full_stop_with_environment(
     if let Some(ci) = ci {
         command.env("CI", ci);
     }
-    let mut child = command.spawn().expect("Stop hook starts");
-    write!(child.stdin.take().expect("stdin available"), "{payload}").expect("payload writes");
-    child.wait_with_output().expect("Stop hook exits")
-}
-
-fn run_stop_with_workspace(repo: &TempRepo, session_id: &str, workspace: &str) -> Output {
-    let payload = json!({
-        "cwd": repo.path(),
-        "session_id": session_id,
-        "workspace": workspace,
-        "tier": "full",
-        "stop_hook_active": false
-    });
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["hook", "stop"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("workspace Stop hook starts");
-    write!(child.stdin.take().expect("stdin available"), "{payload}").expect("payload writes");
-    child.wait_with_output().expect("Stop hook exits")
-}
-
-fn run_full_check(repo: &TempRepo) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["check", "--tier", "full"])
-        .current_dir(repo.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("full check starts")
+    command.output().expect("full check starts")
 }
 
 fn run_workspace_full_check(repo: &TempRepo, workspace: &str) -> Output {
@@ -346,7 +196,7 @@ fn projected_coverage_result<'a>(record: &'a Value, status: &str) -> &'a Value {
     ignore = "production command containment is Linux-only"
 )]
 #[test]
-fn failing_required_command_blocks_commit_and_records_full_evidence() {
+fn failing_required_command_fails_explicit_check_and_records_full_evidence() {
     let repo = TempRepo::new();
     repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
     repo.write("bin/required-check", "#!/bin/sh\nexit 7\n");
@@ -378,23 +228,21 @@ fn failing_required_command_blocks_commit_and_records_full_evidence() {
         })
         .to_string(),
     );
+    let output = run_full_check(&repo);
+
+    assert_eq!(output.status.code(), Some(2));
+    let report = String::from_utf8(output.stdout).expect("check report is UTF-8");
+    assert!(report.contains("lgtm check failed"), "report: {report}");
     assert!(
-        run_post_tool_use(&repo, "command-e2e", "src/app.rs")
-            .status
-            .success()
+        report.contains("rerun the explicit `lgtm check` request"),
+        "report: {report}"
     );
-
-    let output = run_pre_tool_use_command(&repo, "command-e2e", "git commit -m test");
-
-    assert!(output.status.success(), "Claude deny uses a JSON response");
-    let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision JSON");
-    assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
-    let reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
-        .as_str()
-        .expect("deny reason");
-    assert!(reason.contains("pre-commit full gate failed"));
-    assert!(reason.contains("required-repository-commands"));
-    assert!(reason.contains("exit status 7"));
+    assert!(
+        !report.contains("retry Stop"),
+        "obsolete retry advice: {report}"
+    );
+    assert!(report.contains("required-repository-commands"));
+    assert!(report.contains("exit status 7"));
 
     let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
     let record: Value = serde_json::from_str(evidence.lines().last().expect("evidence record"))
@@ -408,162 +256,9 @@ fn failing_required_command_blocks_commit_and_records_full_evidence() {
     );
 }
 
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "production command containment is Linux-only"
-)]
-#[test]
-fn stop_is_targeted_and_reuses_successful_precommit_evidence() {
-    let repo = TempRepo::new();
-    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
-    let command_marker = repo.path().join("command-runs");
-    let coverage_marker = repo.path().join("coverage-runs");
-    let targeted_marker = repo.path().join("targeted-runs");
-    repo.write(
-        "bin/required-check",
-        "#!/bin/sh\nprintf x >> \"$1\"\nexit 0\n",
-    );
-    repo.write(
-        "bin/coverage-check",
-        "#!/bin/sh\nprintf x >> \"$1\"\necho 'line coverage: 85% branch coverage: 90%'\nexit 0\n",
-    );
-    repo.write(
-        "bin/targeted-check",
-        "#!/bin/sh\nprintf x >> \"$1\"\nexit 0\n",
-    );
-    let command = repo.path().join("bin/required-check");
-    let coverage = repo.path().join("bin/coverage-check");
-    let targeted = repo.path().join("bin/targeted-check");
-    for path in [&command, &coverage, &targeted] {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .expect("fixture executable");
-    }
-    repo.write(
-        ".lgtm/config.json",
-        &json!({
-            "version": "2",
-            "profile": "default",
-            "workspaces": [{
-                "id": "tests",
-                "language": "shell",
-                "root": ".",
-                "commands": [
-                    {
-                        "argv": [command.to_string_lossy(), command_marker.to_string_lossy()],
-                        "cwd": ".",
-                        "timeout_seconds": 30,
-                        "tier": "full",
-                        "purpose": "test",
-                        "source": "fixture",
-                        "confidence": "high"
-                    },
-                    {
-                        "argv": [targeted.to_string_lossy(), targeted_marker.to_string_lossy()],
-                        "cwd": ".",
-                        "timeout_seconds": 30,
-                        "tier": "targeted",
-                        "purpose": "test",
-                        "source": "fixture",
-                        "confidence": "high"
-                    }
-                ],
-                "coverage": [{
-                    "argv": [coverage.to_string_lossy(), coverage_marker.to_string_lossy()],
-                    "cwd": ".",
-                    "timeout_seconds": 30,
-                    "scope": "unit",
-                    "line_threshold_percent": 80,
-                    "branch_threshold_percent": 90
-                }]
-            }],
-            "disabled_rules": [],
-            "severity_overrides": {}
-        })
-        .to_string(),
-    );
-    assert!(
-        run_post_tool_use(&repo, "precommit-full", "src/app.rs")
-            .status
-            .success()
-    );
-    let command_claim = format!("{} {}", command.display(), command_marker.display());
-    repo.write(
-        "transcript.jsonl",
-        &format!(
-            "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":{}}}]}}}}\n",
-            serde_json::to_string(&format!("Ran `{command_claim}`; it passed.")).unwrap()
-        ),
-    );
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["hook", "stop"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Stop hook starts");
-    write!(
-        child.stdin.take().expect("stdin available"),
-        "{}",
-        json!({
-            "cwd": repo.path(),
-            "session_id": "precommit-full",
-            "transcript_path": repo.path().join("transcript.jsonl")
-        })
-    )
-    .expect("payload writes");
-    let output = child.wait_with_output().expect("Stop hook exits");
-    assert_eq!(output.status.code(), Some(2));
-    assert!(!command_marker.exists(), "Stop must not run full commands");
-    assert!(!coverage_marker.exists(), "Stop must not run coverage");
-    assert_eq!(repo.read("targeted-runs"), "x");
-
-    let precommit = run_pre_tool_use_command(&repo, "precommit-full", "git commit -m test");
-    assert!(
-        precommit.status.success(),
-        "PreToolUse stderr: {:?}",
-        precommit.stderr
-    );
-    assert!(precommit.stdout.is_empty());
-    assert_eq!(repo.read("command-runs"), "x");
-    assert_eq!(repo.read("coverage-runs"), "x");
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["hook", "stop"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Stop hook starts");
-    write!(
-        child.stdin.take().expect("stdin available"),
-        "{}",
-        json!({
-            "cwd": repo.path(),
-            "session_id": "precommit-full",
-            "transcript_path": repo.path().join("transcript.jsonl")
-        })
-    )
-    .expect("payload writes");
-    let output = child.wait_with_output().expect("Stop hook exits");
-    assert!(output.status.success(), "Stop stderr: {:?}", output.stderr);
-    assert_eq!(repo.read("command-runs"), "x", "Stop reran full command");
-    assert_eq!(repo.read("coverage-runs"), "x", "Stop reran coverage");
-    assert_eq!(repo.read("targeted-runs"), "xx");
-
-    let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
-    let record: Value = serde_json::from_str(evidence.lines().last().expect("evidence record"))
-        .expect("evidence JSON");
-    assert_eq!(record["tier"], "targeted");
-    assert_eq!(
-        record["commands"][0]["command"],
-        format!("{} {}", targeted.display(), targeted_marker.display())
-    );
-}
-
 #[cfg(target_os = "linux")]
 #[test]
-fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
+fn setsid_f_delayed_config_replacement_is_unverified_on_each_explicit_check() {
     let repo = TempRepo::new();
     let git = |args: &[&str]| {
         let output = Command::new("git")
@@ -631,22 +326,14 @@ fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
     .to_string();
     repo.write(".lgtm/config.json", &original);
     git(&["add", "src/app.rs", "bin/escape-check", ".lgtm/config.json"]);
-    assert!(
-        run_post_tool_use(&repo, "session-escape", "src/app.rs")
-            .status
-            .success()
-    );
-
     for expected_runs in ["x", "xx"] {
-        let authorization = run_pre_tool_use_command(&repo, "session-escape", "git commit -m test");
-        assert!(authorization.status.success());
-        let decision: Value =
-            serde_json::from_slice(&authorization.stdout).expect("containment deny decision");
-        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        let output = run_full_check(&repo);
+        assert!(output.status.success(), "check stderr: {:?}", output.stderr);
+        let report = String::from_utf8(output.stdout).expect("check report is UTF-8");
         assert!(
-            decision["hookSpecificOutput"]["permissionDecisionReason"]
-                .as_str()
-                .is_some_and(|reason| reason.contains("descendant outlived the direct command"))
+            report.contains("action required")
+                && report.contains("descendant outlived the direct command"),
+            "report: {report}"
         );
         assert_eq!(repo.read("escape-runs"), expected_runs);
 
@@ -659,7 +346,7 @@ fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
         assert_eq!(record["containment_version"], "linux-isolated-subreaper-v5");
         assert!(record["results"].as_array().is_some_and(|results| {
             results.iter().any(|result| {
-                result["status"] == "failed"
+                result["status"] == "unverified"
                     && result["message"]
                         .as_str()
                         .is_some_and(|message| message.contains("descendant outlived"))
@@ -673,7 +360,7 @@ fn setsid_f_delayed_config_replacement_denies_and_is_not_reused() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn adopted_zombie_before_first_proc_scan_denies_and_is_not_reused() {
+fn adopted_zombie_before_first_proc_scan_is_unverified_on_each_explicit_check() {
     let repo = TempRepo::new();
     repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
     repo.write(
@@ -709,21 +396,14 @@ fn adopted_zombie_before_first_proc_scan_denies_and_is_not_reused() {
         })
         .to_string(),
     );
-    assert!(
-        run_post_tool_use(&repo, "adopted-zombie", "src/app.rs")
-            .status
-            .success()
-    );
-
     for expected_runs in ["x", "xx"] {
-        let output = run_pre_tool_use_command(&repo, "adopted-zombie", "git commit -m test");
-        assert!(output.status.success());
-        let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision JSON");
-        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        let output = run_full_check(&repo);
+        assert!(output.status.success(), "check stderr: {:?}", output.stderr);
+        let report = String::from_utf8(output.stdout).expect("check report is UTF-8");
         assert!(
-            decision["hookSpecificOutput"]["permissionDecisionReason"]
-                .as_str()
-                .is_some_and(|reason| reason.contains("descendant outlived the direct command"))
+            report.contains("action required")
+                && report.contains("descendant outlived the direct command"),
+            "report: {report}"
         );
         assert_eq!(repo.read("adopted-zombie-runs"), expected_runs);
 
@@ -732,7 +412,7 @@ fn adopted_zombie_before_first_proc_scan_denies_and_is_not_reused() {
         assert_eq!(record["containment_version"], "linux-isolated-subreaper-v5");
         assert!(record["results"].as_array().is_some_and(|results| {
             results.iter().any(|result| {
-                result["status"] == "failed"
+                result["status"] == "unverified"
                     && result["message"]
                         .as_str()
                         .is_some_and(|message| message.contains("descendant outlived"))
@@ -864,139 +544,7 @@ fn isolated_supervisor_preserves_unrelated_child_waitability() {
     ignore = "production command containment is Linux-only"
 )]
 #[test]
-fn pending_commit_assessment_runs_after_required_command_gate() {
-    let repo = TempRepo::new();
-    repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
-    let marker = repo.path().join("pending-gate-runs");
-    repo.write(
-        "bin/required-check",
-        "#!/bin/sh\nprintf x >> \"$1\"\nexit 0\n",
-    );
-    let executable = repo.path().join("bin/required-check");
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-        .expect("fixture executable");
-    repo.write(
-        ".lgtm/config.json",
-        &json!({
-            "version": "2",
-            "profile": "default",
-            "workspaces": [{
-                "id": "tests",
-                "language": "shell",
-                "root": ".",
-                "commands": [{
-                    "argv": [executable.to_string_lossy(), marker.to_string_lossy()],
-                    "cwd": ".",
-                    "timeout_seconds": 30,
-                    "tier": "full",
-                    "purpose": "test",
-                    "source": "fixture",
-                    "confidence": "high"
-                }],
-                "coverage": []
-            }],
-            "disabled_rules": [],
-            "severity_overrides": {}
-        })
-        .to_string(),
-    );
-    install_pending_fake_gitleaks(&repo);
-
-    let output = run_pre_tool_use_command(&repo, "pending-gate", "git commit -m test");
-    assert!(output.status.success());
-    let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision");
-    assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
-    assert!(
-        decision["hookSpecificOutput"]["permissionDecisionReason"]
-            .as_str()
-            .is_some_and(|reason| reason.contains("heuristic approval"))
-    );
-    assert_eq!(repo.read("pending-gate-runs"), "x");
-}
-
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "production command containment is Linux-only"
-)]
-#[test]
-fn precommit_reruns_full_gate_for_each_commit_scope() {
-    let repo = TempRepo::new();
-    let oversized = format!(
-        "pub fn oversized() {{\n{} }}\n",
-        "    let value = 1;\n".repeat(51)
-    );
-    repo.write("src/app.rs", &oversized);
-    let marker = repo.path().join("warning-gate-runs");
-    repo.write(
-        "bin/required-check",
-        "#!/bin/sh\nprintf x >> \"$1\"\nexit 0\n",
-    );
-    let executable = repo.path().join("bin/required-check");
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-        .expect("fixture executable");
-    repo.write(
-        ".lgtm/config.json",
-        &json!({
-            "version": "2",
-            "profile": "prototype",
-            "workspaces": [{
-                "id": "tests",
-                "language": "rust",
-                "root": ".",
-                "commands": [{
-                    "argv": [executable.to_string_lossy(), marker.to_string_lossy()],
-                    "cwd": ".",
-                    "timeout_seconds": 30,
-                    "tier": "full",
-                    "purpose": "test",
-                    "source": "fixture",
-                    "confidence": "high"
-                }],
-                "coverage": []
-            }],
-            "disabled_rules": [],
-            "severity_overrides": {"function-size": "warning"}
-        })
-        .to_string(),
-    );
-
-    let first = run_pre_tool_use_command(&repo, "warning-reuse", "git commit -m first");
-    assert!(first.status.success());
-    assert!(
-        first.stdout.is_empty(),
-        "first precommit output: {}",
-        String::from_utf8_lossy(&first.stdout)
-    );
-    let first_record = latest_evidence(&repo);
-    assert!(first_record["results"].as_array().is_some_and(|results| {
-        results.iter().any(|result| {
-            result["rule_id"] == "function-size"
-                && result["status"] == "failed"
-                && result["severity"] == "warning"
-        })
-    }));
-    assert_eq!(repo.read("warning-gate-runs"), "x");
-
-    let second = run_pre_tool_use_command(&repo, "warning-reuse", "git commit -m second");
-    assert!(second.status.success());
-    assert!(
-        second.stdout.is_empty(),
-        "second precommit output: {}",
-        String::from_utf8_lossy(&second.stdout)
-    );
-    assert_eq!(
-        repo.read("warning-gate-runs"),
-        "xx",
-        "commit-scoped evidence must rerun the full gate"
-    );
-}
-
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "production command containment is Linux-only"
-)]
-#[test]
-fn timed_out_required_command_denies_each_retry_and_is_never_reused() {
+fn timed_out_required_command_is_unverified_on_each_explicit_check() {
     let repo = TempRepo::new();
     repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
     let marker = repo.path().join("timeout-runs");
@@ -1032,20 +580,14 @@ fn timed_out_required_command_denies_each_retry_and_is_never_reused() {
         })
         .to_string(),
     );
-    assert!(
-        run_post_tool_use(&repo, "timeout-retry", "src/app.rs")
-            .status
-            .success()
-    );
-
     for expected_runs in ["x", "xx"] {
-        let output = run_pre_tool_use_command(&repo, "timeout-retry", "git commit -m test");
-        let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision JSON");
-        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        let output = run_full_check(&repo);
+        assert!(output.status.success(), "check stderr: {:?}", output.stderr);
+        let report = String::from_utf8(output.stdout).expect("check report is UTF-8");
         assert!(
-            decision["hookSpecificOutput"]["permissionDecisionReason"]
-                .as_str()
-                .is_some_and(|reason| reason.contains("missing, timed out, or wait failed"))
+            report.contains("action required")
+                && report.contains("missing, timed out, or wait failed"),
+            "report: {report}"
         );
         assert_eq!(repo.read("timeout-runs"), expected_runs);
     }
@@ -1056,7 +598,7 @@ fn timed_out_required_command_denies_each_retry_and_is_never_reused() {
     ignore = "production command containment is Linux-only"
 )]
 #[test]
-fn failed_coverage_threshold_denies_each_retry_and_is_never_reused() {
+fn failed_coverage_threshold_fails_each_explicit_check() {
     let repo = TempRepo::new();
     repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
     let marker = repo.path().join("coverage-failure-runs");
@@ -1090,20 +632,26 @@ fn failed_coverage_threshold_denies_each_retry_and_is_never_reused() {
         })
         .to_string(),
     );
-    assert!(
-        run_post_tool_use(&repo, "coverage-retry", "src/app.rs")
-            .status
-            .success()
-    );
-
     for expected_runs in ["x", "xx"] {
-        let output = run_pre_tool_use_command(&repo, "coverage-retry", "git commit -m test");
-        let decision: Value = serde_json::from_slice(&output.stdout).expect("deny decision JSON");
-        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+        let output = run_full_check(&repo);
+        assert_eq!(output.status.code(), Some(2));
+        let report = String::from_utf8(output.stdout).expect("check report is UTF-8");
+        assert!(report.contains("lgtm check failed"), "report: {report}");
         assert!(
-            decision["hookSpecificOutput"]["permissionDecisionReason"]
-                .as_str()
-                .is_some_and(|reason| reason.contains("coverage for workspace tests"))
+            report.contains("rerun the explicit `lgtm check` request"),
+            "report: {report}"
+        );
+        assert!(
+            !report.contains("retry Stop"),
+            "obsolete retry advice: {report}"
+        );
+        assert!(
+            report.contains("coverage workspace=tests"),
+            "report: {report}"
+        );
+        assert!(
+            report.contains("failed configured thresholds"),
+            "report: {report}"
         );
         assert_eq!(repo.read("coverage-failure-runs"), expected_runs);
     }
@@ -1114,7 +662,7 @@ fn failed_coverage_threshold_denies_each_retry_and_is_never_reused() {
     ignore = "production command containment is Linux-only"
 )]
 #[test]
-fn config_trust_is_revalidated_before_successful_evidence_reuse() {
+fn untrusted_config_stops_command_execution_until_trust_restored() {
     let repo = TempRepo::new();
     repo.write("src/app.rs", "pub fn value() -> u8 { 1 }\n");
     let marker = repo.path().join("trusted-config-runs");
@@ -1148,26 +696,27 @@ fn config_trust_is_revalidated_before_successful_evidence_reuse() {
         })
         .to_string(),
     );
-    assert!(
-        run_post_tool_use(&repo, "config-trust", "src/app.rs")
-            .status
-            .success()
-    );
-    let first = run_pre_tool_use_command(&repo, "config-trust", "git commit -m test");
-    assert!(first.stdout.is_empty());
+    let first = run_full_check(&repo);
+    assert!(first.status.success(), "check stderr: {:?}", first.stderr);
     assert_eq!(repo.read("trusted-config-runs"), "x");
 
     std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o666))
         .expect("world-writable config");
-    let denied = run_pre_tool_use_command(&repo, "config-trust", "git commit -m test");
-    let decision: Value = serde_json::from_slice(&denied.stdout).expect("deny decision JSON");
-    assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+    let denied = run_full_check(&repo);
+    assert!(
+        denied.status.success(),
+        "untrusted config must stay unverified, not fail: {:?}",
+        denied.stderr
+    );
+    let report = String::from_utf8(denied.stdout).expect("check report is UTF-8");
+    assert!(report.contains("action required"), "report: {report}");
+    assert!(report.contains("not world writable"), "report: {report}");
     assert_eq!(repo.read("trusted-config-runs"), "x");
 
     std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
         .expect("trusted config restored");
-    let rerun = run_pre_tool_use_command(&repo, "config-trust", "git commit -m test");
-    assert!(rerun.stdout.is_empty());
+    let rerun = run_full_check(&repo);
+    assert!(rerun.status.success(), "check stderr: {:?}", rerun.stderr);
     assert_eq!(repo.read("trusted-config-runs"), "xx");
 }
 
@@ -1239,20 +788,7 @@ fn invalid_command_timeout_is_surfaced_as_unverified() {
         ".lgtm/config.json",
         r#"{"command_timeout_seconds":0,"required_commands":{}}"#,
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["hook", "stop"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    write!(
-        child.stdin.take().unwrap(),
-        "{}",
-        json!({"cwd":repo.path(),"session_id":"timeout-invalid","check":true})
-    )
-    .unwrap();
-    let output = child.wait_with_output().unwrap();
+    let output = run_full_check(&repo);
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("UNVERIFIED required-repository-commands"));
@@ -1264,15 +800,18 @@ fn invalid_command_timeout_is_surfaced_as_unverified() {
     ignore = "production command containment is Linux-only"
 )]
 #[test]
-fn passing_line_and_branch_coverage_passes_stop_and_persists_result() {
+fn passing_line_and_branch_coverage_passes_explicit_check_and_persists_result() {
     let repo = TempRepo::new();
     write_coverage_fixture(&repo, "line coverage: 85% branch coverage: 90%", 80, 90);
 
-    let output = run_full_stop(&repo, "coverage-pass", false);
+    let output = run_full_check(&repo);
 
-    assert!(output.status.success(), "passing coverage must allow Stop");
-    let stdout = String::from_utf8(output.stdout).expect("Stop stdout is UTF-8");
-    assert!(stdout.contains("failed=0"), "summary must report failed=0");
+    assert!(
+        output.status.success(),
+        "passing coverage must pass the check"
+    );
+    let stdout = String::from_utf8(output.stdout).expect("check stdout is UTF-8");
+    assert!(!stdout.contains("lgtm check failed"), "report: {stdout}");
     let record = latest_evidence(&repo);
     assert_eq!(record["coverage"][0]["status"], "passed");
     assert_eq!(
@@ -1286,11 +825,7 @@ fn passing_line_and_branch_coverage_passes_stop_and_persists_result() {
 fn evidence_append_recovers_from_a_truncated_final_jsonl_record() {
     let repo = TempRepo::new();
     write_coverage_fixture(&repo, "line coverage: 100% branch coverage: 100%", 80, 80);
-    assert!(
-        run_full_stop(&repo, "before-truncation", false)
-            .status
-            .success()
-    );
+    assert!(run_full_check(&repo).status.success());
     let evidence_path = repo.path().join(".lgtm/evidence/evidence.jsonl");
     std::fs::OpenOptions::new()
         .append(true)
@@ -1298,13 +833,13 @@ fn evidence_append_recovers_from_a_truncated_final_jsonl_record() {
         .and_then(|mut file| file.write_all(b"{\"task_id\":"))
         .expect("append truncated evidence tail");
 
-    let output = run_full_stop(&repo, "after-truncation", false);
+    let output = run_full_check(&repo);
 
     assert!(output.status.success());
     let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
     let latest: Value = serde_json::from_str(evidence.lines().last().expect("latest evidence"))
         .expect("latest evidence remains parseable JSON");
-    assert_eq!(latest["task_id"], "after-truncation");
+    assert_eq!(latest["task_id"], "unknown-session");
     assert!(!evidence.contains("{\"task_id\":{\"task_id\""));
 }
 
@@ -1322,7 +857,7 @@ fn ratio_and_decimal_coverage_uses_the_percentage_value() {
         99,
     );
 
-    let output = run_full_stop(&repo, "coverage-ratio", false);
+    let output = run_full_check(&repo);
 
     assert!(
         output.status.success(),
@@ -1348,13 +883,13 @@ fn out_of_range_coverage_is_unverified_and_persists_valid_evidence() {
         80,
     );
 
-    let output = run_full_stop(&repo, "coverage-out-of-range", false);
+    let output = run_full_check(&repo);
 
     assert!(
         output.status.success(),
         "invalid tool output must be unverified rather than fail open after an evidence error"
     );
-    let stdout = String::from_utf8(output.stdout).expect("Stop stdout is UTF-8");
+    let stdout = String::from_utf8(output.stdout).expect("check stdout is UTF-8");
     assert!(stdout.contains("UNVERIFIED required-repository-commands"));
     let record = latest_evidence(&repo);
     assert_eq!(record["coverage"][0]["status"], "unverified");
@@ -1436,14 +971,26 @@ fn unknown_workspace_selector_fails_in_central_check_execution() {
 
     let output = run_workspace_full_check(&repo, "typo");
 
-    assert!(!output.status.success(), "unknown workspace must fail");
-    let decision: Value =
-        serde_json::from_slice(&output.stderr).expect("check block decision JSON");
-    assert_eq!(decision["decision"], "block");
-    let reason = decision["reason"].as_str().expect("block reason");
-    assert!(reason.contains("unknown workspace `typo`"));
-    assert!(reason.contains("available workspaces: selected, other"));
-    assert!(reason.contains("select a configured workspace id"));
+    assert_eq!(output.status.code(), Some(2));
+    let report = String::from_utf8(output.stdout).expect("check report is UTF-8");
+    assert!(report.contains("lgtm check failed"), "report: {report}");
+    assert!(report.contains("rerun `lgtm check`"), "report: {report}");
+    assert!(
+        !report.contains("retry Stop"),
+        "obsolete retry advice: {report}"
+    );
+    assert!(
+        report.contains("unknown workspace `typo`"),
+        "report: {report}"
+    );
+    assert!(
+        report.contains("available workspaces: selected, other"),
+        "report: {report}"
+    );
+    assert!(
+        report.contains("select a configured workspace id"),
+        "report: {report}"
+    );
     let record = latest_evidence(&repo);
     assert!(record["results"].as_array().is_some_and(|results| {
         results.iter().any(|result| {
@@ -1456,25 +1003,50 @@ fn unknown_workspace_selector_fails_in_central_check_execution() {
 }
 
 #[test]
-fn unknown_workspace_selector_in_direct_hook_payload_is_denied() {
+fn unknown_workspace_selector_in_automatic_stop_does_not_deny() {
     let repo = TempRepo::new();
     write_workspace_coverage_fixture(&repo);
 
-    let output = run_stop_with_workspace(&repo, "workspace-typo", "typo");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["hook", "stop"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("automatic Stop hook starts");
+    write!(
+        child.stdin.take().expect("stdin available"),
+        "{}",
+        json!({
+            "cwd": repo.path(),
+            "session_id": "workspace-typo",
+            "workspace": "typo",
+            "tier": "full",
+            "stop_hook_active": false
+        })
+    )
+    .expect("payload writes");
+    let output = child.wait_with_output().expect("automatic Stop hook exits");
 
-    assert_eq!(output.status.code(), Some(2));
-    let decision: Value = serde_json::from_slice(&output.stderr).expect("Stop block decision JSON");
-    assert_eq!(decision["decision"], "block");
-    let reason = decision["reason"].as_str().expect("block reason");
-    assert!(reason.contains("unknown workspace `typo`"));
-    assert!(reason.contains("available workspaces: selected, other"));
-    let record = latest_evidence(&repo);
+    assert!(output.status.success(), "automatic Stop must not deny");
+    let stdout = String::from_utf8(output.stdout).expect("automatic Stop stdout is UTF-8");
     assert!(
-        record["rules"]["failed"]
-            .as_u64()
-            .is_some_and(|count| count >= 1)
+        stdout.contains("automatic completion report"),
+        "automatic Stop observer: {stdout}"
     );
-    assert_eq!(record["coverage"][0]["status"], "not_applicable");
+    assert!(
+        !stdout.contains("permissionDecision") && !stdout.contains("\"block\""),
+        "automatic Stop must not emit hook decisions: {stdout}"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "automatic Stop stderr: {:?}",
+        output.stderr
+    );
+    assert!(
+        !repo.exists(".lgtm/evidence/evidence.jsonl"),
+        "automatic Stop must not run checks"
+    );
 }
 
 #[cfg_attr(
@@ -1482,18 +1054,23 @@ fn unknown_workspace_selector_in_direct_hook_payload_is_denied() {
     ignore = "production command containment is Linux-only"
 )]
 #[test]
-fn below_threshold_coverage_blocks_stop_and_full_check() {
+fn below_threshold_coverage_fails_each_explicit_check() {
     let repo = TempRepo::new();
     write_coverage_fixture(&repo, "line coverage: 50% branch coverage: 50%", 80, 80);
 
-    let stop = run_full_stop(&repo, "coverage-fail", false);
+    let stop = run_full_check(&repo);
 
     assert_eq!(stop.status.code(), Some(2));
-    let decision: Value = serde_json::from_slice(&stop.stderr).expect("block decision JSON");
-    assert_eq!(decision["decision"], "block");
-    let reason = decision["reason"].as_str().expect("block reason");
-    assert!(reason.contains(COVERAGE_RULE_ID));
-    assert!(reason.contains("coverage"));
+    let stop_report = String::from_utf8(stop.stdout).expect("check report is UTF-8");
+    assert!(
+        stop_report.contains("lgtm check failed"),
+        "report: {stop_report}"
+    );
+    assert!(
+        stop_report.contains(COVERAGE_RULE_ID),
+        "report: {stop_report}"
+    );
+    assert!(stop_report.contains("coverage"), "report: {stop_report}");
     let record = latest_evidence(&repo);
     assert_eq!(record["coverage"][0]["status"], "failed");
     assert_eq!(
@@ -1508,18 +1085,21 @@ fn below_threshold_coverage_blocks_stop_and_full_check() {
 
     let check = run_full_check(&repo);
 
-    assert!(
-        !check.status.success(),
+    assert_eq!(
+        check.status.code(),
+        Some(2),
         "full check must fail below threshold"
     );
-    let check_decision: Value =
-        serde_json::from_slice(&check.stderr).expect("full check block decision JSON");
-    assert_eq!(check_decision["decision"], "block");
-    let check_reason = check_decision["reason"]
-        .as_str()
-        .expect("full check reason");
-    assert!(check_reason.contains(COVERAGE_RULE_ID));
-    assert!(check_reason.contains("coverage"));
+    let check_report = String::from_utf8(check.stdout).expect("check report is UTF-8");
+    assert!(
+        check_report.contains("lgtm check failed"),
+        "report: {check_report}"
+    );
+    assert!(
+        check_report.contains(COVERAGE_RULE_ID),
+        "report: {check_report}"
+    );
+    assert!(check_report.contains("coverage"), "report: {check_report}");
 }
 
 #[cfg_attr(
@@ -1536,9 +1116,9 @@ fn semantic_coverage_labels_ignore_baseline_substrings_end_to_end() {
         80,
     );
 
-    let stop = run_full_stop(&repo, "coverage-label-boundary", false);
+    let output = run_full_check(&repo);
 
-    assert_eq!(stop.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(2));
     let record = latest_evidence(&repo);
     assert_eq!(record["coverage"][0]["status"], "failed");
     assert_eq!(record["coverage"][0]["line_percent"], 50.0);
@@ -1546,17 +1126,17 @@ fn semantic_coverage_labels_ignore_baseline_substrings_end_to_end() {
 }
 
 #[test]
-fn unparseable_coverage_is_unverified_and_does_not_fail_stop() {
+fn unparseable_coverage_is_unverified_and_does_not_fail_explicit_check() {
     let repo = TempRepo::new();
     write_coverage_fixture(&repo, "coverage report unavailable", 80, 80);
 
-    let output = run_full_stop(&repo, "coverage-unverified", false);
+    let output = run_full_check(&repo);
 
     assert!(
         output.status.success(),
-        "unverified coverage must allow Stop"
+        "unverified coverage must not fail the check"
     );
-    let stdout = String::from_utf8(output.stdout).expect("Stop stdout is UTF-8");
+    let stdout = String::from_utf8(output.stdout).expect("check stdout is UTF-8");
     assert!(stdout.contains("UNVERIFIED required-repository-commands"));
     let record = latest_evidence(&repo);
     assert_eq!(record["coverage"][0]["status"], "unverified");
@@ -1620,7 +1200,7 @@ fn nested_workspace_commands_and_coverage_use_repository_relative_effective_cwds
         .to_string(),
     );
 
-    let output = run_full_stop(&repo, "nested-workspace", false);
+    let output = run_full_check(&repo);
 
     assert!(output.status.success(), "nested workspace should pass");
     let record = latest_evidence(&repo);
@@ -1640,7 +1220,7 @@ fn nested_workspace_commands_and_coverage_use_repository_relative_effective_cwds
 
 #[cfg(target_os = "linux")]
 #[test]
-fn doctor_and_stop_accept_parent_relative_executable_paths() {
+fn doctor_and_check_accept_parent_relative_executable_paths() {
     let repo = TempRepo::new();
     repo.write(
         "workspace/bin/check",
@@ -1674,8 +1254,8 @@ fn doctor_and_stop_accept_parent_relative_executable_paths() {
     assert!(doctor.status.success());
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
 
-    let stop = run_full_stop(&repo, "parent-relative-executable", false);
-    assert!(stop.status.success());
+    let output = run_full_check(&repo);
+    assert!(output.status.success());
     assert!(repo.exists("workspace/relative-path-marker"));
 }
 
@@ -1749,7 +1329,7 @@ fn doctor_accepts_final_symlinks_for_absolute_and_coverage_paths() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn replacing_cwd_during_command_invalidates_fresh_passing_evidence() {
+fn replacing_cwd_during_command_is_unverified_on_explicit_check() {
     let repo = TempRepo::new();
     repo.write(
         "workspace/checks/check",
@@ -1773,8 +1353,10 @@ fn replacing_cwd_during_command_invalidates_fresh_passing_evidence() {
         .to_string(),
     );
 
-    let output = run_full_stop(&repo, "postrun-cwd-replacement", false);
+    let output = run_full_check(&repo);
     assert!(output.status.success());
+    let report = String::from_utf8(output.stdout).expect("check report is UTF-8");
+    assert!(report.contains("action required"), "report: {report}");
     let record = latest_evidence(&repo);
     assert_eq!(record["commands"][0]["exit_code"], Value::Null);
     assert!(record["results"].as_array().is_some_and(|results| {
@@ -1787,7 +1369,7 @@ fn replacing_cwd_during_command_invalidates_fresh_passing_evidence() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn replacing_nested_cwd_rejects_reuse_of_successful_evidence() {
+fn replacing_nested_cwd_with_symlink_blocks_outside_command_execution() {
     let repo = TempRepo::new();
     let outside = std::env::temp_dir().join(format!("lgtm-reuse-cwd-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&outside);
@@ -1818,28 +1400,17 @@ fn replacing_nested_cwd_rejects_reuse_of_successful_evidence() {
         .to_string(),
     );
 
-    assert!(
-        run_post_tool_use(&repo, "cwd-reuse", "workspace/src/app.rs")
-            .status
-            .success()
-    );
-    let first = run_pre_tool_use_command(&repo, "cwd-reuse", "git commit -m first");
-    assert!(first.status.success());
-    assert!(
-        first.stdout.is_empty(),
-        "successful evidence should authorize first run"
-    );
+    let first = run_full_check(&repo);
+    assert!(first.status.success(), "check stderr: {:?}", first.stderr);
     assert_eq!(repo.read("workspace/command-runs"), "x");
 
     std::fs::remove_dir_all(repo.path().join("workspace/checks")).expect("remove nested cwd");
     std::os::unix::fs::symlink(&outside, repo.path().join("workspace/checks"))
         .expect("replace nested cwd with symlink");
-    let second = run_pre_tool_use_command(&repo, "cwd-reuse", "git commit -m retry");
-    assert!(second.status.success());
-    assert!(
-        !second.stdout.is_empty(),
-        "invalidated evidence must deny reuse"
-    );
+    let second = run_full_check(&repo);
+    assert!(second.status.success(), "check stderr: {:?}", second.stderr);
+    let report = String::from_utf8(second.stdout).expect("check report is UTF-8");
+    assert!(report.contains("action required"), "report: {report}");
     assert_eq!(
         repo.read("workspace/command-runs"),
         "x",
@@ -1857,7 +1428,7 @@ fn replacing_nested_cwd_rejects_reuse_of_successful_evidence() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn replacing_nested_cwds_with_normal_directories_forces_fresh_results() {
+fn replacing_nested_cwds_forces_fresh_command_and_coverage_results() {
     let repo = TempRepo::new();
     for path in ["workspace/checks", "workspace/coverage"] {
         std::fs::create_dir_all(repo.path().join(path)).expect("nested cwd fixture");
@@ -1893,17 +1464,8 @@ fn replacing_nested_cwds_with_normal_directories_forces_fresh_results() {
         .to_string(),
     );
 
-    assert!(
-        run_post_tool_use(&repo, "cwd-identity", "workspace/src/app.rs")
-            .status
-            .success()
-    );
-    let first = run_pre_tool_use_command(&repo, "cwd-identity", "git commit -m first");
-    assert!(first.status.success());
-    assert!(
-        first.stdout.is_empty(),
-        "initial passing gate should authorize"
-    );
+    let first = run_full_check(&repo);
+    assert!(first.status.success(), "check stderr: {:?}", first.stderr);
     assert_eq!(repo.read("workspace/command-runs"), "x");
     assert_eq!(repo.read("workspace/coverage-runs"), "x");
 
@@ -1933,11 +1495,13 @@ fn replacing_nested_cwds_with_normal_directories_forces_fresh_results() {
             .expect("replacement cwd executable");
     }
 
-    let second = run_pre_tool_use_command(&repo, "cwd-identity", "git commit -m retry");
-    assert!(second.status.success());
+    let second = run_full_check(&repo);
+    assert_eq!(second.status.code(), Some(2));
+    let report = String::from_utf8(second.stdout).expect("check report is UTF-8");
+    assert!(report.contains("lgtm check failed"), "report: {report}");
     assert!(
-        !second.stdout.is_empty(),
-        "replacement results must deny reuse"
+        report.contains("failed with exit status 7"),
+        "report: {report}"
     );
     assert_eq!(
         repo.read("workspace/command-runs"),
@@ -1955,7 +1519,7 @@ fn replacing_nested_cwds_with_normal_directories_forces_fresh_results() {
     assert!(record["results"].as_array().is_some_and(|results| {
         results.iter().any(|result| {
             result["rule_id"] == COVERAGE_RULE_ID
-                && result["status"] == "failed"
+                && result["status"] == "unverified"
                 && result["message"]
                     .as_str()
                     .is_some_and(|message| message.contains("coverage"))
@@ -1992,14 +1556,8 @@ fn replacing_only_command_cwd_forces_fresh_command_evidence() {
         .to_string(),
     );
 
-    assert!(
-        run_post_tool_use(&repo, "command-cwd-identity", "workspace/src/app.rs")
-            .status
-            .success()
-    );
-    let first = run_pre_tool_use_command(&repo, "command-cwd-identity", "git commit -m first");
-    assert!(first.status.success());
-    assert!(first.stdout.is_empty(), "initial command should authorize");
+    let first = run_full_check(&repo);
+    assert!(first.status.success(), "check stderr: {:?}", first.stderr);
     assert_eq!(repo.read("workspace/command-runs"), "x");
 
     std::fs::rename(
@@ -2015,11 +1573,13 @@ fn replacing_only_command_cwd_forces_fresh_command_evidence() {
     )
     .expect("replacement executable");
 
-    let second = run_pre_tool_use_command(&repo, "command-cwd-identity", "git commit -m retry");
-    assert!(second.status.success());
+    let second = run_full_check(&repo);
+    assert_eq!(second.status.code(), Some(2));
+    let report = String::from_utf8(second.stdout).expect("check report is UTF-8");
+    assert!(report.contains("lgtm check failed"), "report: {report}");
     assert!(
-        !second.stdout.is_empty(),
-        "replacement command must deny reuse"
+        report.contains("failed with exit status 7"),
+        "report: {report}"
     );
     assert_eq!(
         repo.read("workspace/command-runs"),
@@ -2058,18 +1618,8 @@ fn replacing_only_coverage_cwd_forces_fresh_coverage_evidence() {
         .to_string(),
     );
 
-    assert!(
-        run_post_tool_use(&repo, "coverage-cwd-identity", "workspace/src/app.rs")
-            .status
-            .success()
-    );
-    let first = run_pre_tool_use_command(&repo, "coverage-cwd-identity", "git commit -m first");
-    assert!(first.status.success());
-    assert!(
-        first.stdout.is_empty(),
-        "initial coverage should authorize: {}",
-        String::from_utf8_lossy(&first.stdout)
-    );
+    let first = run_full_check(&repo);
+    assert!(first.status.success(), "check stderr: {:?}", first.stderr);
     assert_eq!(repo.read("workspace/coverage-runs"), "x");
 
     std::fs::rename(
@@ -2088,12 +1638,14 @@ fn replacing_only_coverage_cwd_forces_fresh_coverage_evidence() {
     )
     .expect("replacement coverage executable");
 
-    let second = run_pre_tool_use_command(&repo, "coverage-cwd-identity", "git commit -m retry");
-    assert!(second.status.success());
+    let second = run_full_check(&repo);
     assert!(
-        !second.stdout.is_empty(),
-        "replacement coverage must deny reuse"
+        second.status.success(),
+        "unverified coverage must not fail the check: {:?}",
+        second.stderr
     );
+    let report = String::from_utf8(second.stdout).expect("check report is UTF-8");
+    assert!(report.contains("action required"), "report: {report}");
     assert_eq!(
         repo.read("workspace/coverage-runs"),
         "x",
@@ -2107,7 +1659,7 @@ fn replacing_only_coverage_cwd_forces_fresh_coverage_evidence() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn doctor_and_stop_accept_long_relative_executable_paths() {
+fn doctor_and_check_accept_long_relative_executable_paths() {
     let repo = TempRepo::new();
     let components: Vec<String> = (0..129).map(|index| format!("d{index}")).collect();
     let executable = format!("{}/check", components.join("/"));
@@ -2142,19 +1694,14 @@ fn doctor_and_stop_accept_long_relative_executable_paths() {
         .expect("config doctor starts");
     assert!(doctor.status.success());
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
-    assert!(
-        run_post_tool_use(&repo, "long-executable", "workspace/src/app.rs")
-            .status
-            .success()
-    );
-    let authorized_stop = run_full_stop(&repo, "long-executable", false);
-    assert!(authorized_stop.status.success());
+    let authorized_check = run_full_check(&repo);
+    assert!(authorized_check.status.success());
     assert_eq!(repo.read("long-command-runs"), "x");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn non_utf8_path_survives_doctor_and_supervisor_execution() {
+fn non_utf8_path_survives_doctor_and_explicit_check_execution() {
     let repo = TempRepo::new();
     let home = OsString::from_vec(b"non-utf8-home-\xfe".to_vec());
     let path_component = OsString::from_vec(b"non-utf8-bin-\xff".to_vec());
@@ -2196,19 +1743,8 @@ fn non_utf8_path_survives_doctor_and_supervisor_execution() {
     assert!(doctor.status.success());
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
 
-    assert!(
-        run_post_tool_use(&repo, "non-utf8-path", "workspace/src/app.rs")
-            .status
-            .success()
-    );
-    let stop = run_full_stop_with_path_and_home(
-        &repo,
-        "non-utf8-path",
-        false,
-        Some(&path),
-        Some(home.as_os_str()),
-    );
-    assert!(stop.status.success(), "Stop stderr: {:?}", stop.stderr);
+    let stop = run_full_check_with_path_and_home(&repo, Some(&path), Some(home.as_os_str()));
+    assert!(stop.status.success(), "check stderr: {:?}", stop.stderr);
     assert_eq!(repo.read("non-utf8-path-marker"), "x");
     assert_eq!(
         std::fs::read(repo.path().join("non-utf8-home-marker")).expect("HOME marker reads"),
@@ -2221,7 +1757,7 @@ fn non_utf8_path_survives_doctor_and_supervisor_execution() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn non_utf8_ci_survives_doctor_and_supervisor_execution() {
+fn non_utf8_ci_survives_doctor_and_explicit_check_execution() {
     let repo = TempRepo::new();
     let ci = OsString::from_vec(b"ci-value-\xfe".to_vec());
     let path_directory = repo.path().join("workspace/bin");
@@ -2259,15 +1795,13 @@ fn non_utf8_ci_survives_doctor_and_supervisor_execution() {
     assert!(doctor.status.success());
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
 
-    let stop = run_full_stop_with_environment(
+    let stop = run_full_check_with_environment(
         &repo,
-        "non-utf8-ci",
-        false,
         Some(path_directory.as_os_str()),
         None,
         Some(ci.as_os_str()),
     );
-    assert!(stop.status.success(), "Stop stderr: {:?}", stop.stderr);
+    assert!(stop.status.success(), "check stderr: {:?}", stop.stderr);
     assert_eq!(
         std::fs::read(repo.path().join("ci-marker")).expect("CI marker reads"),
         ci.as_os_str().as_bytes(),
@@ -2276,7 +1810,7 @@ fn non_utf8_ci_survives_doctor_and_supervisor_execution() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn sibling_workspace_root_selection_reruns_only_touched_workspace_evidence() {
+fn workspace_selector_reruns_only_selected_workspace_evidence() {
     let repo = TempRepo::new();
     repo.write("workspace/app2/src/app.rs", "pub fn value() -> u8 { 1 }\n");
 
@@ -2359,26 +1893,11 @@ fn sibling_workspace_root_selection_reruns_only_touched_workspace_evidence() {
         .to_string(),
     );
 
-    assert!(
-        run_post_tool_use(
-            &repo,
-            "sibling-workspace-reuse",
-            "workspace/app2/src/app.rs"
-        )
-        .status
-        .success()
-    );
-    let first = run_pre_tool_use_command(&repo, "sibling-workspace-reuse", "git commit -m first");
+    let first = run_workspace_full_check(&repo, "app2");
     assert!(
         first.status.success(),
-        "first precommit: {:?}",
+        "first workspace check: {:?}",
         first.stderr
-    );
-    assert!(
-        first.stdout.is_empty(),
-        "first stdout={} stderr={}",
-        String::from_utf8_lossy(&first.stdout),
-        String::from_utf8_lossy(&first.stderr)
     );
     assert!(!repo.exists("selected-command-runs"));
     assert!(!repo.exists("selected-coverage-runs"));
@@ -2393,13 +1912,12 @@ fn sibling_workspace_root_selection_reruns_only_touched_workspace_evidence() {
     assert_eq!(record["coverage"][0]["workspace_id"], "app2");
     assert_eq!(record["coverage"][0]["cwd"], "workspace/app2/coverage");
 
-    let second = run_pre_tool_use_command(&repo, "sibling-workspace-reuse", "git commit -m second");
+    let second = run_workspace_full_check(&repo, "app2");
     assert!(
         second.status.success(),
-        "second precommit: {:?}",
+        "second workspace check: {:?}",
         second.stderr
     );
-    assert!(second.stdout.is_empty());
     assert!(!repo.exists("selected-command-runs"));
     assert!(!repo.exists("selected-coverage-runs"));
     assert_eq!(repo.read("other-command-runs"), "xx");
@@ -2481,7 +1999,7 @@ fn config_doctor_checks_commands_from_their_effective_cwd() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn searchable_only_cwd_passes_doctor_and_supervised_stop() {
+fn searchable_only_cwd_passes_doctor_and_explicit_check() {
     let repo = TempRepo::new();
     repo.write("workspace/app.rs", "fn app() {}\n");
     std::fs::create_dir_all(repo.path().join("workspace/target/cwd"))
@@ -2512,15 +2030,10 @@ fn searchable_only_cwd_passes_doctor_and_supervised_stop() {
     assert!(doctor.status.success());
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
 
-    assert!(
-        run_post_tool_use(&repo, "searchable-only-cwd", "workspace/app.rs")
-            .status
-            .success()
-    );
-    let stop = run_full_stop(&repo, "searchable-only-cwd", false);
+    let stop = run_full_check(&repo);
     assert!(
         stop.status.success(),
-        "stop stderr: {}",
+        "check stderr: {}",
         String::from_utf8_lossy(&stop.stderr)
     );
     let record = latest_evidence(&repo);
@@ -2570,7 +2083,7 @@ fn config_doctor_accepts_executable_symlink_runtime_can_run() {
             .expect("doctor output is UTF-8")
             .contains("config doctor: clean")
     );
-    let stop = run_full_stop(&repo, "doctor-executable-symlink", false);
+    let stop = run_full_check(&repo);
     assert!(stop.status.success());
     assert!(repo.exists("workspace/src/runtime-marker"));
 }
@@ -2622,7 +2135,7 @@ fn config_doctor_rejects_absolute_and_bare_commands_with_symlinked_cwd() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn doctor_and_stop_resolve_relative_path_from_effective_cwd() {
+fn doctor_and_check_resolve_relative_path_from_effective_cwd() {
     let repo = TempRepo::new();
     repo.write(
         "workspace/tests/bin/check",
@@ -2663,13 +2176,7 @@ fn doctor_and_stop_resolve_relative_path_from_effective_cwd() {
     assert!(doctor.status.success());
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("config doctor: clean"));
 
-    let stop = run_full_stop_with_path_and_home(
-        &repo,
-        "relative-path",
-        false,
-        Some(std::ffi::OsStr::new("./bin")),
-        None,
-    );
+    let stop = run_full_check_with_path_and_home(&repo, Some(std::ffi::OsStr::new("./bin")), None);
     assert!(stop.status.success());
     assert_eq!(repo.read("workspace/relative-path-marker"), "nested");
     assert!(!repo.exists("decoy-marker"));
@@ -2718,7 +2225,7 @@ fn config_doctor_does_not_use_process_cwd_for_relative_command_or_coverage_paths
 
 #[cfg(target_os = "linux")]
 #[test]
-fn mode_zero_cwd_is_missing_to_doctor_and_stop() {
+fn mode_zero_cwd_is_missing_to_doctor_and_check() {
     let repo = TempRepo::new();
     let cwd = repo.path().join("workspace/locked");
     std::fs::create_dir_all(&cwd).expect("locked cwd fixture");
@@ -2770,14 +2277,15 @@ fn mode_zero_cwd_is_missing_to_doctor_and_stop() {
     assert_eq!(doctor_stdout.matches("MISSING").count(), 2);
     assert!(!doctor_stdout.contains("config doctor: clean"));
 
-    let stop = run_full_stop_with_path_and_home(
+    let stop = run_full_check_with_path_and_home(
         &repo,
-        "mode-zero-cwd",
-        false,
         Some(repo.path().join("workspace/bin").as_os_str()),
         None,
     );
-    assert!(stop.status.success());
+    assert_eq!(stop.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&stop.stderr);
+    assert!(stderr.contains("check failed"), "stderr: {stderr}");
+    assert!(stderr.contains("scan check paths"), "stderr: {stderr}");
     assert!(!repo.exists("absolute-marker"));
     assert!(!repo.exists("bare-marker"));
     std::fs::set_permissions(cwd, std::fs::Permissions::from_mode(0o700))
@@ -2825,7 +2333,7 @@ fn symlinked_command_and_coverage_cwds_fail_closed_before_outside_execution() {
         .to_string(),
     );
 
-    let output = run_full_stop(&repo, "symlinked-cwd", false);
+    let output = run_full_check(&repo);
     assert!(output.status.success());
     let record = latest_evidence(&repo);
     assert_eq!(record["commands"].as_array().expect("commands").len(), 1);
@@ -2878,13 +2386,7 @@ fn symlinked_coverage_cwd_is_unverified_without_running_coverage() {
         })
         .to_string(),
     );
-    assert!(
-        run_post_tool_use(&repo, "symlinked-coverage-cwd", "workspace/src/app.rs")
-            .status
-            .success()
-    );
-
-    let output = run_full_stop(&repo, "symlinked-coverage-cwd", false);
+    let output = run_full_check(&repo);
     assert!(output.status.success());
     let record = latest_evidence(&repo);
     assert_eq!(record["commands"].as_array().expect("commands").len(), 0);
@@ -2905,7 +2407,7 @@ fn symlinked_coverage_cwd_is_unverified_without_running_coverage() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn retargeted_workspace_alias_remains_selected_and_cannot_reuse_evidence() {
+fn retargeted_workspace_alias_fails_closed_on_each_explicit_check() {
     let repo = TempRepo::new();
     for target in ["workspace-a", "workspace-b"] {
         repo.write(&format!("{target}/src/app.rs"), "fn app() {}\n");
@@ -2931,11 +2433,6 @@ fn retargeted_workspace_alias_remains_selected_and_cannot_reuse_evidence() {
         })
         .to_string(),
     );
-    assert!(
-        run_post_tool_use(&repo, "retargeted-workspace", "workspace/src/app.rs")
-            .status
-            .success()
-    );
     std::fs::remove_file(repo.path().join("workspace")).expect("remove old alias");
     std::os::unix::fs::symlink(
         repo.path().join("workspace-b"),
@@ -2944,7 +2441,7 @@ fn retargeted_workspace_alias_remains_selected_and_cannot_reuse_evidence() {
     .expect("workspace alias retargets to B");
 
     for _ in 0..2 {
-        let output = run_full_stop(&repo, "retargeted-workspace", false);
+        let output = run_full_check(&repo);
         assert!(output.status.success());
         let record = latest_evidence(&repo);
         assert_eq!(record["commands"].as_array().expect("commands").len(), 1);
@@ -3031,13 +2528,7 @@ fn symlinked_workspace_root_selects_obligations_then_fails_closed() {
         })
         .to_string(),
     );
-    assert!(
-        run_post_tool_use(&repo, "symlinked-workspace-root", "workspace/src/app.rs")
-            .status
-            .success()
-    );
-
-    let output = run_full_stop(&repo, "symlinked-workspace-root", false);
+    let output = run_full_check(&repo);
     assert!(output.status.success());
     let record = latest_evidence(&repo);
     assert_eq!(record["commands"].as_array().expect("commands").len(), 1);
@@ -3084,17 +2575,7 @@ fn symlinked_workspace_root_selects_coverage_without_commands() {
         })
         .to_string(),
     );
-    assert!(
-        run_post_tool_use(
-            &repo,
-            "symlinked-workspace-root-coverage",
-            "workspace/src/app.rs"
-        )
-        .status
-        .success()
-    );
-
-    let output = run_full_stop(&repo, "symlinked-workspace-root-coverage", false);
+    let output = run_full_check(&repo);
     assert!(output.status.success());
     let record = latest_evidence(&repo);
     assert_eq!(record["commands"].as_array().expect("commands").len(), 0);
@@ -3115,7 +2596,7 @@ fn symlinked_workspace_root_selects_coverage_without_commands() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn outside_workspace_root_alias_is_selected_and_not_reusable() {
+fn outside_workspace_root_alias_fails_closed_on_each_explicit_check() {
     let repo = TempRepo::new();
     let outside = std::env::temp_dir().join(format!(
         "lgtm-outside-workspace-root-{}",
@@ -3163,13 +2644,7 @@ fn outside_workspace_root_alias_is_selected_and_not_reusable() {
         })
         .to_string(),
     );
-    assert!(
-        run_post_tool_use(&repo, "outside-workspace-root", "src/app.rs")
-            .status
-            .success()
-    );
-
-    let output = run_full_stop(&repo, "outside-workspace-root", false);
+    let output = run_full_check(&repo);
     assert!(output.status.success());
     let record = latest_evidence(&repo);
     assert_eq!(record["commands"].as_array().expect("commands").len(), 1);
@@ -3185,17 +2660,15 @@ fn outside_workspace_root_alias_is_selected_and_not_reusable() {
                 .is_some_and(|message| message.contains("containment could not be proven"))
         })
     }));
-    let second = run_pre_tool_use_command(&repo, "outside-workspace-root", "git commit -m retry");
-    assert!(second.status.success());
-    assert!(
-        !second.stdout.is_empty(),
-        "failed evidence must not authorize reuse"
-    );
+    let second = run_full_check(&repo);
+    assert!(second.status.success(), "check stderr: {:?}", second.stderr);
+    let report = String::from_utf8(second.stdout).expect("check report is UTF-8");
+    assert!(report.contains("action required"), "report: {report}");
     let _ = std::fs::remove_dir_all(outside);
 }
 
 #[test]
-fn missing_coverage_executable_is_unverified_and_does_not_fail_stop() {
+fn missing_coverage_executable_is_unverified_and_does_not_fail_explicit_check() {
     let repo = TempRepo::new();
     write_coverage_fixture(&repo, "line coverage: 100% branch coverage: 100%", 80, 80);
     let missing = repo.path().join("bin/missing-coverage");
@@ -3204,13 +2677,13 @@ fn missing_coverage_executable_is_unverified_and_does_not_fail_stop() {
     config["workspaces"][0]["coverage"][0]["argv"][0] = json!(missing);
     repo.write(".lgtm/config.json", &config.to_string());
 
-    let output = run_full_stop(&repo, "coverage-missing", false);
+    let output = run_full_check(&repo);
 
     assert!(
         output.status.success(),
-        "missing coverage executable must allow Stop"
+        "missing coverage executable must not fail the check"
     );
-    let stdout = String::from_utf8(output.stdout).expect("Stop stdout is UTF-8");
+    let stdout = String::from_utf8(output.stdout).expect("check stdout is UTF-8");
     assert!(stdout.contains("UNVERIFIED required-repository-commands"));
     let record = latest_evidence(&repo);
     assert_eq!(record["coverage"][0]["status"], "unverified");
@@ -3251,27 +2724,21 @@ fn downgraded_coverage_failure_remains_actionable() {
     ignore = "production command containment is Linux-only"
 )]
 #[test]
-fn active_stop_hook_summarizes_failed_coverage_instead_of_blocking() {
+fn failed_coverage_is_reported_by_explicit_check_without_hook_denial() {
     let repo = TempRepo::new();
     write_coverage_fixture(&repo, "line coverage: 50% branch coverage: 50%", 80, 80);
 
-    let output = run_full_stop(&repo, "coverage-active", true);
+    let output = run_full_check(&repo);
 
-    assert!(
-        output.status.success(),
-        "active Stop hook must return a summary"
-    );
+    assert_eq!(output.status.code(), Some(2));
     assert!(
         output.stderr.is_empty(),
-        "summary path must not emit a block"
+        "failure report must not emit a hook block: {:?}",
+        output.stderr
     );
-    let stdout = String::from_utf8(output.stdout).expect("Stop stdout is UTF-8");
-    assert!(
-        stdout
-            .lines()
-            .next()
-            .is_some_and(|line| line.contains("failed=1"))
-    );
+    let stdout = String::from_utf8(output.stdout).expect("check stdout is UTF-8");
+    assert!(stdout.contains("lgtm check failed"), "report: {stdout}");
+    assert!(stdout.contains(COVERAGE_RULE_ID), "report: {stdout}");
     let record = latest_evidence(&repo);
     assert_eq!(record["coverage"][0]["status"], "failed");
 }

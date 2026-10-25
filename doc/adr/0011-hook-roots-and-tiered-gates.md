@@ -2,11 +2,9 @@
 
 ## Status
 
-Superseded by ADR-0014
-
-Tier placement is superseded by
-[ADR-0014](0014-full-gate-before-agent-commit.md). Root resolution and command
-scoping remain accepted.
+Superseded by [ADR-0017](0017-observer-hooks-and-explicit-checks.md) for automatic
+hook checks. Root resolution and explicit workspace scoping remain accepted.
+[ADR-0014](0014-full-gate-before-agent-commit.md) records the intermediate tier change.
 
 ## Decision
 

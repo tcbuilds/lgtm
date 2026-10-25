@@ -23,11 +23,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Revalidate an exact Claude confirmation request before executing Git.
-    GuardedCommit {
-        #[arg(long)]
-        request: String,
-    },
     /// Register hooks and scaffold config in the current repository.
     Init {
         /// Preview detected workspaces and planned files without writing.
@@ -339,7 +334,6 @@ fn run(command: Command) -> ExitCode {
             }
         }
         Command::Hook { event, adapter } => run_hook(event, adapter),
-        Command::GuardedCommit { request } => lgtm::guarded_commit::run(&request),
         Command::Doctor => run_doctor(),
         Command::Compile { validate } => run_compile(validate),
         Command::Report { evidence, task } => run_report(evidence, task),
@@ -385,7 +379,7 @@ fn run_check(workspace: Option<&str>, tier: Option<CheckTier>) -> ExitCode {
     });
     let mut input = std::io::Cursor::new(payload.to_string());
     let mut output = Vec::new();
-    let code = stop::run(&mut input, &mut output);
+    let code = stop::run_check(&mut input, &mut output);
     print!("{}", String::from_utf8_lossy(&output));
     code
 }
@@ -1360,9 +1354,6 @@ fn normalize_pi_payload(raw: &str, request: &lgtm::adapter::HookRequest) -> Resu
         "tool_name".to_string(),
         serde_json::json!(canonical_pi_tool_name(tool_name)),
     );
-    if let Some(capability) = request.approval_capability {
-        object.insert("approval_capability".to_string(), capability.as_value());
-    }
     if let Some(call) = serde_json::from_str::<serde_json::Value>(raw)
         .ok()
         .and_then(|value| value.get("toolCallId").cloned())
@@ -1681,30 +1672,6 @@ mod tests {
         assert!(normalized.contains("secret.txt"));
         assert!(!normalized.contains("oldText"));
         assert!(!normalized.contains("newText"));
-    }
-
-    #[test]
-    fn generated_pi_capability_is_preserved_only_when_exactly_supported() {
-        use lgtm::adapter::{ApprovalCapability, HookAdapter, HookEvent, PiAdapter};
-
-        let raw = r#"{"type":"tool_call","toolName":"bash","input":{"command":"git commit -m test","__lgtmPolicyInput":"lgtm-pi-policy-input-v1"},"cwd":"/repo","sessionId":"session","approvalCapability":{"name":"lgtm-pi-finding-approval","version":1}}"#;
-        let request = PiAdapter
-            .parse_request(HookEvent::PreToolUse, raw)
-            .expect("capability payload parses");
-        assert_eq!(
-            request.approval_capability,
-            Some(ApprovalCapability::PiFindingApprovalV1)
-        );
-        let normalized = normalize_pi_payload(raw, &request).expect("payload normalizes");
-        assert!(normalized.contains("approval_capability"));
-        assert!(normalized.contains("lgtm-pi-finding-approval"));
-
-        let unknown = raw.replace("\"version\":1", "\"version\":2");
-        let request = PiAdapter
-            .parse_request(HookEvent::PreToolUse, &unknown)
-            .expect("unknown capability remains parseable");
-        let normalized = normalize_pi_payload(&unknown, &request).expect("payload normalizes");
-        assert!(!normalized.contains("approval_capability"));
     }
 
     #[test]

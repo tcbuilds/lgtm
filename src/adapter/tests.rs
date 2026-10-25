@@ -7,7 +7,7 @@ use super::{
     emit,
 };
 
-/// Parse the encoded body of an inject/deny/block response as JSON.
+/// Parse the encoded body of an advisory context response as JSON.
 fn body_json(encoded: &EncodedResponse) -> Value {
     serde_json::from_str(&encoded.body).expect("encoded body is JSON")
 }
@@ -51,112 +51,23 @@ fn inject_context_uses_the_event_specific_envelope() {
 }
 
 #[test]
-fn deny_encodes_the_pre_tool_use_permission_envelope() {
-    let encoded = ClaudeAdapter
-        .encode_response(
-            HookEvent::PreToolUse,
-            HookResponse::Deny {
-                reason: "target escapes repository".to_string(),
-            },
-        )
-        .expect("deny is valid for PreToolUse");
-    assert_eq!(encoded.stream, OutputStream::Stdout);
-    assert_eq!(encoded.exit_code, 0);
-    assert_eq!(
-        body_json(&encoded),
-        json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": "target escapes repository",
-            },
-            "systemMessage": "target escapes repository"
-        })
-    );
-}
-
-#[test]
-fn ask_replaces_the_complete_claude_tool_input_without_extra_fields() {
-    let updated_input = json!({
-        "command": "git commit --staged",
-        "description": "commit staged changes",
-        "timeout": 30,
-    });
-    let encoded = ClaudeAdapter
-        .encode_response(
-            HookEvent::PreToolUse,
-            HookResponse::Ask {
-                reason: "approve the guarded staged commit".to_string(),
-                updated_input: updated_input.clone(),
-            },
-        )
-        .expect("ask is valid for PreToolUse");
-    assert_eq!(encoded.stream, OutputStream::Stdout);
-    assert_eq!(encoded.exit_code, 0);
-    assert_eq!(
-        body_json(&encoded),
-        json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "ask",
-                "permissionDecisionReason": "approve the guarded staged commit",
-                "updatedInput": updated_input,
-            }
-        })
-    );
-}
-
-#[test]
-fn ask_is_not_encoded_for_other_adapters() {
-    let response = HookResponse::Ask {
-        reason: "approve".to_string(),
-        updated_input: json!({"command": "git commit --staged"}),
-    };
-    assert!(
-        PiAdapter
-            .encode_response(HookEvent::PreToolUse, response.clone())
-            .is_err()
-    );
-    assert!(
-        super::CodexAdapter
-            .encode_response(HookEvent::PreToolUse, response)
-            .is_err()
-    );
-}
-
-#[test]
-fn post_tool_use_block_writes_decision_to_stdout_exit_zero() {
+fn post_tool_feedback_writes_context_without_a_blocking_decision() {
     let encoded = ClaudeAdapter
         .encode_response(
             HookEvent::PostToolUse,
-            HookResponse::BlockStop {
-                reason: "boom".to_string(),
+            HookResponse::PostToolFeedback {
+                reason: "review".to_string(),
             },
         )
-        .expect("block is valid for PostToolUse");
+        .expect("feedback is valid for PostToolUse");
     assert_eq!(encoded.stream, OutputStream::Stdout);
     assert_eq!(encoded.exit_code, 0);
     assert_eq!(
         body_json(&encoded),
-        json!({ "decision": "block", "reason": "boom" })
-    );
-}
-
-#[test]
-fn stop_block_writes_decision_to_stderr_exit_two() {
-    let encoded = ClaudeAdapter
-        .encode_response(
-            HookEvent::Stop,
-            HookResponse::BlockStop {
-                reason: "unresolved".to_string(),
-            },
-        )
-        .expect("block is valid for Stop");
-    assert_eq!(encoded.stream, OutputStream::Stderr);
-    assert_eq!(encoded.exit_code, 2);
-    assert_eq!(
-        body_json(&encoded),
-        json!({ "decision": "block", "reason": "unresolved" })
+        json!({"hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": "review",
+        }})
     );
 }
 
@@ -167,32 +78,17 @@ fn every_decision_body_satisfies_the_adapter_schema() {
     let validator = jsonschema::validator_for(&schema).expect("adapter validator");
     let bodies = [
         ClaudeAdapter.encode_response(
-            HookEvent::PreToolUse,
-            HookResponse::Deny {
-                reason: "reason".to_string(),
-            },
-        ),
-        ClaudeAdapter.encode_response(
-            HookEvent::PostToolUse,
-            HookResponse::BlockStop {
-                reason: "reason".to_string(),
-            },
-        ),
-        ClaudeAdapter.encode_response(
-            HookEvent::Stop,
-            HookResponse::BlockStop {
-                reason: "reason".to_string(),
-            },
+            HookEvent::SessionStart,
+            HookResponse::InjectContext("packet".to_string()),
         ),
         ClaudeAdapter.encode_response(
             HookEvent::UserPromptSubmit,
             HookResponse::InjectContext("packet".to_string()),
         ),
         ClaudeAdapter.encode_response(
-            HookEvent::PreToolUse,
-            HookResponse::Ask {
-                reason: "approve".to_string(),
-                updated_input: json!({"command": "git commit --staged"}),
+            HookEvent::PostToolUse,
+            HookResponse::PostToolFeedback {
+                reason: "review".to_string(),
             },
         ),
     ];
@@ -283,25 +179,21 @@ fn encode_response_rejects_event_invalid_pairs() {
     let invalid = [
         (
             HookEvent::Stop,
-            HookResponse::Deny {
-                reason: "r".to_string(),
-            },
-        ),
-        (
-            HookEvent::SessionStart,
-            HookResponse::BlockStop {
-                reason: "r".to_string(),
-            },
+            HookResponse::InjectContext("c".to_string()),
         ),
         (
             HookEvent::PreToolUse,
             HookResponse::InjectContext("c".to_string()),
         ),
         (
-            HookEvent::UserPromptSubmit,
-            HookResponse::Deny {
+            HookEvent::SessionStart,
+            HookResponse::PostToolFeedback {
                 reason: "r".to_string(),
             },
+        ),
+        (
+            HookEvent::UserPromptSubmit,
+            HookResponse::Summary("summary".to_string()),
         ),
     ];
     for (event, response) in invalid {
@@ -347,15 +239,11 @@ fn emit_writes_a_stdout_response_to_the_stdout_writer_only() {
 
 #[test]
 fn emit_writes_a_stderr_response_to_the_injected_stderr_writer() {
-    let encoded = ClaudeAdapter
-        .encode_response(
-            HookEvent::Stop,
-            HookResponse::BlockStop {
-                reason: "unresolved".to_string(),
-            },
-        )
-        .expect("block is valid for Stop");
-    assert_eq!(encoded.stream, OutputStream::Stderr);
+    let encoded = EncodedResponse {
+        body: "operator diagnostic".to_string(),
+        stream: OutputStream::Stderr,
+        exit_code: 1,
+    };
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     emit(&mut stdout, &mut stderr, &encoded).expect("emit succeeds");

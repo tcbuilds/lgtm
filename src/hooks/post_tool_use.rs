@@ -71,16 +71,6 @@ fn run_inner(
             .as_ref()
             .and_then(|input| input.command.as_deref().or(input.cmd.as_deref()))
             .unwrap_or_default();
-        // Direct commits have their own fresh staged gate and do not open shell snapshots.
-        if matches!(
-            super::pre_tool_use::command::parse_commit_invocation(command),
-            Ok(Some(_))
-        ) || matches!(
-            crate::guarded_commit::parse_invocation(command),
-            Ok(Some(_))
-        ) {
-            return ExitCode::SUCCESS;
-        }
         let paths = match super::shell_tracking::finish(
             &root,
             hook_input.session_id.as_deref(),
@@ -346,7 +336,7 @@ fn handle_results(
         }
         ExitCode::SUCCESS
     } else {
-        emit_blocks(output, adapter, &failures)
+        emit_feedback(output, adapter, &failures)
     }
 }
 
@@ -358,14 +348,14 @@ fn fail_open(adapter: &dyn HookAdapter) -> ExitCode {
     }
 }
 
-fn emit_blocks(
+fn emit_feedback(
     output: &mut impl Write,
     adapter: &dyn HookAdapter,
     results: &[&EnforcementResult],
 ) -> ExitCode {
     let reason = results
         .iter()
-        .map(|result| block_reason(result))
+        .map(|result| feedback_reason(result))
         .collect::<Vec<_>>()
         .join("\n");
     let encoded = match adapter.encode_response(
@@ -415,7 +405,7 @@ fn control_free(value: &str) -> String {
         .collect()
 }
 
-fn block_reason(result: &EnforcementResult) -> String {
+fn feedback_reason(result: &EnforcementResult) -> String {
     let mut reason = format!(
         "PostToolUse feedback: the tool already ran; {}",
         result.message

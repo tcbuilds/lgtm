@@ -39,7 +39,6 @@ impl HookAdapter for ClaudeAdapter {
             agent_id: string_field(&value, "agent_id"),
             agent_type: string_field(&value, "agent_type"),
             stop_hook_active: value.get("stop_hook_active").and_then(Value::as_bool),
-            approval_capability: None,
         })
     }
 
@@ -64,27 +63,12 @@ impl HookAdapter for ClaudeAdapter {
             HookResponse::InjectSystemPrompt(_) => {
                 Err(invalid_combination(event, "InjectSystemPrompt"))
             }
-            HookResponse::Deny { reason } => match event {
-                HookEvent::PreToolUse => Ok(stdout_line(deny_envelope(&reason))),
-                _ => Err(invalid_combination(event, "Deny")),
-            },
-            HookResponse::Ask {
-                reason,
-                updated_input,
-            } => match event {
-                HookEvent::PreToolUse => Ok(stdout_line(ask_envelope(&reason, updated_input))),
-                _ => Err(invalid_combination(event, "Ask")),
-            },
-            HookResponse::BlockStop { reason } => block(event, &reason),
             HookResponse::PostToolFeedback { reason } => match event {
-                HookEvent::PostToolUse => block(event, &reason),
+                HookEvent::PostToolUse => Ok(stdout_line(context_envelope(event, &reason))),
                 _ => Err(invalid_combination(event, "PostToolFeedback")),
             },
             HookResponse::HeuristicNotices(_) => {
                 Err(invalid_combination(event, "HeuristicNotices"))
-            }
-            HookResponse::FindingApprovalRequired(_) => {
-                Err(invalid_combination(event, "FindingApprovalRequired"))
             }
             HookResponse::Summary(summary) => match event {
                 HookEvent::Stop => Ok(EncodedResponse {
@@ -123,53 +107,7 @@ fn context_envelope(event: HookEvent, context: &str) -> Value {
     })
 }
 
-/// The PreToolUse deny envelope. Deny is a Pre-tool decision, so the event name
-/// is fixed to preserve the historical contract.
-fn deny_envelope(reason: &str) -> Value {
-    json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        },
-        "systemMessage": reason
-    })
-}
-
-/// The native Claude approval envelope. `updatedInput` replaces the complete
-/// tool input object; callers must provide every field the tool still needs.
-fn ask_envelope(reason: &str, updated_input: Value) -> Value {
-    json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "ask",
-            "permissionDecisionReason": reason,
-            "updatedInput": updated_input,
-        }
-    })
-}
-
-/// Encode a block outcome. PostToolUse writes the decision to stdout and exits
-/// 0; Stop writes it to stderr and exits 2, matching Claude's Stop protocol. A
-/// block is only a valid contract for those two events; any other event is an
-/// invalid combination and returns an error so the caller fails open.
-fn block(event: HookEvent, reason: &str) -> Result<EncodedResponse, String> {
-    let value = json!({ "decision": "block", "reason": reason });
-    match event {
-        HookEvent::PostToolUse => Ok(stdout_line(value)),
-        HookEvent::Stop => Ok(EncodedResponse {
-            body: serialize(&value),
-            stream: OutputStream::Stderr,
-            exit_code: 2,
-        }),
-        _ => Err(invalid_combination(event, "BlockStop")),
-    }
-}
-
-/// The error message for a response that is not a valid contract for `event`.
-/// The adapter refuses to encode plausible-but-wrong bytes (for example a Deny
-/// on Stop, or a BlockStop on SessionStart); the caller treats this error as
-/// fail-open.
+/// Reject advisory outcomes that do not belong to this event.
 fn invalid_combination(event: HookEvent, response: &str) -> String {
     format!(
         "encode response ({response} is not valid for {})",

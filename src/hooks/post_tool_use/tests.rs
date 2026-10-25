@@ -206,7 +206,7 @@ fn review_reason_keeps_remediation_when_message_exceeds_budget() {
 }
 
 #[test]
-fn authorization_blocks_only_failed_error_results() {
+fn post_tool_feedback_reports_only_failed_error_results() {
     let cases = [
         ("failed-error", Status::Failed, Severity::Error, true),
         ("failed-warning", Status::Failed, Severity::Warning, false),
@@ -235,12 +235,12 @@ fn authorization_blocks_only_failed_error_results() {
         ("waived-error", Status::Waived, Severity::Error, false),
     ];
 
-    for (rule_id, status, severity, should_block) in cases {
+    for (rule_id, status, severity, should_report) in cases {
         let result = EnforcementResult {
             rule_id: rule_id.to_string(),
             status,
             severity,
-            message: "authorization finding".to_string(),
+            message: "check finding".to_string(),
             locations: Vec::new(),
             remediation: Some("repair the finding".to_string()),
             evidence: crate::checks::ResultEvidence {
@@ -252,11 +252,22 @@ fn authorization_blocks_only_failed_error_results() {
         let mut output = Vec::new();
         let code = handle_results(&mut output, &ClaudeAdapter, &[result]);
         assert_eq!(code, ExitCode::SUCCESS, "case {rule_id}");
-        assert_eq!(!output.is_empty(), should_block, "case {rule_id}");
-        if should_block {
-            let decision: Value =
-                serde_json::from_slice(&output).expect("blocking response is JSON");
-            assert_eq!(decision["decision"], json!("block"), "case {rule_id}");
+        assert_eq!(!output.is_empty(), should_report, "case {rule_id}");
+        if should_report {
+            let feedback: Value =
+                serde_json::from_slice(&output).expect("advisory response is JSON");
+            assert!(feedback.get("decision").is_none(), "case {rule_id}");
+            assert_eq!(
+                feedback["hookSpecificOutput"]["hookEventName"],
+                json!("PostToolUse"),
+                "case {rule_id}"
+            );
+            assert!(
+                feedback["hookSpecificOutput"]["additionalContext"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("check finding")),
+                "case {rule_id}"
+            );
         }
     }
 }
@@ -612,7 +623,7 @@ fn evidence_read_bound_accepts_exact_valid_ledger_and_rejects_one_byte_over() {
 }
 
 #[test]
-fn block_reason_strips_control_characters() {
+fn feedback_reason_strips_control_characters() {
     let result = EnforcementResult {
         rule_id: "no-committed-secrets".to_string(),
         status: Status::Failed,
@@ -626,7 +637,7 @@ fn block_reason_strips_control_characters() {
             finding_descriptions: Vec::new(),
         },
     };
-    let reason = block_reason(&result);
+    let reason = feedback_reason(&result);
     assert!(!reason.contains('\t'), "tabs stripped");
     assert!(!reason.contains('\r'), "carriage returns stripped");
     assert!(reason.contains("found"), "message text preserved");
@@ -1676,7 +1687,7 @@ fn persistence_marker_metadata_permutations_are_rejected_by_rotation() {
 }
 
 #[test]
-fn irreducibly_oversized_record_persists_global_marker_for_stop() {
+fn irreducibly_oversized_record_persists_global_marker_for_explicit_check() {
     let session_id = "s".repeat(MAX_EVIDENCE_BYTES as usize + 1);
     let result = EnforcementResult {
         rule_id: "no-committed-secrets".to_string(),
@@ -1732,7 +1743,7 @@ fn irreducibly_oversized_record_persists_global_marker_for_stop() {
     .to_string();
     let mut input = payload.as_bytes();
     let mut output = Vec::new();
-    let code = crate::hooks::stop::run(&mut input, &mut output);
+    let code = crate::hooks::stop::run_check(&mut input, &mut output);
     assert_eq!(code, std::process::ExitCode::SUCCESS);
     let output = String::from_utf8(output).expect("Stop output is UTF-8");
     assert!(
@@ -1857,7 +1868,7 @@ fn compacted_optional_location_line_remains_schema_valid() {
 }
 
 #[test]
-fn explicit_null_location_line_is_appendable_and_stop_usable() {
+fn explicit_null_location_line_is_appendable_and_check_usable() {
     let temp = TempDir::new();
     let source = temp.path.join("src/app.py");
     std::fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
@@ -1922,7 +1933,7 @@ fn explicit_null_location_line_is_appendable_and_stop_usable() {
     .to_string();
     let mut input = payload.as_bytes();
     let mut output = Vec::new();
-    let code = crate::hooks::stop::run(&mut input, &mut output);
+    let code = crate::hooks::stop::run_check(&mut input, &mut output);
     assert_eq!(code, std::process::ExitCode::SUCCESS);
     let output = String::from_utf8(output).expect("Stop output is UTF-8");
     assert!(
@@ -2015,7 +2026,7 @@ fn compaction_rejects_schema_invalid_records() {
 }
 
 #[test]
-fn persistence_failure_marker_survives_later_rotation_and_stop_reports_distinct_reason() {
+fn persistence_failure_marker_survives_later_rotation_and_explicit_check_reports_distinct_reason() {
     let oversized_session = "s".repeat(MAX_EVIDENCE_BYTES as usize + 1);
     let result = EnforcementResult {
         rule_id: "no-committed-secrets".to_string(),
@@ -2080,7 +2091,7 @@ fn persistence_failure_marker_survives_later_rotation_and_stop_reports_distinct_
     .to_string();
     let mut input = payload.as_bytes();
     let mut output = Vec::new();
-    let code = crate::hooks::stop::run(&mut input, &mut output);
+    let code = crate::hooks::stop::run_check(&mut input, &mut output);
     assert_eq!(code, std::process::ExitCode::SUCCESS);
     let output = String::from_utf8(output).expect("Stop output is UTF-8");
     assert!(

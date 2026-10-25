@@ -186,14 +186,9 @@ fn render_json(path: &Path, value: Map<String, Value>) -> Result<Vec<u8>, InitEr
 fn plan_execpolicy(root: &Path, writes: &mut Vec<(PathBuf, Vec<u8>)>) -> Result<(), InitError> {
     let source = root.join(".lgtm/execpolicy.json");
     let target = root.join(".codex/rules/lgtm.rules");
-    if read_if_exists(&target)?.is_none() {
-        return Ok(());
-    }
-    if let Some(contents) = read_if_exists(&source)? {
-        let (rendered, _) = codex::render_execpolicy(&source, &contents, &target)?;
-        if let Some(bytes) = rendered {
-            writes.push((target, bytes));
-        }
+    let (rendered, _) = codex::render_execpolicy(&source, "", &target)?;
+    if let Some(bytes) = rendered {
+        writes.push((target, bytes));
     }
     Ok(())
 }

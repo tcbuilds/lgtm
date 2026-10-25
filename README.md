@@ -1,6 +1,10 @@
 # LGTM
 
-`lgtm` adds automated engineering checks to agent workflows. It checks edits, blocks unresolved policy violations before completion, and records what was actually verified.
+`lgtm` adds engineering guidance, edit feedback, and on-demand checks to agent workflows. Automatic hooks observe work; they do not deny tools, intercept commits, or block completion.
+
+**Source-tree change, not a released rollout:** the observer-only behavior below
+requires an updated binary and refreshed hooks. Editing this checkout does not
+change installed hooks or an extension already loaded in an agent.
 
 The current release supports Python, TypeScript/JavaScript, Rust, Go, shell,
 Terraform, JVM, C#, C/C++, SQL, and mixed repositories on x86_64 Linux and macOS.
@@ -37,11 +41,16 @@ lgtm doctor
 
 `lgtm init` adds the project configuration and Claude Code hooks without replacing existing settings. It also merges the official LSP plugin enablement and protected-file permission entries into `.claude/settings.json`; explicit user plugin disablement and unrelated permission rules remain unchanged. `lgtm doctor` shows any optional checking tools you still need to install, including `gitleaks`, `ruff`, and `semgrep`. It also scans the repository's bounded workspace tree and reports advisory, repository-relevant language servers (such as `rust-analyzer`, `gopls`, or `clangd`). These recommendations never run a server or install anything; missing servers do not affect the doctor's successful exit. JVM projects receive a coarse Java/JVM recommendation and may need a separate Kotlin language server.
 
-It also writes `.lgtm/execpolicy.json`, a list of command prefixes that are refused before they run — `rm -rf`, `git push --force`, `git reset --hard`, `dd`, and similar. Edit it to suit your repository; re-running `lgtm init` never overwrites it. Matching compares whole argv elements from the start of the command, so `git push --force-with-lease` stays allowed while `git push --force` is denied. It is a guardrail against an agent's obvious mistakes, not a sandbox: a prohibited command placed after a positional argument, inside a compound `&&` shell line, or behind `sudo` is not caught.
+Init keeps an empty `.lgtm/execpolicy.json` compatibility marker. Existing files
+are preserved, but LGTM no longer uses their command or path lists to deny work.
+Host-agent permissions and sandbox settings remain separate and unchanged.
 
-Commit the generated `.lgtm/config.json`, `.lgtm/execpolicy.json`, `.claude/settings.json`, and `.gitignore` changes. Claude Code will run LGTM automatically during future sessions.
-
-Direct commits scan staged content. Eligible heuristic findings can request exact-candidate confirmation; known credentials remain blocked. See [Claude's guarded commit flow](doc/adapters/claude.md) and [Pi's approval contract](doc/adapters/pi.md) for supported modes, trust limits, and manual rollout checks. Verify the native confirmation UI before relying on interactive approval.
+Commit the generated configuration and hook wiring when it is ready.
+Future sessions receive guidance and advisory edit feedback. Commits use ordinary
+Git commands, without an LGTM approval transaction or special shell syntax.
+See the [Claude adapter](doc/adapters/claude.md),
+[Pi adapter](doc/adapters/pi.md), and
+[observer-hook decision](doc/adr/0017-observer-hooks-and-explicit-checks.md).
 
 For Pi, run:
 
@@ -77,7 +86,7 @@ Codex requires reviewing changed command hooks through `/hooks` before they run.
 
 ## How the Hooks Work
 
-The `lgtm` binary is the enforcement engine. It is not a background service.
+The `lgtm` binary provides guidance, observations, and explicit checks. It is not a background service.
 The repository's `.claude/settings.json` tells Claude Code when to start it:
 
 ```text
@@ -87,17 +96,26 @@ Claude event
     ↓
 lgtm hook <event>
     ↓
-select relevant rules → guide the agent → check the change → allow or block
+select relevant rules → guide the agent → observe changes → report findings
 ```
 
 At the start of a session, LGTM gives the agent a small permanent contract.
 When you submit a task, it selects only the relevant standards and sends a
-compact MUST/REVIEW packet before coding begins. Before an Edit or Write, it
-checks the target path and records a baseline. After edits, fast checks run.
-When an agent attempts `git commit`, PreToolUse runs the full gate once and
-denies the commit if it fails. Stop runs targeted checks without repeating the
-full suite. Pushes and CI remain full-gate backstops. You can also run the
-binary directly with `lgtm check --tier full`.
+compact MUST/REVIEW packet before coding begins. Before a tool call, it records
+a baseline when possible. After edits, fast checks can return advisory feedback.
+A commit attempt does not run repository verification or ask for LGTM approval.
+Stop and subagent-stop only report that no completion checks ran.
+
+Request verification when you need it:
+
+```bash
+lgtm check --tier full
+```
+
+Actual error-level failed checks return exit 2. Operational errors return nonzero.
+Unavailable checks remain `unverified`, not passed; an exit-0 result alone does
+not prove every check ran. Host permissions and optional owner-configured CI or
+Git hooks can impose their own requirements.
 
 ### A concrete prompt
 
@@ -123,43 +141,26 @@ MUST: Do not claim checks passed without current evidence.
 REVIEW: Keep the change small and preserve unrelated user edits.
 ```
 
-The packet guides the agent before it writes code. The later hooks are the
-independent verification layer; they do not trust the agent's promise that it
-followed the packet.
+The packet guides the agent before it writes code. Post-tool findings are
+observations, not permission decisions. An explicit check records what it
+actually ran; the agent's promise is not evidence that a check passed.
 
 ### Full lifecycle, step by step
 
 ```mermaid
 flowchart TD
-    A[Session starts] --> B[SessionStart hook]
-    B --> C[Emit small harness contract]
-    C --> D[User submits a task]
-    D --> E[UserPromptSubmit hook]
-    E --> F[Classify intent and likely files]
-    F --> G[Select rules and compile MUST/REVIEW packet]
-    G --> H[Inject packet before coding]
-    H --> I{Edit or Write?}
-    I -->|No| D
-    I -->|Yes| J[PreToolUse hook]
-    J --> K{Path safe and allowed?}
-    K -->|No| L[Deny tool call]
-    K -->|Yes| M[Capture baseline and selected rules]
-    M --> N[Agent changes file]
-    N --> O[PostToolUse hook]
-    O --> P[Fast checks: secrets, diff, native rules]
-    P --> Q[Warn or block; write evidence]
-    Q --> D
-    D --> R{Agent invokes git commit?}
-    R -->|Yes| Z[PreToolUse full gate]
-    Z -->|Fail| L
-    Z -->|Pass| D
-    R -->|No; agent finishes| S[Stop hook]
-    S --> T[Targeted recheck of touched files]
-    T --> U[Compare claims with evidence]
-    U --> V{Unresolved MUST violation?}
-    V -->|Yes| W[Block completion with repair text]
-    V -->|No| X[Allow completion and persist evidence]
-    X --> Y[Pre-push or CI full gate]
+    A[Session starts] --> B[Provide guidance]
+    B --> C[User submits task]
+    C --> D[Select relevant policy]
+    D --> E[Tool requested]
+    E --> F[Best-effort baseline and tracking]
+    F --> G[Host permissions control tool execution]
+    G --> H[Advisory post-tool findings and evidence]
+    H --> C
+    C --> I[Agent finishes]
+    I --> J[Completion notice: no checks ran]
+    K[User or CI requests lgtm check] --> L[Run selected bounded checks]
+    L --> M[Record results and return exit status]
 ```
 
 The five Claude events have different jobs:
@@ -168,9 +169,9 @@ The five Claude events have different jobs:
 | --- | --- | --- |
 | `SessionStart` | Detect the repo and provide the permanent contract. | Context injection |
 | `UserPromptSubmit` | Classify intent and inject only relevant policy. | Context injection |
-| `PreToolUse` | Protect paths and baselines; run the full gate before agent commits. | Allow or deny |
-| `PostToolUse` | Give quick feedback after edits and matched shell changes; record findings. | Warning or block |
-| `Stop` | Run targeted final checks, inspect the diff, verify claims, and decide completion. | Allow or block |
+| `PreToolUse` | Record baselines and shell observations when possible. | No LGTM permission response |
+| `PostToolUse` | Give advisory feedback and record findings after completed tools. | Nonblocking context |
+| `Stop` | Report completion without running checks or verifying claims. | Nonblocking notice |
 
 Evidence is written locally under `.lgtm/evidence/`. It records what ran, its
 exit status, touched files, findings, and policy decisions. It is a ledger for
@@ -218,15 +219,13 @@ platform limits.
 deletions, and renames without claiming unchanged pre-existing user files. Missing
 or ambiguous hook events remain unverified.
 
-PostToolUse hooks run fast, touched-workspace gates. An agent's `git commit`
-attempt runs the full tier, including applicable tests, builds, and coverage;
-matching successful evidence is reused on an unchanged retry. Stop hooks run
-the targeted tier and reuse that full evidence when checking verification
-claims, so ordinary conversation completion does not rerun the full suite. Use
-`lgtm check --tier fast|targeted|full` when an explicit standalone tier is
-needed.
+PostToolUse provides fast, touched-file feedback. Repository tests, builds,
+lint commands, and coverage run only through an explicit check request.
+Use `lgtm check --tier fast|targeted|full` to select a tier and `--workspace ID`
+to select a configured workspace. No successful result authorizes a later commit.
 
-To make pushes run the full gate locally, copy
+An optional, owner-installed Git hook can still reject a push. LGTM init does
+not install it. If you choose that separate policy, copy
 [`scripts/lgtm-pre-push`](scripts/lgtm-pre-push) into a versioned hooks directory
 and point Git at it:
 
@@ -251,7 +250,7 @@ Keep the repository CI workflow enabled as the final authority; `git push
 
 From v0.12.2 onward, `lgtm update` refreshes **all tracked LGTM-managed output**,
 not just the binary: shipped rules, managed guidance, installed Claude/Codex hook
-wiring, generated Codex execpolicy, Pi extensions, and installed Pi package/LSP
+wiring, retirement of LGTM-owned Codex command rules, Pi extensions, and installed Pi package/LSP
 configuration. It covers registered project and global installations regardless
 of the directory where you run the update. Rules-only installs are tracked too.
 

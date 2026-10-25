@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted for adapter wiring. Permission and completion-veto outcomes are
+superseded by [ADR-0017](0017-observer-hooks-and-explicit-checks.md).
 
 ## Date
 

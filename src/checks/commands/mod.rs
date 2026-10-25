@@ -10,7 +10,7 @@ pub use result::CoverageEvidence;
 pub use result::{CommandEvidence, RunResults};
 pub use result::{
     budget_unverified, config_mutation_unverified, config_unverified, containment_unverified,
-    coverage_failure, is_required_command_result,
+    is_required_command_result,
 };
 pub(crate) use result::{coverage_results, invalid_workspace};
 pub use runner::{

@@ -211,28 +211,35 @@ fn edited_paths(records: &[Value]) -> BTreeSet<String> {
         .collect()
 }
 
-fn stop_results(repo: &TempRepo) -> Vec<Value> {
-    let payload = json!({"cwd": repo.path(), "session_id": SESSION_ID, "tier": "targeted"});
-    let mut command = Command::new(env!("CARGO_BIN_EXE_lgtm"));
-    command.current_dir(repo.path()).args(["hook", "stop"]);
-    let output = run_bounded(command, Some(&payload.to_string()));
-    assert!(
-        repo.exists(".lgtm/evidence/evidence.jsonl"),
-        "Stop failed: {:?}",
-        output
-    );
-    let records = repo.read(".lgtm/evidence/evidence.jsonl");
-    let record: Value = serde_json::from_str(records.lines().last().expect("Stop record")).unwrap();
-    record["results"].as_array().expect("Stop results").clone()
+fn assert_completion_is_observer(repo: &TempRepo) {
+    let output = run_hook(repo, "stop", "", "");
+    assert!(output.status.success(), "completion failed: {output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("no checks ran"));
+    assert!(!repo.exists(".lgtm/evidence/evidence.jsonl"));
 }
 
 fn assert_tracking_uncertain(repo: &TempRepo) {
-    assert!(
-        stop_results(repo).iter().any(|result| {
-            result["rule_id"] == "current-task-evidence" && result["status"] == "unverified"
-        }),
-        "Stop must retain missing or ambiguous shell evidence"
-    );
+    if repo.exists(".lgtm/evidence/shell-tracking.json") {
+        let state = repo.read_json(".lgtm/evidence/shell-tracking.json");
+        assert!(
+            state["overflowed"] == true
+                || !state["outstanding"]
+                    .as_array()
+                    .expect("outstanding calls")
+                    .is_empty()
+                || (state["session"] == SESSION_ID && state["invalid"] == true),
+            "tracking uncertainty was lost: {state:?}"
+        );
+    } else {
+        assert!(
+            read_records(repo).iter().any(|record| {
+                record["result"]["rule_id"] == "shell-change-tracking"
+                    && record["result"]["status"] == "unverified"
+            }),
+            "unmatched shell result must retain its uncertainty"
+        );
+    }
+    assert_completion_is_observer(repo);
 }
 
 fn baseline_paths(repo: &TempRepo) -> BTreeSet<String> {
@@ -333,20 +340,16 @@ fn shell_changes_are_attributed_without_claiming_untouched_user_files() {
         Status::Passed,
         "the ledger paths and captured baseline should account for this shell change set"
     );
-    let results = stop_results(&repo);
-    assert!(
-        results.iter().any(|result| {
-            result["rule_id"] == "preserve-unrelated-user-changes" && result["status"] == "passed"
-        }),
-        "real Stop must include deleted and renamed paths: {results:?}"
-    );
+    assert_completion_is_observer(&repo);
     repo.write("not-observed.txt", "external edit");
+    let audit = evaluate_at(repo.path(), &edited, Some(&baseline), None, Stage::Stop);
     assert!(
-        stop_results(&repo).iter().any(|result| {
-            result["rule_id"] == "preserve-unrelated-user-changes" && result["status"] == "failed"
+        audit.iter().any(|result| {
+            result.rule_id == "preserve-unrelated-user-changes" && result.status == Status::Failed
         }),
-        "Stop must still flag changes outside the hook window"
+        "an explicit diff audit must still flag unobserved changes: {audit:?}"
     );
+    assert_completion_is_observer(&repo);
 }
 
 #[path = "shell_tracking/lifecycle.rs"]

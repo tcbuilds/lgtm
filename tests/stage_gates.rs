@@ -45,8 +45,16 @@ fn hook(repo: &TempRepo, event: &str, file: Option<&str>) -> std::process::Outpu
     child.wait_with_output().unwrap()
 }
 
+fn check(repo: &TempRepo) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["check", "--tier", "full"])
+        .current_dir(repo.path())
+        .output()
+        .expect("explicit check completes")
+}
+
 #[test]
-fn source_first_post_and_stop_report_missing_test_as_unverified() {
+fn source_first_post_and_explicit_check_report_missing_test_as_unverified() {
     let repo = setup();
     repo.write("src/app.py", "value = 1\n");
     let post = hook(&repo, "post-tool-use", Some("src/app.py"));
@@ -55,19 +63,19 @@ fn source_first_post_and_stop_report_missing_test_as_unverified() {
         post.stdout.is_empty(),
         "Post must not block a cumulative test rule"
     );
-    let stop = hook(&repo, "stop", None);
-    assert!(stop.status.success());
-    let stop_stdout = String::from_utf8_lossy(&stop.stdout);
-    let stop_stderr = String::from_utf8_lossy(&stop.stderr);
+    let check = check(&repo);
+    assert!(check.status.success());
+    let check_stdout = String::from_utf8_lossy(&check.stdout);
+    let check_stderr = String::from_utf8_lossy(&check.stderr);
     assert!(
-        stop_stdout.contains("UNVERIFIED new-behavior-tests-required")
-            || stop_stderr.contains("UNVERIFIED new-behavior-tests-required"),
-        "Stop stdout: {stop_stdout}\nStop stderr: {stop_stderr}"
+        check_stdout.contains("UNVERIFIED new-behavior-tests-required")
+            || check_stderr.contains("UNVERIFIED new-behavior-tests-required"),
+        "Check stdout: {check_stdout}\nCheck stderr: {check_stderr}"
     );
 }
 
 #[test]
-fn source_then_test_passes_slice_completion_gate() {
+fn source_then_test_does_not_fail_explicit_check() {
     let repo = setup();
     repo.write("src/app.py", "value = 1\n");
     assert!(
@@ -84,11 +92,11 @@ fn source_then_test_passes_slice_completion_gate() {
             .stdout
             .is_empty()
     );
-    let stop = hook(&repo, "stop", None);
+    let check = check(&repo);
     assert!(
-        stop.status.success(),
-        "Stop stderr: {}",
-        String::from_utf8_lossy(&stop.stderr)
+        check.status.success(),
+        "Check stderr: {}",
+        String::from_utf8_lossy(&check.stderr)
     );
 }
 
@@ -135,14 +143,14 @@ fn missing_rust_test_reports_unverified_without_blocking_with_association_eviden
         .as_array()
         .expect("golden association evidence")
     );
-    let stop = hook(&repo, "stop", None);
-    assert!(stop.status.success());
-    let stop_stdout = String::from_utf8_lossy(&stop.stdout);
-    let stop_stderr = String::from_utf8_lossy(&stop.stderr);
+    let check = check(&repo);
+    assert!(check.status.success());
+    let check_stdout = String::from_utf8_lossy(&check.stdout);
+    let check_stderr = String::from_utf8_lossy(&check.stderr);
     assert!(
-        stop_stdout.contains("UNVERIFIED new-behavior-tests-required")
-            || stop_stderr.contains("UNVERIFIED new-behavior-tests-required"),
-        "Stop stdout: {stop_stdout}\nStop stderr: {stop_stderr}"
+        check_stdout.contains("UNVERIFIED new-behavior-tests-required")
+            || check_stderr.contains("UNVERIFIED new-behavior-tests-required"),
+        "Check stdout: {check_stdout}\nCheck stderr: {check_stderr}"
     );
 }
 
@@ -167,10 +175,10 @@ fn mixed_source_and_asset_changes_keep_association_output_actionable() {
 
     repo.write(
         ".lgtm/evidence/current-task.intent.json",
-        r#"{"session_id":"stage-test","intent":"bug-fix"}"#,
+        r#"{"session_id":null,"intent":"bug-fix"}"#,
     );
-    let stop = hook(&repo, "stop", None);
-    assert!(stop.status.success());
+    let check = check(&repo);
+    assert!(check.status.success());
 
     let messages: std::collections::BTreeMap<_, _> = repo
         .read(".lgtm/evidence/current-task.results.jsonl")
@@ -197,18 +205,18 @@ fn mixed_source_and_asset_changes_keep_association_output_actionable() {
         !behavior_message.contains("Unclassifiable changes:"),
         "message: {behavior_message}"
     );
-    let stop_output = format!(
+    let check_output = format!(
         "{}{}",
-        String::from_utf8_lossy(&stop.stdout),
-        String::from_utf8_lossy(&stop.stderr)
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
     );
     assert!(
-        stop_output.contains("UNVERIFIED regression-test-required"),
-        "Stop output: {stop_output}"
+        check_output.contains("UNVERIFIED regression-test-required"),
+        "Check output: {check_output}"
     );
     assert!(
-        stop_output.contains("src/app.py") && !stop_output.contains("screenshots/"),
-        "Stop output: {stop_output}"
+        check_output.contains("src/app.py") && !check_output.contains("screenshots/"),
+        "Check output: {check_output}"
     );
 }
 
@@ -227,5 +235,5 @@ fn documentation_and_configuration_changes_do_not_require_tests() {
             .status
             .success()
     );
-    assert!(hook(&repo, "stop", None).status.success());
+    assert!(check(&repo).status.success());
 }

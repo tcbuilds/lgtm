@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0017](0017-observer-hooks-and-explicit-checks.md)
 
 ## Date
 

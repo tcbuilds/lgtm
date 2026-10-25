@@ -46,24 +46,14 @@ model, scores, tool counts, activation details, and elapsed time. Use
 
 ## Quiet gate notices
 
-The updated LGTM extension advertises `lgtm-pi-heuristic-notices` version 1.
-This is a separate protocol from the old native finding-confirmation protocol.
-It means that deterministic policy permits an operation with review notices.
-It does not mean that Jev approved the operation.
+The LGTM extension uses `lgtm-pi-heuristic-notices` version 1 for advisory
+post-tool review findings and presentation-only diagnostics. This is not an
+operation permission or the removed finding-confirmation protocol.
 
-Only these findings can enter this channel:
-
-- A complete staged scan containing only eligible built-in `generic-api-key`
-  findings, after the full deterministic commit gate has run.
-- Existing warning-level review findings from post-tool checks.
-- Presentation-only hook diagnostics. Their original error and gate decision
-  remain unchanged.
-
-Known provider credentials, private keys, custom scanner rules, mixed hard and
-heuristic findings, prohibited actions, required-command failures, and unverified
-required checks cannot be downgraded by a Jev answer. Touched-file secret scans
-still keep their existing hard feedback; the staged scanner's stronger eligibility
-partition is not guessed from a message or a filename.
+Secret findings remain visible, redacted post-tool feedback. Actual error-level
+failures can make an explicit `lgtm check` return nonzero. Jev cannot turn a
+failed command into a pass, hide protected check results, or authorize a commit.
+There is no automatic staged scan or commit gate.
 
 LGTM sends a typed notice through the in-process `jev-auto:gate` event bus. Jev
 receives only notice kind, safe rule ID, and a broad path class such as `test` or
@@ -83,15 +73,10 @@ session window. At capacity, the oldest identity is evicted; new notices are
 still recorded and warned when their status is unknown.
 Warnings are grouped per batch rather than shown as one dialog per finding.
 
-After awaiting staged notice presentation, LGTM rechecks the live runtime and
-performs one fresh deterministic reassessment. Only the identical notice set or
-a clean result allows the commit. A new hard finding, changed identity, stale
-session, cancelled operation, malformed response, or failed reassessment denies.
-Jev's cached display decision is never cached permission.
-
-The new extension does not fall back to the legacy confirmation dialog. An old
-binary returning a legacy challenge is denied with a refresh instruction. Older
-clients retain their existing v1 behavior. Claude and Codex behavior is unchanged.
+Notice presentation does not trigger a second assessment. Changed runtime data,
+cancellation, malformed replies, and old approval payloads cannot veto the tool.
+Legacy veto payloads are reported as invalid observer responses. Host permissions
+and other extensions remain outside Jev's control.
 
 ## Bounds and failure behavior
 
@@ -106,28 +91,29 @@ clients retain their existing v1 behavior. Claude and Codex behavior is unchange
   requests for human approval. No real model calls run in integration tests.
 
 Jev auto cannot intercept every UI dialog from another extension. LGTM uses the
-explicit notice handoff. A hard denial from any extension remains a hard denial.
-If Jev auto is not loaded, LGTM warns once and preserves deterministic decisions.
+explicit notice handoff. A denial from another extension is outside LGTM's
+control. If Jev auto is not loaded, LGTM warns once without changing check
+results or vetoing tools.
 
 ## Repair required-command failures without a waiver loop
 
 A required test or build failure is not a heuristic notice. The agent must inspect
 the failure, repair the cause within the approved task, and rerun the check. A
 routine repair does not require a new owner decision. Do not ask for a waiver
-that cannot clear a protected gate, or repeatedly ask the same question.
+instead of repairing a real failure, or repeatedly ask the same question.
 
 Containment checks look for child processes left behind by a command. A command
 can exit successfully while a child remains. On Linux, even an exited child can
-remain as a zombie until its parent collects its exit status. The gate rejects
-these leftovers; Jev cannot turn that result into a pass.
+remain as a zombie until its parent collects its exit status. An explicit check
+reports incomplete containment as unverified; Jev cannot turn it into a pass.
 
 LGTM's own timeout fixtures exposed this problem. The test-mode runner used its
 whole deadline for execution, then had no time left to reap the killed child.
 Other fixtures deliberately orphaned processes without an isolated reaper. The
 repair reserves cleanup time and uses the existing isolated test helper. It does
-not relax containment, accept incomplete evidence, or change approval policy.
+not relax containment or accept incomplete evidence.
 
-Use the normal command gate after the repair. Passing tests alone do not prove
+Run the explicit command check after the repair. Passing tests alone do not prove
 that no child processes were left behind. Ask the owner only when the repair
 needs new authority or a real product decision, not merely because a check failed.
 
@@ -191,13 +177,14 @@ Run the offline checks from the repository:
 
 ```sh
 node --experimental-strip-types tests/fixtures/pi/jev_auto.cjs templates/pi/jev-auto.ts
-cargo test --test jev_pi --test init_pi --test pi_adapter --test commit_secret_scope
+cargo test --test jev_pi --test init_pi --test pi_adapter
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo build
 ```
 
 Verify in a throwaway trusted project: a second assistant step routes, an unchanged
-step skips, a heuristic notice does not call native confirmation, and a hard
-finding still blocks. Check session entries for silent outcomes. Local verification
+step skips, notices do not call native confirmation, and LGTM never vetoes a
+development tool. Verify separately that an explicit failed check stays failed.
+Check session entries for silent outcomes. Local verification
 does not itself publish a release or replace your installed production binary.

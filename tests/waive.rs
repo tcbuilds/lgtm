@@ -111,7 +111,7 @@ fn rejects_protected_unknown_and_expired_waivers() {
 }
 
 #[test]
-fn active_waiver_unblocks_violation_and_is_reported() {
+fn active_waiver_applies_to_explicit_checks_and_is_reported() {
     let repo = TempRepo::new();
     repo.write(
         ".lgtm/config.json",
@@ -144,11 +144,16 @@ fn active_waiver_unblocks_violation_and_is_reported() {
         assert!(output.status.success());
         assert!(output.stdout.is_empty(), "waived Post must not block");
     }
-    let stop = run_hook(&repo, "stop", None, &path);
+    let check = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["check", "--tier", "full"])
+        .current_dir(repo.path())
+        .env("PATH", &path)
+        .output()
+        .expect("explicit check completes");
     assert!(
-        stop.status.success(),
-        "Stop stderr: {}",
-        String::from_utf8_lossy(&stop.stderr)
+        check.status.success(),
+        "Check stderr: {}",
+        String::from_utf8_lossy(&check.stderr)
     );
     let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
     let record: Value = serde_json::from_str(evidence.lines().last().expect("evidence line"))

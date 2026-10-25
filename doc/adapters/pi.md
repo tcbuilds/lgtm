@@ -1,5 +1,10 @@
 # Pi adapter contract evidence
 
+**Observer-only source behavior:** LGTM does not veto built-in tools, commits,
+or completion. Installed hooks require a separate binary update and refresh.
+Runtime provenance checks remain for observation, diagnostics, and private Jev
+requests; they are not commit authorization.
+
 This document records the Pi facts used by the M23 adapter work. The lifecycle
 contract remains pinned to the Pi 0.84.2 matrix; built-in tool provenance was
 re-probed against Pi 0.84.3 after its edit schema gained descriptive metadata.
@@ -17,8 +22,8 @@ current built-in tool capture is
 - `before_agent_start` exposes the expanded prompt and current system prompt. Its
   result can provide a custom message or a replacement system prompt
   (`before-agent-start`, source fixture `source-before-agent-start-types-0.84.2`).
-- `tool_call` runs before execution and can return `{ block, reason }`. Its input
-  is mutable in Pi, so LGTM must treat it as read-only
+- `tool_call` runs before execution. Pi can accept `{ block, reason }`, but LGTM
+  does not return that veto. Its input is mutable in Pi, so LGTM treats it as read-only
   (`tool-call-block`, source fixture `source-tool-call-types-0.84.2`).
 - `tool_result` runs after execution and can patch `content`, `details`, `isError`,
   and `usage`. It runs before `tool_execution_end` and final tool-result message
@@ -83,7 +88,7 @@ warning deduplication.
 A project extension replacing `read` reports non-builtin
 project source metadata (`same-name-read-override`; fixture
 `live-sdk-override-001`). The override is deliberately **unverified** for built-in
-enforcement. Custom, MCP, provider, and schema-mismatched tools remain
+observation. Custom, MCP, provider, and schema-mismatched tools remain
 unverified (`custom-tool-provenance`; fixture
 `unverified-custom-tool-provenance`). Tool names alone do not establish
 provenance.
@@ -100,14 +105,15 @@ Without standalone Jev auto, each loaded extension shows a warning once per
 reason per session. With Jev auto, the same metadata-only notice can be recorded
 silently or shown as a nonblocking warning. A new session, `session_start`, or
 shutdown resets the bounded presentation state. Failure records and deterministic
-enforcement decisions are not suppressed. See [Jev auto](../jev-auto.md).
+check results are not changed. See [Jev auto](../jev-auto.md).
 
 For `tool_provenance_unverified`, check whether another extension replaced a
 built-in tool. If Pi changed its API, update LGTM, run `lgtm refresh`, then use
 `/reload` or restart Pi. `project_untrusted` requires a project trust decision;
 `policy_unverified` requires valid `.lgtm` policy files. Refresh does not grant
-trust or repair invalid owner policy. A direct commit still requires current
-runtime evidence and the existing commit-gate checks.
+trust or repair invalid owner policy. These failures do not veto a direct
+commit or another development tool. Optional Jev data requests still require
+their own trusted runtime and governed-read bindings.
 
 ## Installation and rollback
 
@@ -157,7 +163,7 @@ retains its original directory name). Registration is outside repository trackin
 LGTM does not search the disk for repositories.
 
 `lgtm update` invokes the newly installed executable to refresh all tracked managed
-files: rules, guidance, installed hooks, generated Codex execpolicy, Pi extensions,
+files: rules, guidance, installed hooks, retirement of LGTM-owned Codex command rules, Pi extensions,
 and installed Pi package/LSP configuration. An already-current update also refreshes
 them. Only canonical Pi extensions pointing to that executable are changed;
 customized, repointed, missing, or disabled extensions are preserved. Existing
@@ -181,16 +187,15 @@ update; run `lgtm refresh` after that first upgrade. A verified session start al
 registers its Pi installation.
 
 **Running sessions still need `/reload` or a restart.** Updating a file on disk
-cannot replace an extension already loaded in Pi. Automatic refresh does not
-claim native UI approval verification or re-enable disabled integrations. If you
+cannot replace an extension already loaded in Pi. Refresh does not prove native
+runtime compatibility or re-enable disabled integrations. If you
 replace the binary outside `lgtm update`, run `lgtm refresh` afterward.
 `refresh-pi` remains a compatibility alias.
 
-Pi lifecycle hooks use a 10-second transport deadline. Bash pre-tool calls use a
-310-second transport deadline because they may run the Pi-specific pre-commit gate;
-that gate has a fixed 300-second total budget, including bounded checks and evidence
-persistence, and denies on aggregate exhaustion. Claude and Codex keep their
-existing full-gate budget.
+Pi hook subprocesses use a 10-second transport deadline. There is no longer a
+separate 310-second commit path or automatic full-gate request. Timeout,
+cancellation, and shutdown still terminate LGTM's child process, record the
+failure, and clean up listeners. They do not veto the underlying development tool.
 
 ## User guide: installation records and test isolation
 
@@ -286,7 +291,7 @@ Managed project/global init includes six advisory Jev tools, exposed through
 native codemode. Startup makes no classifier call and needs no extra key. Explicit
 judgments use Pi's native OpenRouter `~typesafe/jev-latest` classifier and its
 existing auth. Missing APIs, model, or provider return `unavailable`; deterministic
-LGTM enforcement remains authoritative.
+check results are unchanged, and development tools are not vetoed.
 
 ### Breaking draft API change: file references
 
@@ -455,8 +460,9 @@ text(await tools.lgtm_jev_scope({requestPath: "scope-request.json"}));
 
 A revision mismatch is `stale`; no changes is `empty`. Both make zero classifier
 calls. Per-claim verdicts are supported, unsupported, contradicted, unclear,
-missing, or invalid. These are advice, not verification; deterministic Stop
-claim checks remain authoritative. Claim and scope bodies are not returned.
+missing, or invalid. These are advice, not verification. Automatic completion
+does not inspect claims; use actual command results as evidence. Claim and scope
+bodies are not returned.
 
 ## Jev diagnostic triage
 
@@ -530,42 +536,21 @@ these decisions.
 
 ## Finding approval capability
 
-The canonical extension now advertises `lgtm-pi-heuristic-notices` version 1.
-Eligible staged heuristics become nonblocking typed notices, with presentation
-handled by standalone [Jev auto](../jev-auto.md). No native confirmation is asked.
-The extension performs a fresh deterministic reassessment after presentation;
-changed or hard findings remain denied. Missing Jev produces a warning, not a
-new prompt or a passed check.
+The `lgtm-pi-finding-approval` protocol and commit authorization machinery are
+removed. There is no native confirmation, staged commit assessment, or second
+assessment after notice presentation. Legacy veto or approval responses are
+diagnosed and ignored; they cannot become permission to block a tool.
 
-The paragraphs below describe the retained **legacy client**
-`lgtm-pi-finding-approval` v1 contract. Rust still preserves that capability only
-when its exact `{name, version: 1}` object is present. The new extension does not
-advertise it and rejects a legacy challenge rather than opening a dialog. Missing,
-malformed, or unknown capabilities cannot select the new notice policy.
-Only a direct staged `git commit` whose complete fresh gitleaks assessment contains
-eligible built-in `generic-api-key` findings can produce the redacted approval
-challenge. Provider credentials, private keys, custom rules, mixed findings, and
-scanner or repository errors remain hard denials.
+Advisory notices still use `lgtm-pi-heuristic-notices` version 1 with optional
+[Jev auto](../jev-auto.md) presentation. A notice does not approve an operation,
+change a failed check, or create verification evidence. Each tool event makes
+one bounded observer request, not an authorization transaction.
 
-The challenge binds the canonical repository and Git state, session and adapter,
-normalized commit argv, scanner/config/ignore/waiver and policy identities, scanner
-and Git executable identities, and the complete finding set. The extension may ask
-for native confirmation only in Pi `tui` mode with verified current runtime
-attestation and UI availability. Approval authority is local to one invocation,
-never persisted, and invalidated by session generations and shutdown. Before a new
-direct commit attempt, the live extension revalidates its executable, template,
-project trust, and all built-in tool contracts, then records fresh runtime evidence.
-This lets a repaired hook failure recover in the same session without deleting
-failure history or restoring an earlier approval. Failed re-attestation denies.
-The extension rechecks the canonical template and trusted executable after confirmation, performs
-one bounded fresh reassessment, and allows only an identical pending assessment or
-a clean pass. Cancellation, timeout, UI absence, changed findings/configuration,
-stale attestation, executable/template mutation, malformed responses, and failed
-reassessment deny. Finding display is redacted to rule, path/location, and a
-non-secret candidate identifier; no secret value or scanner description is shown.
-These checks narrow, but cannot eliminate, same-user TOCTOU mutation between
-revalidation and child execution; Pi extensions are not an operating-system
-security boundary.
+The bounded runtime identity helper remains because explicit Jev requests need
+to bind approved data to the installed extension and executable. Removing a
+commit gate does not permit private files to bypass those read and privacy checks.
+
+## Explicit source-check scope
 
 The bounded full-repository source scan preserves `.pi/extensions/`,
 `.pi/settings.json`, and `.pi/pi-lsp.json`. It excludes only the known runtime
@@ -586,9 +571,9 @@ unsafe paths, and degraded shared state remain bounded unverified outcomes.
 This path is guidance only and does not change tool input or enforcement results.
 
 Pi cannot provide verified context before a direct `edit` or `write` call through
-the current event contract. Such calls remain enforced by the pre-tool policy,
-but path-scoped guidance is unsupported/unverified for that direct-first-edit
-case. A preceding `read` is the supported guidance path.
+the current event contract. LGTM does not veto that call, but path-scoped
+guidance remains unsupported/unverified for that direct-first-edit case.
+A preceding `read` is the supported guidance path.
 
 The supported built-in input paths captured by the fixture are:
 

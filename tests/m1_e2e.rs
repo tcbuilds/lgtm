@@ -39,6 +39,18 @@ fn run_hook(repo: &TempRepo, path: &str, event: &str, tool_name: Option<&str>) -
     child.wait_with_output().expect("hook completes")
 }
 
+fn run_check(repo: &TempRepo) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["check", "--tier", "full"])
+        .current_dir(repo.path())
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", repo.path().join("bin").display()),
+        )
+        .output()
+        .expect("explicit check completes")
+}
+
 fn install_fake_gitleaks(repo: &TempRepo) {
     let script = r#"#!/bin/sh
 if [ "$1" = "version" ]; then echo "test-1.0"; exit 0; fi
@@ -50,7 +62,7 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-if grep -q 'PLANTED_SECRET_MARKER' "$source"; then
+if grep -q 'PLANTED_''SECRET_MARKER' "$source"; then
   printf '[{"RuleID":"test-secret","Description":"test finding","File":"%s","StartLine":1}]' "$source" > "$report"
   exit 2
 fi
@@ -67,7 +79,7 @@ exit 0
 }
 
 #[test]
-fn secret_blocks_then_clean_stop_writes_well_formed_evidence() {
+fn secret_feedback_and_explicit_checks_write_well_formed_evidence() {
     let repo = TempRepo::new();
     install_fake_gitleaks(&repo);
     let example = std::fs::read_to_string("examples/python-service/src/python_service/pricing.py")
@@ -89,27 +101,31 @@ fn secret_blocks_then_clean_stop_writes_well_formed_evidence() {
 
     let post = run_hook(&repo, &path, "post-tool-use", Some("Write"));
     assert!(post.status.success());
+    let feedback: Value = serde_json::from_slice(&post.stdout).expect("feedback JSON");
+    assert!(feedback.get("decision").is_none());
     assert_eq!(
-        serde_json::from_slice::<Value>(&post.stdout).expect("block JSON")["decision"],
-        "block"
+        feedback["hookSpecificOutput"]["hookEventName"],
+        "PostToolUse"
+    );
+    assert!(
+        feedback["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("feedback context")
+            .contains("no-committed-secrets")
     );
 
-    let stop = run_hook(&repo, &path, "stop", None);
-    assert_eq!(stop.status.code(), Some(2));
-    assert!(stop.stdout.is_empty());
-    let decision: Value = serde_json::from_slice(&stop.stderr).expect("Stop block JSON on stderr");
-    assert_eq!(decision["decision"], "block");
-    assert!(
-        decision["reason"]
-            .as_str()
-            .expect("block reason")
-            .contains("Repair:")
-    );
+    let completion = run_hook(&repo, &path, "stop", None);
+    assert!(completion.status.success());
+    assert!(String::from_utf8_lossy(&completion.stdout).contains("no checks ran"));
+    assert!(!repo.exists(".lgtm/evidence/evidence.jsonl"));
+
+    let failed = run_check(&repo);
+    assert_eq!(failed.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&failed.stdout).contains("lgtm check failed"));
 
     repo.write("src/python_service/pricing.py", &example);
-    let clean_stop = run_hook(&repo, &path, "stop", None);
-    assert!(clean_stop.status.success());
-    assert!(String::from_utf8_lossy(&clean_stop.stdout).contains("failed=0"));
+    let clean_check = run_check(&repo);
+    assert!(clean_check.status.success(), "clean check: {clean_check:?}");
 
     let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
     let schema: Value = serde_json::from_str(include_str!("../schemas/evidence.schema.json"))
@@ -123,7 +139,7 @@ fn secret_blocks_then_clean_stop_writes_well_formed_evidence() {
             .map(|error| error.to_string())
             .collect();
         assert!(errors.is_empty(), "evidence schema violations: {errors:?}");
-        assert_eq!(record["task_id"], "m1-e2e");
+        assert_eq!(record["task_id"], "unknown-session");
         assert!(record["rules"].is_object());
         assert!(record["results"].is_array());
         assert_eq!(record["coverage"][0]["status"], "not_applicable");
@@ -179,7 +195,7 @@ fn secret_blocks_then_clean_stop_writes_well_formed_evidence() {
 }
 
 #[test]
-fn missing_gitleaks_is_prominent_but_does_not_block_stop() {
+fn missing_scanners_remain_unverified_in_explicit_check() {
     let repo = TempRepo::new();
     install_fake_gitleaks(&repo);
     repo.write("clean.py", "value = 1\n");
@@ -197,9 +213,12 @@ fn missing_gitleaks_is_prominent_but_does_not_block_stop() {
     permissions.set_mode(0o644);
     std::fs::set_permissions(fake, permissions).expect("disable fake executable");
 
-    let stop = run_hook(&repo, &path, "stop", None);
-    assert!(stop.status.success(), "unverified MUST must not hard-block");
-    let stdout = String::from_utf8(stop.stdout).expect("UTF-8 stdout");
+    let check = run_check(&repo);
+    assert!(
+        check.status.success(),
+        "unverified checks must not be mislabeled failed"
+    );
+    let stdout = String::from_utf8(check.stdout).expect("UTF-8 stdout");
     assert!(stdout.contains("UNVERIFIED no-committed-secrets"));
     assert!(stdout.contains("UNVERIFIED no-swallowed-errors"));
     assert!(stdout.contains("UNVERIFIED no-broad-exception-handling"));
@@ -210,13 +229,18 @@ fn missing_gitleaks_is_prominent_but_does_not_block_stop() {
     assert!(stdout.contains("UNVERIFIED destructive-operation-safeguards"));
     assert!(stdout.contains("UNVERIFIED regression-test-required"));
     assert!(stdout.contains("UNVERIFIED preserve-unrelated-user-changes"));
-    assert!(stdout.contains("UNVERIFIED evidence-claims-honest"));
     assert!(stdout.contains("UNVERIFIED error-contract-review"));
     assert!(stdout.contains("UNVERIFIED behavior-test-quality"));
     assert!(stdout.contains("UNVERIFIED config-version-compatible"));
     let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
     let record: Value = serde_json::from_str(evidence.lines().last().expect("evidence line"))
         .expect("evidence JSON");
-    assert_eq!(record["rules"]["unverified"], 17);
+    let unverified = record["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .filter(|result| result["status"] == "unverified")
+        .count();
+    assert_eq!(record["rules"]["unverified"], unverified as u64);
     assert_eq!(record["rules"]["failed"], 0);
 }

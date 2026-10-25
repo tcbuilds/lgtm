@@ -1,26 +1,16 @@
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 mod common;
 use common::TempRepo;
 
-fn stop(repo: &TempRepo) -> std::process::Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
-        .args(["hook", "stop"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Stop starts");
-    write!(
-        child.stdin.take().unwrap(),
-        "{}",
-        json!({"cwd": repo.path(), "session_id": "override-e2e", "check": true})
-    )
-    .unwrap();
-    child.wait_with_output().unwrap()
+fn check(repo: &TempRepo) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["check", "--tier", "full"])
+        .current_dir(repo.path())
+        .output()
+        .expect("explicit check completes")
 }
 
 #[test]
@@ -30,7 +20,7 @@ fn allowed_disable_is_recorded_in_task_evidence() {
         ".lgtm/config.json",
         r#"{"disabled_rules":["new-behavior-tests-required"]}"#,
     );
-    let output = stop(&repo);
+    let output = check(&repo);
     assert!(output.status.success());
     let evidence = repo.read(".lgtm/evidence/evidence.jsonl");
     let record: Value = serde_json::from_str(evidence.lines().last().unwrap()).unwrap();
@@ -42,14 +32,15 @@ fn allowed_disable_is_recorded_in_task_evidence() {
 }
 
 #[test]
-fn security_disable_attempt_is_surfaced_without_blocking_hook_protocol() {
+fn protected_rule_disable_is_rejected_by_explicit_check() {
     let repo = TempRepo::new();
     repo.write(
         ".lgtm/config.json",
         r#"{"disabled_rules":["no-committed-secrets"]}"#,
     );
-    let output = stop(&repo);
-    assert!(output.status.success());
+    let output = check(&repo);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("no-committed-secrets"));
     assert!(stderr.contains("non-overridable"));

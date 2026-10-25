@@ -52,7 +52,8 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
     assert!(!repo.exists(".pi/extensions/lgtm.ts.bak"));
     assert!(extension.contains("shell: false"));
     assert!(extension.contains("NORMAL_TIMEOUT_MS = 10_000"));
-    assert!(extension.contains("PRE_TOOL_TIMEOUT_MS = 310_000"));
+    // The observer extension has no pre-tool gate timeout.
+    assert!(!extension.contains("PRE_TOOL_TIMEOUT_MS"));
     assert!(!extension.contains("event.input ="));
     assert!(extension.contains("getAllTools"));
     assert!(extension.contains("sourceInfo"));
@@ -84,10 +85,11 @@ fn project_init_installs_versioned_extension_at_the_pi_path() {
     assert!(extension.contains("BINARY_DIGEST"));
     assert!(extension.contains("MAX_BINARY_BYTES = 128 * 1024 * 1024"));
     assert!(extension.contains("function trustedRuntimeVersion()"));
-    assert!(extension.contains("function approvalContextIsCurrent"));
-    assert!(extension.contains("approvalState.generation += 1"));
+    // Commit authorization is gone; approval and revalidation state must stay deleted.
+    assert!(!extension.contains("approvalContextIsCurrent"));
+    assert!(!extension.contains("approvalState"));
+    assert!(!extension.contains("revalidate"));
     assert!(extension.contains("pi.on(\"session_shutdown\""));
-    assert!(extension.contains("presentAndRevalidateNotices"));
     assert!(extension.contains("lgtm-pi-heuristic-notices"));
     assert!(!extension.contains("ctx.ui.confirm("));
     assert!(extension.contains("child.unref()"));
@@ -663,7 +665,7 @@ Promise.resolve(handlers.tool_call(toolCall, ctx))
 
 #[cfg(unix)]
 #[test]
-fn generated_bash_timeout_and_cancellation_kill_child_and_deny_cancelled_tools() {
+fn generated_bash_timeout_and_cancellation_kill_child_without_vetoing_tools() {
     use std::os::unix::fs::PermissionsExt;
 
     let repo = TempRepo::new();
@@ -690,7 +692,7 @@ const source = fs.readFileSync(process.argv[2], "utf8")
   .replace('import { spawn } from "node:child_process";', 'const { spawn } = require("node:child_process");')
   .replace('import { createHash, randomUUID } from "node:crypto";', 'const { createHash, randomUUID } = require("node:crypto");')
   .replace('new URL(import.meta.url)', 'process.argv[2]')
-  .replace('const PRE_TOOL_TIMEOUT_MS = 310_000;', `const PRE_TOOL_TIMEOUT_MS = ${mode === "timeout" ? 25 : 4_000};`)
+  .replace('const NORMAL_TIMEOUT_MS = 10_000;', `const NORMAL_TIMEOUT_MS = ${mode === "timeout" ? 25 : 4_000};`)
   .replace('export default function lgtm', 'function lgtm') + "\nglobalThis.__lgtm = lgtm;";
 eval(source);
 const handlers = {};
@@ -715,8 +717,7 @@ globalThis.__lgtm(pi);
   const result = await pending;
   assert.equal(failures.length, 1);
   assert.equal(failures[0].data.reason, mode === "timeout" ? "timeout" : "aborted");
-  if (mode === "timeout") assert.equal(result, undefined);
-  else assert.equal(result.block, true);
+  assert.equal(result, undefined, mode + ": cancellation must not veto the tool");
   assert.equal(process.listenerCount("exit"), originalExitListeners);
   if (mode === "pre-aborted") assert.equal(fs.existsSync("hook.pid"), false);
   if (fs.existsSync("hook.pid")) {
@@ -809,12 +810,10 @@ fn generated_scope_guard_covers_root_nested_and_unrelated_projects() {
 
 #[cfg(unix)]
 #[test]
-fn generated_notices_never_prompt_and_require_live_revalidation() {
+fn generated_notices_never_prompt_or_revalidate_automatic_tools() {
     use std::os::unix::fs::PermissionsExt;
     for case in [
         "notice",
-        "clean",
-        "changed",
         "hard",
         "malformed",
         "legacy",
@@ -841,8 +840,7 @@ process.stdin.resume();
 process.stdin.on("end", () => {
   const count = Number(fs.existsSync(".count") ? fs.readFileSync(".count", "utf8") : "0") + 1;
   fs.writeFileSync(".count", String(count));
-  if (which === "clean" && count === 2) return;
-  if (which === "hard" && count === 2) {
+  if (which === "hard") {
     process.stdout.write(JSON.stringify({ block: true, reason: "known credential remains blocked" }));
     return;
   }
@@ -854,7 +852,7 @@ process.stdin.on("end", () => {
     return;
   }
   const notices = {protocol:"lgtm-pi-heuristic-notices",version:1,
-    identity:which === "capacity" ? Math.ceil(count/2).toString(16).padStart(64,"0") : which === "changed" && count === 2 ? "c".repeat(64) : "a".repeat(64),
+    identity:which === "capacity" ? count.toString(16).padStart(64,"0") : "a".repeat(64),
     items:[{kind:"generic-secret",ruleId:"generic-api-key",path:"src/app.rs",line:4,candidateId:"b".repeat(64)}]};
   if (which === "malformed") notices.identity = ["a".repeat(64)];
   process.stdout.write(JSON.stringify({notices}));
@@ -905,11 +903,17 @@ const ctx = {cwd:process.cwd(),mode:which==="rpc"?"rpc":"tui",hasUI:which!=="no-
  ui:{confirm:async()=>{confirms++;return true;},notify:()=>{}}};
 install(pi);
 (async()=>{
+ if(which==="refresh-failed") {
+   await handlers.session_start({},ctx);
+   assert.ok(entries.some((entry)=>entry.customType==="lgtm"&&entry.data.reason==="nonzero"),"failed refresh was not reported");
+   entries.length=0;
+ }
  const result=await handlers.tool_call({toolName:"bash",input:{command:"git commit -m test"}},ctx);
  assert.equal(confirms,0,"noise requested human confirmation");
- const allows=["notice","clean","rpc","no-ui","capacity"].includes(which);
- if(allows) {assert.equal(result,undefined);assert.equal(fs.readFileSync(".count","utf8"),"2");}
- else assert.equal(result?.block,true,"unsafe or stale response was allowed: "+which);
+ assert.equal(result,undefined,"observer response vetoed a development tool: "+which);
+ assert.equal(fs.readFileSync(".count","utf8"),"1","the hook ran more than one observer assessment");
+ if(which==="hard" || which==="legacy") assert.ok(entries.some((entry)=>entry.customType==="lgtm"&&entry.data.reason==="invalid_tool_call_response"),"rejected veto payload was not visible: "+which);
+ if(which==="malformed") assert.ok(entries.some((entry)=>entry.customType==="lgtm"&&entry.data.reason==="invalid_notice_response"),"malformed notice was not reported: "+which);
  if(which==="capacity") {
    for(let i=0;i<256;i++) assert.equal(await handlers.tool_call({toolName:"bash",input:{command:"git commit -m test"}},ctx),undefined);
    assert.equal(deliveries,257,"capacity silently dropped a new notice");

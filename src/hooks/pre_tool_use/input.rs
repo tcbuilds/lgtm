@@ -1,8 +1,4 @@
 use serde::Deserialize;
-use serde_json::{Map, Value};
-
-use crate::adapter::ApprovalCapability;
-
 pub(super) const MAX_PAYLOAD_BYTES: u64 = 256 * 1_024;
 
 #[derive(Debug, Deserialize)]
@@ -11,9 +7,6 @@ pub(super) struct HookInput {
     pub session_id: Option<String>,
     pub tool_name: Option<String>,
     pub tool_use_id: Option<String>,
-    pub permission_mode: Option<String>,
-    #[serde(default)]
-    pub approval_capability: Option<Value>,
     #[serde(default)]
     pub tool_input: ToolInput,
 }
@@ -23,25 +16,6 @@ pub(super) struct ToolInput {
     pub file_path: Option<String>,
     pub command: Option<String>,
     pub cmd: Option<String>,
-    #[serde(flatten)]
-    extra: Map<String, Value>,
-}
-
-impl ToolInput {
-    pub(super) fn replace_command(&self, field: &str, command: String) -> Value {
-        let mut fields = self.extra.clone();
-        insert_string(&mut fields, "file_path", self.file_path.clone());
-        insert_string(&mut fields, "command", self.command.clone());
-        insert_string(&mut fields, "cmd", self.cmd.clone());
-        fields.insert(field.to_string(), Value::String(command));
-        Value::Object(fields)
-    }
-}
-
-fn insert_string(fields: &mut Map<String, Value>, key: &str, value: Option<String>) {
-    if let Some(value) = value {
-        fields.insert(key.to_string(), Value::String(value));
-    }
 }
 
 pub(super) fn edited_file(input: &HookInput) -> Option<&str> {
@@ -62,13 +36,6 @@ pub(super) fn requested_command(input: &HookInput) -> Option<&str> {
         .flatten()
 }
 
-pub(super) fn approval_capability(input: &HookInput) -> Option<ApprovalCapability> {
-    input
-        .approval_capability
-        .as_ref()
-        .and_then(ApprovalCapability::from_value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,13 +47,10 @@ mod tests {
             session_id: None,
             tool_name: Some("Edit".to_string()),
             tool_use_id: None,
-            permission_mode: None,
-            approval_capability: None,
             tool_input: ToolInput {
                 file_path: Some("src/lib.rs".to_string()),
                 command: None,
                 cmd: None,
-                ..Default::default()
             },
         };
         assert_eq!(edited_file(&input), Some("src/lib.rs"));
@@ -103,13 +67,10 @@ mod tests {
             session_id: None,
             tool_name: Some("Bash".to_string()),
             tool_use_id: None,
-            permission_mode: None,
-            approval_capability: None,
             tool_input: ToolInput {
                 file_path: None,
                 command: Some("cargo test".to_string()),
                 cmd: None,
-                ..Default::default()
             },
         };
         assert_eq!(requested_command(&input), Some("cargo test"));
@@ -126,13 +87,10 @@ mod tests {
             session_id: None,
             tool_name: Some("Bash".to_string()),
             tool_use_id: None,
-            permission_mode: None,
-            approval_capability: None,
             tool_input: ToolInput {
                 file_path: None,
                 command: None,
                 cmd: Some("git commit -m fix".to_string()),
-                ..Default::default()
             },
         };
         assert_eq!(requested_command(&input), Some("git commit -m fix"));

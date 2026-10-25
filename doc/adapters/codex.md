@@ -1,121 +1,89 @@
-# Codex adapter
+# Codex observer adapter
 
-LGTM supports Codex through the same policy engine, but Codex needs its own
-input and output adapter. Select it explicitly; LGTM never guesses an adapter
-from a payload:
+This guide describes the observer-only source change, not an installed rollout.
+LGTM uses an explicit Codex input/output adapter; it does not guess from a payload.
 
 ```bash
 lgtm init --agent codex
-lgtm init -g
 lgtm hook session-start --adapter codex
 lgtm check --tier full
 ```
 
-`lgtm init --agent codex` writes or merges `.codex/hooks.json` without removing
-other hooks. It registers `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
-`PostToolUse`, `PermissionRequest`, `SubagentStart`, `SubagentStop`, and
-`Stop`. Edit and command matchers include Codex's `apply_patch`, `Edit`,
-`Write`, `exec_command`, `unified_exec`, and `Bash` names. Re-running init is
-idempotent. When `lgtm` is installed at a stable absolute path, init records
-that path so Codex does not depend on the session's `PATH`; source-tree runs
-fall back to the portable `lgtm` command. Re-run init if the binary moves.
+Project init merges `.codex/hooks.json` without removing other hooks. It wires
+SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse,
+SubagentStart, SubagentStop, and Stop. Known edit and command aliases include
+`apply_patch`, `Edit`, `Write`, `exec_command`, `unified_exec`, and `Bash`.
+Repeated init is idempotent. A stable installed binary path is recorded when
+available; source-tree runs can use the portable `lgtm` command.
 
-`lgtm init -g` writes the same hook contract to `~/.codex/hooks.json` and
-merges LGTM's compact always-loaded guidance into `~/.codex/AGENTS.md`. It also
-installs every other harness supported by the binary under the same `$HOME`.
-Global init preserves instruction text outside its marked block and does not
-create repository `.lgtm` policy or command configuration.
+Global `lgtm init -g` merges the same wiring and a managed guidance block under
+`~/.codex/`. It also configures other supported harnesses. Owner text outside
+managed sections and unrelated settings are preserved. Global init does not
+create repository policy or command configuration.
 
 ## Response contract
 
-LGTM deliberately emits every enforcement response as explicit JSON on stdout
-with exit status `0`. Current Codex also accepts exit status `2` with a reason
-on stderr, but using JSON/exit-0 keeps all LGTM outcomes deterministic across
-events and avoids relying on Claude-specific framing.
+Automatic hook responses use exit 0. They cannot deny a tool or block completion.
 
-| Normalized result | Codex response |
+| Result | Codex response |
 | --- | --- |
-| `Deny` on `PreToolUse` | `hookSpecificOutput.permissionDecision = "deny"` plus a reason |
-| `BlockStop` on `PostToolUse` or `Stop` | `{"decision":"block","reason":"..."}` continuation feedback |
-| `InjectContext` on session/prompt/post-tool events | `hookSpecificOutput.additionalContext` |
-| `InjectContext` on `PreToolUse` | top-level `systemMessage` fallback; `additionalContext` is not relied on there |
-| `Allow` | empty stdout, exit `0` |
+| Session or prompt guidance | `hookSpecificOutput.additionalContext` |
+| Post-tool findings | `hookSpecificOutput.additionalContext` |
+| Stop or subagent-stop | `systemMessage` explaining that no checks ran |
+| No feedback or pre-tool observation | Empty stdout |
 
-The adapter rejects event/response combinations it cannot encode. It never
-adds unsupported fields such as `continue` or `stopReason` to an enforcement
-decision. Evidence, waivers, rule IDs, and failure meanings remain shared with
-the Claude adapter.
+Post-tool feedback states that the tool already ran. It cannot undo side effects.
+PreToolUse and PermissionRequest do not enforce legacy command/path lists.
+Direct commits do not run a full check or require LGTM evidence. Completion does
+not inspect assistant claims or require a baseline or transcript.
 
-`Stop` with `decision: "block"` asks Codex to continue with a new repair
-prompt; it does not permanently reject the turn. `PostToolUse` runs after the
-tool has completed, so its feedback cannot undo side effects that already ran.
-LGTM prefixes PostToolUse feedback with that fact so the agent does not mistake
-post-execution feedback for a pre-execution denial.
+## Explicit checking
 
-## Trust and platform limits
+An explicit check, `lgtm check --tier full`, runs bounded checks and writes evidence.
+An actual error-level failed check returns exit status `2`; operational errors return
+nonzero. Missing tools and incomplete verification stay unverified rather than
+being relabeled passed. An exit-0 result alone does not prove every check ran.
 
-Codex SHA-256-pins hook definitions. After installation, review and trust the
-LGTM entries in Codex's `/hooks` screen. Trust state belongs to Codex's own
-configuration, so `lgtm init` does not silently edit or auto-approve it. If a
-hook is not trusted, Codex may skip it without running the command.
+CI or an owner-installed Git hook can choose to run this command. Those are
+separate, explicit integrations, not automatic Codex commit authorization.
 
-Project hooks also depend on Codex discovering and trusting the project-local
-`.codex/hooks.json`. Worktree and desktop discovery behavior is controlled by
-Codex, not LGTM; keep CI and the Git pre-push full gate enabled as the
-bypass-resistant backstop.
+## Native rules retirement
 
-Codex's `notify`-style hooks are observation-only and cannot enforce a deny or
-Stop continuation. The current Codex runtime also has incomplete interception
-for `unified_exec` and equivalent shell paths, so native hooks are not a
-universal shell-security boundary. For intercepted direct `git commit` calls,
-PreToolUse runs the full gate before allowing the command. MCP tools cannot
-force that commit boundary, so `lgtm check --tier full`, pre-push, and CI remain
-necessary backstops.
+LGTM no longer generates `.codex/rules/lgtm.rules` command bans. Fresh installs
+do not create that file. A normal init or managed refresh replaces an old file
+only when it has LGTM's generated header, leaving an inert comment-only file.
+This also works when the old `.lgtm/execpolicy.json` source is absent.
 
-## Execution-path capability matrix
+User-authored rules without that ownership header, symlink targets, and unreadable
+files are preserved. Existing legacy policy data is not rewritten into native
+rules. LGTM does not change Codex's own permissions, sandbox, or hook trust state.
 
-| Path | LGTM status | Meaning |
-| --- | --- | --- |
-| `Bash` | supported for simple shell calls | PreToolUse can deny before execution; PostToolUse can only report after execution |
-| `apply_patch` (`Edit`/`Write` aliases) | supported | File-target checks and fast scans run when the payload includes a file path |
-| MCP tools | parsed, not universally policy-scanned | Unknown tool names are preserved; tool-specific coverage must be added explicitly |
-| `exec_command` | compatibility alias | Kept for older Codex payloads; verify the installed Codex build's matcher behavior |
-| `unified_exec` | incomplete | Codex interception is not universal; do not treat this as a shell-security boundary |
-| WebSearch and other non-shell tools | unsupported | No LGTM PreToolUse enforcement is claimed |
+## Capability and trust limits
 
-The Git pre-push wrapper, CI `lgtm check --tier full`, and repository policy
-remain the bypass-resistant backstop for paths native hooks cannot intercept.
+Codex controls whether a project or hook is discovered, trusted, and run.
+Review changed hook definitions in `/hooks`; LGTM does not auto-approve them.
+Worktree, desktop, MCP, custom-tool, and shell interception coverage is not
+universal. An unknown execution path is not a claim of verified observation.
+No LGTM hook is an operating-system security boundary.
 
-To run the optional local conformance smoke test without launching an
-interactive Codex session:
+| Execution path | Observation boundary |
+| --- | --- |
+| `Bash` | Known payloads support pre/post observation, not permission denial. |
+| `apply_patch` and `Edit`/`Write` | Touched-file feedback needs a recognized file path. |
+| MCP tools | Parsed names do not prove tool-specific observation. |
+| `exec_command` | Compatibility alias; verify the installed host's matcher. |
+| `unified_exec` | Interception is incomplete and depends on the host. |
+| WebSearch and other tools | Tool-specific observation is unsupported unless implemented. |
+
+Run the optional local conformance smoke without an interactive session:
 
 ```bash
 LGTM_CODEX_CONFORMANCE=1 cargo test --locked --test codex_conformance -- --nocapture
 ```
 
-Without the environment variable, or without a local Codex CLI, the test is
-reported as `not_applicable`; adapter tests are not presented as live Codex
-proof.
+Without that opt-in or a local Codex CLI, the result is not applicable.
+Adapter tests alone are not live Codex proof. The offline lifecycle and native
+rule tests run through `cargo test --test codex_e2e --test codex_adapter --test init
+--test managed_upgrade`.
 
-## Optional execpolicy backstop
-
-Create `.lgtm/execpolicy.json` when a project wants a second command-level
-guardrail against accidental destruction. It is not a security boundary; see
-the [bounded evasion surface](../../README.md#initialize-a-project) before
-treating it as shell protection:
-
-```json
-{
-  "prohibited_commands": [["git", "reset", "--hard"]],
-  "prohibited_paths": ["secrets/**"]
-}
-```
-
-Codex command prefixes are generated at `.codex/rules/lgtm.rules` as deny
-`prefix_rule` entries. Existing rule files are preserved. Codex prefix rules
-match command argv, not filesystem targets, so path patterns remain enforced by
-LGTM's PreToolUse hook and are recorded as explanatory comments only.
-
-For headless or non-hooked runs, use `lgtm check --tier full`. It uses the same
-bounded commands, evidence schema, and exit semantics as CI. Missing tools are
-reported as `unverified`, never silently passed.
+See [the architecture decision](../adr/0017-observer-hooks-and-explicit-checks.md).
