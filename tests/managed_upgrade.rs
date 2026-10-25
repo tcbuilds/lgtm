@@ -394,3 +394,35 @@ fn rules_only_refresh_never_installs_hooks_or_repo_policy() {
         }
     }
 }
+
+#[test]
+fn project_refresh_retires_legacy_write_denies_and_keeps_owner_rules() {
+    let home = TempRepo::new();
+    let repo = TempRepo::new();
+    init(&repo, home.path(), "claude", false);
+    let mut settings = repo.read_json(".claude/settings.json");
+    let deny = settings["permissions"]["deny"]
+        .as_array_mut()
+        .expect("deny permissions");
+    deny.push(json!("Write(**/*.lock)"));
+    deny.push(json!("Write(**/settings.local.json)"));
+    deny.push(json!("Write(secrets/**)"));
+    repo.write(
+        ".claude/settings.json",
+        &serde_json::to_string_pretty(&settings).expect("serialize settings"),
+    );
+
+    refresh(home.path());
+
+    let refreshed = repo.read_json(".claude/settings.json");
+    assert_eq!(
+        refreshed["permissions"]["deny"],
+        json!([
+            "Edit(**/*.lock)",
+            "Edit(**/*.tfstate.backup)",
+            "Edit(**/package-lock.json)",
+            "Edit(**/settings.local.json)",
+            "Write(secrets/**)"
+        ])
+    );
+}
