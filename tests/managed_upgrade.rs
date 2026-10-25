@@ -345,9 +345,16 @@ fn pi_package_migration_unpins_shipped_versions_and_preserves_owner_choices() {
                 package["source"] = json!(unpinned);
             }
         }
+        expected.retain(|package| {
+            !matches!(
+                package.as_str(),
+                Some("npm:pi-mcp-extension" | "npm:rtfd-pi")
+            )
+        });
         expected.extend([
             json!("npm:@narumitw/pi-github-pr"),
             json!("npm:@narumitw/pi-goal"),
+            json!("npm:@upstash/context7-pi"),
         ]);
         assert_eq!(actual["packages"], packages, "{operation}");
         assert_eq!(actual["theme"], "dark");
@@ -371,7 +378,7 @@ fn pi_package_refresh_keeps_custom_versions_and_filters() {
     let settings = repo.read_json(".pi/settings.json");
     let packages = settings["packages"].as_array().expect("packages");
     assert_eq!(packages[0], owner_package);
-    assert_eq!(packages.len(), 10);
+    assert_eq!(packages.len(), 9);
     assert!(packages.contains(&json!("npm:pi-web-search")));
 }
 

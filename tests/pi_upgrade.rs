@@ -213,9 +213,81 @@ fn refresh_does_not_duplicate_global_registration_through_home_alias() {
 }
 
 #[test]
+fn global_pi_documentation_packages_migrate_on_init_and_refresh() {
+    for operation in ["init", "refresh"] {
+        let home = TempRepo::new();
+        assert!(init(&home, home.path(), true, false).status.success());
+        let context7 = serde_json::json!({
+            "source":"npm:@upstash/context7-pi@0.1.3", "skills":[]
+        });
+        let settings = serde_json::json!({
+            "theme":"dark",
+            "extensions":["-builtin:codemode"],
+            "packages":[
+                "npm:pi-mcp-extension",
+                {"source":"npm:pi-mcp-extension@1.5.0", "extensions":[]},
+                "npm:rtfd-pi@0.1.1",
+                {"source":"npm:rtfd-pi", "skills":[]},
+                "npm:owner-package@1.2.3",
+                "rtfd-pi",
+                {"source":"pi-mcp-extension", "extensions":[]},
+                context7
+            ]
+        });
+        home.write(".pi/agent/settings.json", &settings.to_string());
+        let output = if operation == "init" {
+            init(&home, home.path(), true, false)
+        } else {
+            refresh(home.path())
+        };
+        assert!(output.status.success(), "{operation}: {output:?}");
+        let actual = home.read_json(".pi/agent/settings.json");
+        assert_eq!(
+            actual["packages"],
+            serde_json::json!([
+                "npm:owner-package@1.2.3",
+                "rtfd-pi",
+                {"source":"pi-mcp-extension", "extensions":[]},
+                context7
+            ])
+        );
+        assert_eq!(actual["theme"], settings["theme"]);
+        assert_eq!(actual["extensions"], settings["extensions"]);
+        let once = home.read(".pi/agent/settings.json");
+        assert!(refresh(home.path()).status.success());
+        assert_eq!(home.read(".pi/agent/settings.json"), once);
+    }
+}
+
+#[test]
+fn global_init_adds_npm_context7_without_replacing_a_local_package() {
+    for operation in ["init", "refresh"] {
+        let home = TempRepo::new();
+        assert!(init(&home, home.path(), true, false).status.success());
+        home.write(
+            ".pi/agent/settings.json",
+            r#"{"packages":["@upstash/context7-pi"]}"#,
+        );
+        let mcp = r#"{"mcpServers":{}}"#;
+        home.write(".pi/agent/mcp.json", mcp);
+        let output = if operation == "init" {
+            init(&home, home.path(), true, false)
+        } else {
+            refresh(home.path())
+        };
+        assert!(output.status.success(), "{operation}: {output:?}");
+        assert_eq!(
+            home.read_json(".pi/agent/settings.json")["packages"],
+            serde_json::json!(["@upstash/context7-pi", "npm:@upstash/context7-pi"])
+        );
+        assert_eq!(home.read(".pi/agent/mcp.json"), mcp);
+    }
+}
+
+#[test]
 fn global_init_preserves_disabled_builtin_codemode_and_rejects_invalid_tool_lists() {
     let home = TempRepo::new();
-    let settings = r#"{"extensions":["-builtin:codemode"],"defaultTools":["read"]}"#;
+    let settings = r#"{"extensions":["-builtin:codemode"],"defaultTools":["read"],"packages":["npm:@upstash/context7-pi"]}"#;
     home.write(".pi/agent/settings.json", settings);
     assert!(init(&home, home.path(), true, false).status.success());
     assert_eq!(home.read(".pi/agent/settings.json"), settings);

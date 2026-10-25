@@ -1309,12 +1309,11 @@ fn pi_init_installs_package_and_lsp_configuration_idempotently() {
             "npm:@narumitw/pi-worktree",
             "npm:@the-forge-flow/pi-rules",
             "npm:pi-ask-user",
-            "npm:pi-mcp-extension",
             "npm:pi-subagents",
-            "npm:rtfd-pi",
             "npm:pi-web-search",
             "npm:@narumitw/pi-github-pr",
-            "npm:@narumitw/pi-goal"
+            "npm:@narumitw/pi-goal",
+            "npm:@upstash/context7-pi"
         ])
     );
     let lsp = repo.read_json(".pi/pi-lsp.json");

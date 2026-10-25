@@ -82,6 +82,7 @@ pub(super) fn render_settings(existing: ValidatedPiObject) -> Option<Vec<u8>> {
             packages.push(package.clone());
         }
     }
+    migrate_documentation_packages(&mut merged);
     enable_codemode(&mut merged);
     render_changed(original, merged)
 }
@@ -89,8 +90,35 @@ pub(super) fn render_settings(existing: ValidatedPiObject) -> Option<Vec<u8>> {
 pub(super) fn render_codemode_settings(existing: ValidatedPiObject) -> Option<Vec<u8>> {
     let original = existing.unwrap_or_default();
     let mut merged = original.clone();
+    migrate_documentation_packages(&mut merged);
     enable_codemode(&mut merged);
     render_changed(original, merged)
+}
+
+// Built-in MCP replaces the bridge; Context7 replaces RTFD. Preserve all other
+// packages and any existing Context7 version or resource filters.
+fn migrate_documentation_packages(settings: &mut Map<String, Value>) {
+    let packages = settings
+        .entry("packages")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .expect("validated Pi settings packages are an array");
+    packages.retain(|package| {
+        !package_source(package).is_some_and(|source| {
+            source.starts_with("npm:")
+                && matches!(
+                    package_identity(source).as_str(),
+                    "npm:pi-mcp-extension" | "npm:rtfd-pi"
+                )
+        })
+    });
+    if !packages.iter().any(|package| {
+        package_source(package).is_some_and(|source| {
+            source.starts_with("npm:") && package_identity(source) == "npm:@upstash/context7-pi"
+        })
+    }) {
+        packages.push(Value::String("npm:@upstash/context7-pi".to_string()));
+    }
 }
 
 fn enable_codemode(settings: &mut Map<String, Value>) {
@@ -220,9 +248,7 @@ fn migrate_shipped_pin(package: &mut Value) {
             | "npm:@narumitw/pi-worktree@0.51.1"
             | "npm:@the-forge-flow/pi-rules@0.1.0"
             | "npm:pi-ask-user@0.14.0"
-            | "npm:pi-mcp-extension@1.5.0"
             | "npm:pi-subagents@0.50.0"
-            | "npm:rtfd-pi@0.1.1"
     ) {
         return;
     }
