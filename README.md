@@ -2,9 +2,9 @@
 
 `lgtm` adds engineering guidance, edit feedback, and on-demand checks to agent workflows. Automatic hooks observe work; they do not deny tools, intercept commits, or block completion.
 
-**Source-tree change, not a released rollout:** the observer-only behavior below
-requires an updated binary and refreshed hooks. Editing this checkout does not
-change installed hooks or an extension already loaded in an agent.
+**Observer-only hooks start with v0.15.0.** Run `lgtm update` to upgrade the
+binary and refresh registered managed hooks, then reload or restart running
+agents. Editing this checkout alone does not change installed hooks.
 
 The current release supports Python, TypeScript/JavaScript, Rust, Go, shell,
 Terraform, JVM, C#, C/C++, SQL, and mixed repositories on x86_64 Linux and macOS.
