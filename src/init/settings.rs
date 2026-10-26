@@ -1,10 +1,17 @@
 use super::*;
 
-const CLAUDE_DENIED_PATHS: [&str; 8] = [
+// Claude Code applies `Edit(path)` rules to every file-editing tool, so these
+// cover Write, MultiEdit, and NotebookEdit as well.
+const CLAUDE_DENIED_PATHS: [&str; 4] = [
     "Edit(**/*.lock)",
     "Edit(**/*.tfstate.backup)",
     "Edit(**/package-lock.json)",
     "Edit(**/settings.local.json)",
+];
+
+// Exact entries earlier releases emitted. Claude Code never matches path-scoped
+// `Write(...)` rules and warns about each at startup, so merges retire them.
+const LEGACY_WRITE_DENIED_PATHS: [&str; 4] = [
     "Write(**/*.lock)",
     "Write(**/*.tfstate.backup)",
     "Write(**/package-lock.json)",
@@ -116,6 +123,7 @@ fn merge_permission_denies(settings: &mut Map<String, Value>) {
     let Value::Array(deny) = deny else {
         return;
     };
+    retire_legacy_write_denies(deny);
     for pattern in CLAUDE_DENIED_PATHS {
         if !deny.iter().any(|entry| entry.as_str() == Some(pattern)) {
             deny.push(Value::String(pattern.to_string()));
@@ -123,8 +131,23 @@ fn merge_permission_denies(settings: &mut Map<String, Value>) {
     }
 }
 
+fn retire_legacy_write_denies(deny: &mut Vec<Value>) {
+    deny.retain(|entry| {
+        !entry
+            .as_str()
+            .is_some_and(|rule| LEGACY_WRITE_DENIED_PATHS.contains(&rule))
+    });
+}
+
 pub(super) fn refresh_existing_hooks(existing: &Map<String, Value>) -> Map<String, Value> {
     let mut refreshed = existing.clone();
+    if let Some(deny) = refreshed
+        .get_mut("permissions")
+        .and_then(|permissions| permissions.get_mut("deny"))
+        .and_then(Value::as_array_mut)
+    {
+        retire_legacy_write_denies(deny);
+    }
     if let Some(hooks) = refreshed.get_mut("hooks").and_then(Value::as_object_mut) {
         migrate_shell_failure_hook(hooks);
         for wiring in &HOOK_EVENTS {

@@ -70,11 +70,7 @@
       "Edit(**/*.lock)",
       "Edit(**/*.tfstate.backup)",
       "Edit(**/package-lock.json)",
-      "Edit(**/settings.local.json)",
-      "Write(**/*.lock)",
-      "Write(**/*.tfstate.backup)",
-      "Write(**/package-lock.json)",
-      "Write(**/settings.local.json)"
+      "Edit(**/settings.local.json)"
     ]
   }
 }

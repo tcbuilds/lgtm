@@ -79,9 +79,65 @@ fn merge_settings_adds_plugins_and_permission_denies() {
         json!(true)
     );
     let deny = merged["permissions"]["deny"].as_array().expect("deny");
-    assert_eq!(deny.len(), 8);
-    assert!(deny.contains(&json!("Edit(**/*.lock)")));
-    assert!(deny.contains(&json!("Write(**/settings.local.json)")));
+    assert_eq!(
+        deny,
+        &vec![
+            json!("Edit(**/*.lock)"),
+            json!("Edit(**/*.tfstate.backup)"),
+            json!("Edit(**/package-lock.json)"),
+            json!("Edit(**/settings.local.json)"),
+        ]
+    );
+    assert!(
+        !deny
+            .iter()
+            .any(|rule| rule.as_str().is_some_and(|rule| rule.starts_with("Write("))),
+        "Claude Code never matches path-scoped Write rules"
+    );
+}
+
+fn settings_with_legacy_write_denies() -> Map<String, Value> {
+    json!({
+        "permissions": {
+            "deny": [
+                "Bash(rm:*)",
+                "Edit(**/*.lock)",
+                "Write(**/*.lock)",
+                "Write(**/*.tfstate.backup)",
+                "Write(**/package-lock.json)",
+                "Write(**/settings.local.json)",
+                "Write(secrets/**)",
+            ]
+        }
+    })
+    .as_object()
+    .expect("object")
+    .clone()
+}
+
+#[test]
+fn merge_settings_retires_legacy_write_denies_and_keeps_owner_rules() {
+    let merged = merge_settings(&settings_with_legacy_write_denies());
+    assert_eq!(
+        merged["permissions"]["deny"],
+        json!([
+            "Bash(rm:*)",
+            "Edit(**/*.lock)",
+            "Write(secrets/**)",
+            "Edit(**/*.tfstate.backup)",
+            "Edit(**/package-lock.json)",
+            "Edit(**/settings.local.json)",
+        ])
+    );
+}
+
+#[test]
+fn refresh_retires_legacy_write_denies_without_adding_rules() {
+    let refreshed = super::settings::refresh_existing_hooks(&settings_with_legacy_write_denies());
+    assert_eq!(
+        refreshed["permissions"]["deny"],
+        json!(["Bash(rm:*)", "Edit(**/*.lock)", "Write(secrets/**)"])
+    );
 }
 
 #[test]

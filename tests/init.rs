@@ -141,7 +141,50 @@ fn fresh_python_repo_creates_all_files() {
         settings["permissions"]["deny"]
             .as_array()
             .expect("deny permissions")
-            .contains(&json!("Write(**/settings.local.json)"))
+            .contains(&json!("Edit(**/settings.local.json)"))
+    );
+}
+
+#[test]
+fn reinit_retires_legacy_write_denies_and_keeps_owner_rules() {
+    let repo = TempRepo::new();
+    repo.write("requirements.txt", "httpx\n");
+    repo.write(
+        ".claude/settings.json",
+        r#"{
+  "permissions": {
+    "allow": ["Write"],
+    "deny": [
+      "Bash(rm:*)",
+      "Edit(**/*.lock)",
+      "Edit(**/*.tfstate.backup)",
+      "Edit(**/package-lock.json)",
+      "Edit(**/settings.local.json)",
+      "Write(**/*.lock)",
+      "Write(**/*.tfstate.backup)",
+      "Write(**/package-lock.json)",
+      "Write(**/settings.local.json)",
+      "Write(secrets/**)"
+    ]
+  }
+}"#,
+    );
+
+    let output = run_init(&repo);
+    assert!(output.status.success(), "{output:?}");
+
+    let settings = repo.read_json(".claude/settings.json");
+    assert_eq!(settings["permissions"]["allow"], json!(["Write"]));
+    assert_eq!(
+        settings["permissions"]["deny"],
+        json!([
+            "Bash(rm:*)",
+            "Edit(**/*.lock)",
+            "Edit(**/*.tfstate.backup)",
+            "Edit(**/package-lock.json)",
+            "Edit(**/settings.local.json)",
+            "Write(secrets/**)"
+        ])
     );
 }
 
