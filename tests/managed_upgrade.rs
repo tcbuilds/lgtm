@@ -433,3 +433,113 @@ fn project_refresh_retires_legacy_write_denies_and_keeps_owner_rules() {
         ])
     );
 }
+
+// Pinning the running version takes the updater's no-download branch, which
+// still re-executes this binary's `refresh` for every registered installation.
+fn update_current(home: &Path) {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args([
+            "update",
+            "--version",
+            concat!("v", env!("CARGO_PKG_VERSION")),
+        ])
+        .env("HOME", home)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("update starts");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = child.try_wait().expect("update status") {
+            assert!(status.success(), "update failed: {status:?}");
+            return;
+        }
+        if Instant::now() >= deadline {
+            child.kill().expect("terminate stalled update");
+            child.wait().expect("reap stalled update");
+            panic!("update exceeded its sixty-second deadline");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+const LEGACY_WRITE_DENIES: [&str; 4] = [
+    "Write(**/*.lock)",
+    "Write(**/*.tfstate.backup)",
+    "Write(**/package-lock.json)",
+    "Write(**/settings.local.json)",
+];
+
+// Interleave every legacy entry around owner rules; return the expected result.
+fn plant_legacy_write_denies(path: &Path) -> Value {
+    let mut settings: Value =
+        serde_json::from_str(&fs::read_to_string(path).expect("settings readable"))
+            .expect("settings JSON");
+    let shipped = settings["permissions"]["deny"]
+        .as_array()
+        .expect("deny")
+        .clone();
+    let [lock, tfstate, package_lock, local] = LEGACY_WRITE_DENIES.map(Value::from);
+    let mut planted = vec![lock, json!("Write(secrets/**)"), tfstate];
+    planted.extend(shipped.iter().cloned());
+    planted.extend([package_lock, json!("Read(./.env)"), local]);
+    settings["permissions"]["deny"] = Value::Array(planted);
+    settings["permissions"]["allow"] = json!(["Bash(cargo test:*)"]);
+    fs::write(
+        path,
+        serde_json::to_string_pretty(&settings).expect("serialize settings"),
+    )
+    .expect("settings writable");
+    let mut expected = vec![json!("Write(secrets/**)")];
+    expected.extend(shipped);
+    expected.push(json!("Read(./.env)"));
+    Value::Array(expected)
+}
+
+fn assert_legacy_write_denies_retired(path: &Path, expected_deny: &Value) {
+    let settings: Value =
+        serde_json::from_str(&fs::read_to_string(path).expect("settings readable"))
+            .expect("settings JSON");
+    assert_eq!(
+        &settings["permissions"]["deny"],
+        expected_deny,
+        "{}",
+        path.display()
+    );
+    let deny = settings["permissions"]["deny"].as_array().expect("deny");
+    for edit in LEGACY_WRITE_DENIES.map(|rule| rule.replacen("Write(", "Edit(", 1)) {
+        let count = deny.iter().filter(|rule| **rule == *edit).count();
+        assert_eq!(count, 1, "{edit} in {}", path.display());
+    }
+    assert_eq!(
+        settings["permissions"]["allow"],
+        json!(["Bash(cargo test:*)"]),
+        "{}",
+        path.display()
+    );
+}
+
+#[test]
+fn update_retires_legacy_write_denies_in_registered_project_and_global_settings() {
+    let home = TempRepo::new();
+    let repo = TempRepo::new();
+    init(&repo, home.path(), "claude", false);
+    let output = Command::new(env!("CARGO_BIN_EXE_lgtm"))
+        .args(["init", "--global"])
+        .env("HOME", home.path())
+        .output()
+        .expect("global init");
+    assert!(output.status.success(), "{output:?}");
+    let project = repo.path().join(".claude/settings.json");
+    let global = home.path().join(".claude/settings.json");
+    let project_deny = plant_legacy_write_denies(&project);
+    let global_deny = plant_legacy_write_denies(&global);
+
+    update_current(home.path());
+
+    assert_legacy_write_denies_retired(&project, &project_deny);
+    assert_legacy_write_denies_retired(&global, &global_deny);
+}
