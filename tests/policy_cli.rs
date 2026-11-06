@@ -10,7 +10,7 @@ fn policy_list_exposes_the_embedded_registry() {
         .expect("policy list starts");
     assert!(output.status.success());
     let rules: Value = serde_json::from_slice(&output.stdout).expect("policy list is JSON");
-    assert_eq!(rules.as_array().expect("rule array").len(), 71);
+    assert_eq!(rules.as_array().expect("rule array").len(), 78);
     assert_eq!(rules[0]["id"], "no-committed-secrets");
 }
 
@@ -202,7 +202,7 @@ fn policy_coverage_reports_every_normative_section() {
     assert!(output.status.success());
     let ledger: Value = serde_json::from_slice(&output.stdout).expect("coverage is JSON");
     let sections = ledger["sections"].as_array().expect("section array");
-    assert_eq!(sections.len(), 33);
+    assert_eq!(sections.len(), 34);
     assert!(sections.iter().any(|section| {
         section["heading"] == "Non-Negotiable Rules" && section["status"] == "partial"
     }));

@@ -8,12 +8,18 @@ pub(super) struct TemplateDigest {
     pub(super) sha256: &'static str,
 }
 
-/// Digests for v0.5.0/v0.6.0 rules and the pre-mobile v0.11.1 Codex document.
+/// Digests for v0.5.0/v0.6.0 rules and prior Codex documents (v0.11.1 pre-mobile,
+/// v0.15.1 pre-state-and-concurrency).
 pub(super) const LEGACY_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
     TemplateDigest {
         release: "v0.11.1",
         path: "AGENTS.md",
         sha256: "0688a63bf06089e5bacf458ab5ebf1dbf846ae64efc264bf72959980b82caea6",
+    },
+    TemplateDigest {
+        release: "v0.15.1",
+        path: "AGENTS.md",
+        sha256: "26b46d1976dbe90bf979878cf82650797f46e7bcb2df7887fa896e29d18b4909",
     },
     TemplateDigest {
         release: "v0.5.0",
@@ -293,7 +299,7 @@ pub(super) const CURRENT_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
     TemplateDigest {
         release: "current",
         path: "code-organization.md",
-        sha256: "42c41fafcf2015c85cfcd19c4320acd31c4345795278c54cdf87936644c8d955",
+        sha256: "2d299b1675cbe21b32a674d8e64f3011d0d6a78e453969d845fd005a68f19eb3",
     },
     TemplateDigest {
         release: "current",
@@ -308,7 +314,7 @@ pub(super) const CURRENT_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
     TemplateDigest {
         release: "current",
         path: "error-handling.md",
-        sha256: "823aef7c16baac8168ee32d5918cb9d79bcde1f784bc986c103e6a2e03287d19",
+        sha256: "51c6f80961a79b55e7e919dd24f4f0590421bd2324041d52a42cf04fb714e23e",
     },
     TemplateDigest {
         release: "current",
@@ -373,7 +379,7 @@ pub(super) const CURRENT_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
     TemplateDigest {
         release: "current",
         path: "testing.md",
-        sha256: "439210dfa5776715435a9501db98b88a6cdf2d90ca406ffbef6035873017a41c",
+        sha256: "d77ec5ebdbcbe2b4ba04b57becf259227e255ff05f26601f8932a81b9af935bc",
     },
     TemplateDigest {
         release: "current",
@@ -384,6 +390,11 @@ pub(super) const CURRENT_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
         release: "current",
         path: "web-ui.md",
         sha256: "a028491f79be7e4af94505f0b78318cd2c87fa2f1e7d6076c4fedbdc81962833",
+    },
+    TemplateDigest {
+        release: "current",
+        path: "state-and-concurrency.md",
+        sha256: "ab1ad99432c045fe0e7ae6ab4b871083e13bde3d8350dfc0c3a19916e32c6b30",
     },
     TemplateDigest {
         release: "current",
@@ -413,7 +424,7 @@ pub(super) const CURRENT_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
     TemplateDigest {
         release: "current",
         path: "patterns/sql.md",
-        sha256: "4edc3aac40ab7baacd3641daba10648bb9bf2bbcd8d0a514be07757d085b633d",
+        sha256: "efb5bf39830b8a39c4a089e768aef6e42f1d5fc2f432c0fe244901d27ba94c6e",
     },
     TemplateDigest {
         release: "current",
@@ -432,7 +443,7 @@ pub(super) const CURRENT_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
 pub(super) const CURRENT_GENERATED_DOCUMENT_DIGESTS: &[TemplateDigest] = &[TemplateDigest {
     release: "current",
     path: "AGENTS.md",
-    sha256: "26b46d1976dbe90bf979878cf82650797f46e7bcb2df7887fa896e29d18b4909",
+    sha256: "dc78ebf56afc773c7b14ea4961b0c3fd07416cd571669947eed20db4a7ad13e8",
 }];
 
 /// Return the recorded digest for one currently embedded template path.

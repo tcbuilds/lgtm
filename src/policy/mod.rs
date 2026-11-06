@@ -604,7 +604,7 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 71);
+        assert_eq!(rules.len(), 78);
     }
 
     #[test]
@@ -704,6 +704,13 @@ mod tests {
                 "module-boundary-review",
                 "error-contract-review",
                 "anti-slop-checklist",
+                "state-machine-review",
+                "check-then-act-atomicity",
+                "cross-system-idempotency",
+                "lease-fencing-review",
+                "business-rule-authority-review",
+                "event-ordering-duplicates",
+                "state-failure-path-tests",
             ]
         );
     }
@@ -769,6 +776,13 @@ mod tests {
                     | "typescript-api-response-validation"
                     | "react-no-state-mutation"
                     | "react-unstable-key"
+                    | "state-machine-review"
+                    | "check-then-act-atomicity"
+                    | "cross-system-idempotency"
+                    | "lease-fencing-review"
+                    | "business-rule-authority-review"
+                    | "event-ordering-duplicates"
+                    | "state-failure-path-tests"
             ) {
                 assert!(rule.overridable);
                 continue;

@@ -13,6 +13,18 @@ changes that require user action. Do not list planned work as a shipped feature.
 At release time, move these entries into a dated version section and link its
 notes in `doc/releases/`.
 
+### Features
+
+- Add `state-and-concurrency.md` guidance for implicit state machines,
+  check-then-act races, idempotent and recoverable cross-system operations,
+  lease fencing tokens, event ordering and duplicates, and failure-path tests.
+  It loads only for state, worker, queue, event, lock, lease, retry, and polling
+  paths. Error-handling, code-organization, and testing rules gain pointers for
+  polling and agent loop bounds, idempotency keys, and authoritative business
+  rules. All new rules are `should` or `review` guidance; no new blocking checks.
+  `lgtm refresh` and `lgtm update` install the new file and upgrade unchanged
+  v0.15.1 copies; edited rule files are backed up before replacement as before.
+
 ## [v0.14.2](doc/releases/v0.14.2.md) — 2026-10-19
 
 ### Bug fixes

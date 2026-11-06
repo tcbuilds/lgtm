@@ -82,6 +82,13 @@ fn embedded_registry_validates_against_schema() {
             "module-boundary-review",
             "error-contract-review",
             "anti-slop-checklist",
+            "state-machine-review",
+            "check-then-act-atomicity",
+            "cross-system-idempotency",
+            "lease-fencing-review",
+            "business-rule-authority-review",
+            "event-ordering-duplicates",
+            "state-failure-path-tests",
         ]
     );
 }

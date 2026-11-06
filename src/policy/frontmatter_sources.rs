@@ -134,4 +134,8 @@ pub const RULE_DOCUMENT_SOURCES: &[(&str, &str)] = &[
         "templates/claude-rules/rules/web-ui.md",
         include_str!("../../templates/claude-rules/rules/web-ui.md"),
     ),
+    (
+        "templates/claude-rules/rules/state-and-concurrency.md",
+        include_str!("../../templates/claude-rules/rules/state-and-concurrency.md"),
+    ),
 ];
