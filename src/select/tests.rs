@@ -339,6 +339,21 @@ fn glob_matching_respects_directory_boundaries() {
 }
 
 #[test]
+fn double_star_slash_matches_only_at_path_component_boundaries() {
+    assert!(glob_matches("**/lock*.py", "lock.py"));
+    assert!(glob_matches("**/lock*.py", "src/lock_manager.py"));
+    assert!(!glob_matches("**/lock*.rs", "src/block.rs"));
+    assert!(!glob_matches("**/lock*.py", "clock.py"));
+    let ios = "**/{ios,iosApp}/**/*.{swift,c}";
+    assert!(glob_matches(ios, "ios/Views/Home.swift"));
+    assert!(glob_matches(ios, "apps/shop/ios/Views/Home.swift"));
+    assert!(!glob_matches(ios, "bios/x.c"));
+    assert!(!glob_matches(ios, "firmware/bios/x.c"));
+    assert!(!glob_matches("**/test_*.py", "src/latest_version.py"));
+    assert!(glob_matches("**/test_*.py", "tests/test_version.py"));
+}
+
+#[test]
 fn glob_matching_supports_brace_alternation() {
     assert!(glob_matches("**/*.{rs,py}", "src/main.rs"));
     assert!(glob_matches("**/*.{rs,py}", "src/main.py"));
