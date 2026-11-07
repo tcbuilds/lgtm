@@ -1,10 +1,13 @@
 ---
 description: LGTM state, concurrency, and distributed-consistency rules.
 paths:
-  - "**/{state,states,workers,worker,jobs,tasks,queues,queue,consumers,consumer,events,webhooks,webhook,sagas,workflows,workflow,schedulers,scheduler,outbox,inbox}/**/*.{rs,py,ts,tsx,js,jsx,mjs,cjs,go,java,kt,cs,rb,swift,scala}"
-  - "**/*{state,State,status,Status,transition,Transition,workflow,Workflow,saga,Saga,fsm,FSM,reconcil,Reconcil}*.{rs,py,ts,tsx,js,jsx,mjs,cjs,go,java,kt,cs,rb,swift,scala}"
-  - "**/*{worker,Worker,job,Job,queue,Queue,consumer,Consumer,subscriber,Subscriber,webhook,Webhook,event,Event,outbox,Outbox,inbox,Inbox}*.{rs,py,ts,tsx,js,jsx,mjs,cjs,go,java,kt,cs,rb,swift,scala}"
-  - "**/*{_lock,-lock,Lock,_mutex,Mutex,_lease,-lease,Lease,fencing,Fencing,retry,Retry,retries,Retries,poll,Poll,scheduler,Scheduler,idempot,Idempot}*.{rs,py,ts,tsx,js,jsx,mjs,cjs,go,java,kt,cs,rb,swift,scala}"
+  - "**/{state,states,workers,worker,jobs,tasks,queues,queue,consumers,consumer,events,webhooks,webhook,sagas,workflows,workflow,schedulers,scheduler,outbox,inbox}/**/*.{rs,py,pyi,ts,tsx,js,jsx,mjs,cjs,go,java,kt,kts,cs,c,cc,cpp,cxx,h,hpp}"
+  - "**/{lock,locks,lease,leases}/**/*.{rs,py,pyi,ts,tsx,js,jsx,mjs,cjs,go,java,kt,kts,cs,c,cc,cpp,cxx,h,hpp}"
+  - "**/{lock,locks,lease,leases,mutex}.{rs,py,pyi,ts,tsx,js,jsx,mjs,cjs,go,java,kt,kts,cs,c,cc,cpp,cxx,h,hpp}"
+  - "**/{lock,locks,lease,leases,mutex}{_,-}*.{rs,py,pyi,ts,tsx,js,jsx,mjs,cjs,go,java,kt,kts,cs,c,cc,cpp,cxx,h,hpp}"
+  - "**/*{state,State,status,Status,transition,Transition,workflow,Workflow,saga,Saga,fsm,FSM,reconcil,Reconcil}*.{rs,py,pyi,ts,tsx,js,jsx,mjs,cjs,go,java,kt,kts,cs,c,cc,cpp,cxx,h,hpp}"
+  - "**/*{worker,Worker,job,Job,queue,Queue,consumer,Consumer,subscriber,Subscriber,webhook,Webhook,event,Event,outbox,Outbox,inbox,Inbox}*.{rs,py,pyi,ts,tsx,js,jsx,mjs,cjs,go,java,kt,kts,cs,c,cc,cpp,cxx,h,hpp}"
+  - "**/*{_lock,-lock,Lock,_mutex,Mutex,_lease,-lease,Lease,fencing,Fencing,leader_elect,leader-elect,LeaderElect,retry,Retry,retries,Retries,poll,Poll,scheduler,Scheduler,idempot,Idempot}*.{rs,py,pyi,ts,tsx,js,jsx,mjs,cjs,go,java,kt,kts,cs,c,cc,cpp,cxx,h,hpp}"
 headings: ["State And Concurrency"]
 rules:
   [
@@ -35,7 +38,7 @@ rules:
     {
       "id": "check-then-act-atomicity",
       "title": "Make check-then-act sequences atomic",
-      "description": "A decision based on a read must not be applied by a separate write that another actor can interleave; time-of-check/time-of-use gaps need an atomic primitive or a lock held across both steps.",
+      "description": "A decision based on a read should not be applied by a separate write that another actor can interleave; time-of-check/time-of-use gaps should be closed with an atomic primitive or a lock held across both steps.",
       "mechanism": "instruction",
       "confidence": "low",
       "examples": [
@@ -51,7 +54,7 @@ rules:
       "category": "correctness",
       "applies_to": {"languages": [], "domains": [], "file_patterns": []},
       "activation": {"change_types": ["create", "modify"], "signals": ["race", "lock", "concurrency", "toctou"]},
-      "instruction": "Collapse check-then-act into one atomic step: conditional update or compare-and-set, unique constraint, create-new file open, atomic rename, or a lock held across both the check and the act.",
+      "instruction": "Collapse check-then-act into one atomic step: conditional update or compare-and-set, unique constraint, exclusive create (O_EXCL), no-clobber link or rename (link(), renameat2 with RENAME_NOREPLACE), or a lock held across both the check and the act; a plain rename silently replaces its target.",
       "enforcement": {"mode": "instruction", "checks": []},
       "overridable": true,
       "evidence": {"required": ["review_result"]}
@@ -59,7 +62,7 @@ rules:
     {
       "id": "cross-system-idempotency",
       "title": "Make cross-system operations idempotent and recoverable",
-      "description": "Operations that span a database and an external service, queue, or file store must be safe to retry and must leave a recoverable record when they fail partway.",
+      "description": "Operations that span a database and an external service, queue, or file store should be safe to retry and should leave a recoverable record when they fail partway.",
       "mechanism": "instruction",
       "confidence": "low",
       "examples": [
@@ -75,7 +78,7 @@ rules:
       "category": "reliability",
       "applies_to": {"languages": [], "domains": [], "file_patterns": []},
       "activation": {"change_types": ["create", "modify"], "signals": ["retry", "idempotency", "external-api", "queue", "webhook"]},
-      "instruction": "Give each cross-system operation a stable idempotency key, record intent before the external call, make the receiver dedupe on that key, and give partial failure a resume or compensation path instead of a silent half-commit.",
+      "instruction": "Give each cross-system operation a stable idempotency key, record intent before the external call, use the receiver's idempotency-key support where it exists and otherwise record and dedupe on your side before the call, and give partial failure a resume or compensation path instead of a silent half-commit.",
       "enforcement": {"mode": "instruction", "checks": []},
       "overridable": true,
       "evidence": {"required": ["review_result"]}
@@ -83,7 +86,7 @@ rules:
     {
       "id": "lease-fencing-review",
       "title": "Fence writes from stale lease holders",
-      "description": "Distributed locks and leases can expire while their holder keeps running; writes they protect must carry a fencing token or lease epoch that the resource checks.",
+      "description": "Distributed locks and leases can expire while their holder keeps running; writes they protect should carry a fencing token or lease epoch that the resource checks.",
       "mechanism": "review",
       "confidence": "low",
       "examples": [
@@ -107,11 +110,11 @@ rules:
     {
       "id": "event-ordering-duplicates",
       "title": "Define event ordering and duplicate handling",
-      "description": "Consumers of events, messages, jobs, and webhooks must state which ordering they rely on and how they handle duplicate, late, and out-of-order delivery.",
+      "description": "Consumers of events, messages, jobs, and webhooks should state which ordering they rely on and how they handle duplicate, late, and out-of-order delivery.",
       "mechanism": "instruction",
       "confidence": "low",
       "examples": [
-        {"language": "all", "text": "good: skip event version 41 for order 7 because version 42 is already applied; bad: apply webhooks in arrival order and credit twice on redelivery", "schematic": true}
+        {"language": "all", "text": "good: skip a full-state event at version 41 once version 42 is applied, and buffer or refetch authoritative state when a delta event arrives after a gap; bad: apply webhooks in arrival order and credit twice on redelivery", "schematic": true}
       ],
       "limitations": [
         "Delivery guarantees depend on the transport and are not inferred; review the consumer contract."
@@ -122,7 +125,7 @@ rules:
       "category": "reliability",
       "applies_to": {"languages": [], "domains": [], "file_patterns": []},
       "activation": {"change_types": ["create", "modify"], "signals": ["event", "message", "queue", "webhook", "consumer"]},
-      "instruction": "Assume at-least-once, possibly reordered delivery unless the transport guarantees more; dedupe on a stable event ID, check per-entity sequence or version before applying, and define the handling of late, duplicate, and poison messages.",
+      "instruction": "Assume at-least-once, possibly reordered delivery unless the transport guarantees more; dedupe on a stable event ID, check per-entity sequence or version before applying (skip stale full-state events; buffer gaps or refetch authoritative state for delta events), and define the handling of late, duplicate, and poison messages.",
       "enforcement": {"mode": "instruction", "checks": []},
       "overridable": true,
       "evidence": {"required": ["review_result"]}
@@ -160,10 +163,10 @@ system boundaries. A matching file name is a hint, not proof.
 
 - Treat a status field, a set of flags, or a sequence of lifecycle steps as a state machine: name its states, its allowed transitions, and the invariant each state guarantees, and keep them in one place.
 - Route every state change through one transition function that rejects invalid moves; do not assign status fields directly from callers.
-- Close time-of-check/time-of-use gaps with one atomic step: conditional update, compare-and-set, unique constraint, create-new open, atomic rename, or a lock held across check and act. SQL specifics are in `patterns/sql.md`.
-- Make cross-system operations idempotent and recoverable: stable idempotency keys, intent recorded before the external call, receiver-side dedupe, and a resume or compensation path for partial failure.
+- Close time-of-check/time-of-use gaps with one atomic step: conditional update, compare-and-set, unique constraint, exclusive create (`O_EXCL`), no-clobber link or rename (`link()`, `renameat2` with `RENAME_NOREPLACE`), or a lock held across check and act. A plain `rename()` silently replaces its target. SQL specifics are in `patterns/sql.md`.
+- Make cross-system operations idempotent and recoverable: stable idempotency keys, intent recorded before the external call, the receiver's idempotency-key support where it exists (otherwise your own dedupe record checked before the call), and a resume or compensation path for partial failure.
 - Fence writes protected by distributed locks or leases with a monotonically increasing token or epoch that the resource checks; lease expiry alone does not stop a paused holder.
-- State the ordering each consumer relies on and handle duplicate, late, out-of-order, and poison messages explicitly; assume at-least-once delivery unless the transport guarantees more.
+- State the ordering each consumer relies on and handle duplicate, late, out-of-order, and poison messages explicitly (a stale full-state event can be skipped; a delta after a gap needs buffering or a refetch of authoritative state); assume at-least-once delivery unless the transport guarantees more.
 - Test invalid transitions, concurrent callers, retries and duplicate delivery, and failure between steps.
 
 ## Shapes
@@ -181,16 +184,22 @@ claimed = db.execute(
 ```
 
 ```python
-# good: one owner of the lifecycle; invalid moves fail loudly
+# good: one owner of the lifecycle; invalid moves fail loudly and the write
+# only applies if the state is still the one the decision was based on
 TRANSITIONS = {
     OrderState.PENDING: {OrderState.PAID, OrderState.CANCELLED},
     OrderState.PAID: {OrderState.SHIPPED, OrderState.REFUNDED},
 }
 
-def transition(order: Order, target: OrderState) -> Order:
-    if target not in TRANSITIONS.get(order.state, set()):
-        raise InvalidTransition(order.id, order.state, target)
-    return replace(order, state=target)
+def transition(db, order_id: OrderId, current: OrderState, target: OrderState) -> None:
+    if target not in TRANSITIONS.get(current, set()):
+        raise InvalidTransition(order_id, current, target)
+    updated = db.execute(
+        "UPDATE orders SET state = %s WHERE id = %s AND state = %s",
+        (target.value, order_id, current.value),
+    ).rowcount
+    if updated != 1:
+        raise ConcurrentTransition(order_id, current, target)
 ```
 
 ```python

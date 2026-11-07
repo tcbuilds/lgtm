@@ -22,8 +22,19 @@ notes in `doc/releases/`.
   paths. Error-handling, code-organization, and testing rules gain pointers for
   polling and agent loop bounds, idempotency keys, and authoritative business
   rules. All new rules are `should` or `review` guidance; no new blocking checks.
-  `lgtm refresh` and `lgtm update` install the new file and upgrade unchanged
-  v0.15.1 copies; edited rule files are backed up before replacement as before.
+- `lgtm refresh` and `lgtm update` install `state-and-concurrency.md` and replace
+  the four changed shipped rule files (`error-handling.md`,
+  `code-organization.md`, `testing.md`, `patterns/sql.md`). As for every rule
+  upgrade, each replaced file that differs from the new template is first saved
+  as a content-addressed `.bak` beside it, so an untouched v0.15.1 install gains
+  four backups. A Codex `AGENTS.md` from v0.12.0 through v0.15.1 that was never
+  edited is upgraded by `lgtm init --agent codex`; an edited one is kept.
+
+### Bug fixes
+
+- Path-scoped rule matching for Codex and Pi no longer treats `**/X` as matching
+  `X` in the middle of a file or directory name, so `bios/` no longer loads iOS
+  guidance and `latest_version.py` no longer loads testing guidance.
 
 ## [v0.14.2](doc/releases/v0.14.2.md) — 2026-10-19
 

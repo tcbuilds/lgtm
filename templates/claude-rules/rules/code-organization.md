@@ -212,7 +212,7 @@ rules:
     {
       "id": "business-rule-authority-review",
       "title": "Enforce business rules authoritatively",
-      "description": "Business rules such as limits, eligibility, pricing, quotas, and allowed state transitions must be enforced by the server or domain layer that owns the data; client, UI, and caller-side checks are convenience only.",
+      "description": "Business rules such as limits, eligibility, pricing, quotas, and allowed state transitions should be enforced by the server or domain layer that owns the data; client, UI, and caller-side checks are convenience only.",
       "mechanism": "review",
       "confidence": "low",
       "examples": [

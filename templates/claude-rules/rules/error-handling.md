@@ -199,7 +199,7 @@ rules:
     {
       "id": "bounded-retries-loops",
       "title": "Bound retries and loops",
-      "description": "Retry, polling, worker, and agent execution loops must have explicit termination bounds.",
+      "description": "Retry and worker loops must have explicit termination bounds.",
       "severity": "error",
       "level": "must",
       "category": "reliability",
@@ -274,9 +274,9 @@ rules:
 - Add context before propagating errors; never return a naked `failed` error.
 - Log at the boundary that handles the error. Do not log and rethrow repeatedly.
 - Retry only known transient failures, with exponential backoff, jitter, caps, and cancellation.
-- Bound polling and agent or tool execution loops with a maximum attempt or step count, an overall deadline, and cancellation; report exhaustion as an explicit error instead of looping silently.
+- Bound polling and agent or tool execution loops too. Any attempt, time, or cancellation bound satisfies the loop rule; for polling and agent loops prefer an attempt or step cap plus an overall deadline, and report exhaustion as an explicit error instead of looping silently.
 - Make destructive operations idempotent or guard them with explicit confirmation.
-- Make operations that cross systems or may be retried idempotent (stable idempotency keys, upserts, receiver-side dedupe) and resumable after partial failure; see `state-and-concurrency.md`.
+- Make operations that cross systems or may be retried idempotent (stable idempotency keys honored by the receiver or deduped on your side, upserts) and resumable after partial failure; see `state-and-concurrency.md`.
 - Prefer typed result or error values over exceptions for expected failures when the language supports them.
 
 <!-- lgtm-rule: destructive-operation-safeguards -->

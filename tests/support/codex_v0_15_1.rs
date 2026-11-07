@@ -11,7 +11,8 @@
 
 use lgtm::policy::frontmatter::{RULE_DOCUMENT_SOURCES, body};
 
-/// SHA-256 of the `AGENTS.md` that `lgtm init --agent codex` wrote in v0.15.1.
+/// SHA-256 of the `AGENTS.md` that `lgtm init --agent codex` wrote in v0.12.0
+/// through v0.15.1; the document did not change across those releases.
 pub const V0_15_1_CODEX_DIGEST: &str =
     "26b46d1976dbe90bf979878cf82650797f46e7bcb2df7887fa896e29d18b4909";
 

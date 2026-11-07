@@ -99,11 +99,14 @@ automated checks; nothing in it blocks a session.
 
 It loads on path-name hints rather than on every source file: source under
 directories such as `workers/`, `jobs/`, `queues/`, `events/`, `webhooks/`, or
-`workflows/`, and file names containing words such as `state`, `status`,
-`transition`, `worker`, `job`, `queue`, `event`, `webhook`, `Lock`, `Lease`,
-`retry`, `poll`, or `idempot`. State logic in a file without such a hint does
-not load it; the always-loaded error-handling, code-organization, and testing
-rules carry one-line pointers to the same practices.
+`workflows/`, `lock/`, or `lease/`, files named `lock`, `locks`, `lease`,
+`leases`, or `mutex` (alone or with a `_`/`-` suffix), and file names containing
+words such as `state`, `status`, `transition`, `worker`, `job`, `queue`,
+`event`, `webhook`, `_lock`/`Lock`, `_lease`/`Lease`, `retry`, `poll`, or
+`idempot`. It uses the same source extensions as the error-handling and
+code-organization rules. State logic in a file without such a hint does not
+load it; those error-handling and code-organization rules, and the testing
+rules, carry one-line pointers to the same practices.
 
 ## Codex
 
