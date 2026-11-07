@@ -23,18 +23,30 @@ notes in `doc/releases/`.
   polling and agent loop bounds, idempotency keys, and authoritative business
   rules. All new rules are `should` or `review` guidance; no new blocking checks.
 - `lgtm refresh` and `lgtm update` install `state-and-concurrency.md` and replace
-  the four changed shipped rule files (`error-handling.md`,
-  `code-organization.md`, `testing.md`, `patterns/sql.md`). As for every rule
+  the eight changed shipped rule files (`error-handling.md`,
+  `code-organization.md`, `testing.md`, `config.md`, `infrastructure.md`,
+  `sql.md`, `patterns/sql.md`, `patterns/testing.md`). As for every rule
   upgrade, each replaced file that differs from the new template is first saved
   as a content-addressed `.bak` beside it, so an untouched v0.15.1 install gains
-  four backups. A Codex `AGENTS.md` from v0.12.0 through v0.15.1 that was never
+  eight backups. A Codex `AGENTS.md` from v0.12.0 through v0.15.1 that was never
   edited is upgraded by `lgtm init --agent codex`; an edited one is kept.
 
 ### Bug fixes
 
-- Path-scoped rule matching for Codex and Pi no longer treats `**/X` as matching
-  `X` in the middle of a file or directory name, so `bios/` no longer loads iOS
-  guidance and `latest_version.py` no longer loads testing guidance.
+- LGTM's rule-path matcher no longer lets `**/X` match `X` in the middle of a
+  file or directory name, and a brace option starting with `*` no longer leaks
+  into its siblings (`{*a,b}` matched `xb`). The matcher decides rule selection
+  for every agent (prompt fallback packets, pre-tool baselines, `lgtm` rule
+  selection output) and Pi's read-time guidance injection; Claude Code's native
+  `.claude/rules/` loading uses its own matcher and is unaffected. Matches that
+  were mid-name false positives are gone: `bios/` (iOS), `myandroid/`,
+  `nomobile/`, `latest_version.py`, `contests/`, `my__tests__/` (testing),
+  `mydocs/`, `XREADME.md` (config), and `x.github/workflows/` (infrastructure).
+  Real naming conventions the old behavior covered by accident are now explicit
+  globs: `*.env.example` and `*requirements*.txt` (config), `*.Dockerfile*`,
+  `*.dockerfile*`, and prefixed `*-docker-compose*.yml` (infrastructure),
+  `*_tests/` and `*-tests/` (testing), and `*_migrations/` (SQL). The new globs
+  also cover `requirements-dev.txt` and lowercase `*.dockerfile`.
 
 ## [v0.14.2](doc/releases/v0.14.2.md) — 2026-10-19
 

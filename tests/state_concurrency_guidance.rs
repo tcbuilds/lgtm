@@ -44,7 +44,7 @@ fn state_guidance_is_injected_only_for_state_and_concurrency_path_hints() {
         ("cluster/leader_election.go", true),
         ("src/locks/registry.py", true),
         ("internal/lease/store.go", true),
-        ("native/lock-free/queue.cpp", true),
+        ("native/spin_lock.cpp", true),
         ("src/service.py", false),
         ("src/components/Button.tsx", false),
         ("src/app/models/user.py", false),

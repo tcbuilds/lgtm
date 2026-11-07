@@ -20,7 +20,7 @@ pub const V0_15_1_CODEX_DIGEST: &str =
 pub const ADDED_SINCE_V0_15_1: &str = "state-and-concurrency.md";
 
 /// Rule documents changed after v0.15.1, paired with their v0.15.1 contents.
-pub const CHANGED_SINCE_V0_15_1: [(&str, &str); 4] = [
+pub const CHANGED_SINCE_V0_15_1: [(&str, &str); 8] = [
     (
         "error-handling.md",
         include_str!("../fixtures/legacy-rules/v0.15.1/error-handling.md"),
@@ -36,6 +36,22 @@ pub const CHANGED_SINCE_V0_15_1: [(&str, &str); 4] = [
     (
         "patterns/sql.md",
         include_str!("../fixtures/legacy-rules/v0.15.1/patterns/sql.md"),
+    ),
+    (
+        "config.md",
+        include_str!("../fixtures/legacy-rules/v0.15.1/config.md"),
+    ),
+    (
+        "infrastructure.md",
+        include_str!("../fixtures/legacy-rules/v0.15.1/infrastructure.md"),
+    ),
+    (
+        "sql.md",
+        include_str!("../fixtures/legacy-rules/v0.15.1/sql.md"),
+    ),
+    (
+        "patterns/testing.md",
+        include_str!("../fixtures/legacy-rules/v0.15.1/patterns/testing.md"),
     ),
 ];
 
