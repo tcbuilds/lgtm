@@ -140,6 +140,10 @@ const TEMPLATES: &[(&str, &str)] = &[
         include_str!("../../templates/claude-rules/rules/web-ui.md"),
     ),
     (
+        "state-and-concurrency.md",
+        include_str!("../../templates/claude-rules/rules/state-and-concurrency.md"),
+    ),
+    (
         "patterns/core.md",
         include_str!("../../templates/claude-rules/rules/patterns/core.md"),
     ),

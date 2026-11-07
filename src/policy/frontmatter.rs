@@ -88,6 +88,13 @@ const RULE_ORDER: &[&str] = &[
     "module-boundary-review",
     "error-contract-review",
     "anti-slop-checklist",
+    "state-machine-review",
+    "check-then-act-atomicity",
+    "cross-system-idempotency",
+    "lease-fencing-review",
+    "business-rule-authority-review",
+    "event-ordering-duplicates",
+    "state-failure-path-tests",
 ];
 
 /// The machine-readable portion of a rule file.
@@ -141,9 +148,9 @@ pub fn load_registry() -> Result<Vec<Rule>, FrontmatterError> {
             .position(|candidate| *candidate == rule.id)
             .unwrap_or(RULE_ORDER.len())
     });
-    if rules.len() != 71 {
+    if rules.len() != 78 {
         return Err(FrontmatterError::Incomplete {
-            expected: 71,
+            expected: 78,
             actual: rules.len(),
         });
     }

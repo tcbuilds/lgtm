@@ -3,7 +3,9 @@ description: LGTM infrastructure engineering rules.
 paths:
   - "**/*.{tf,tfvars}"
   - "**/Dockerfile*"
+  - "**/*.{Dockerfile,dockerfile}*"
   - "**/docker-compose*.{yml,yaml}"
+  - "**/*{.,-,_}docker-compose*.{yml,yaml}"
   - "**/.github/workflows/*.{yml,yaml}"
 headings: ["Infrastructure As Code"]
 rules:
@@ -38,7 +40,11 @@ rules:
         ,
           "**/Dockerfile*"
         ,
+          "**/*.{Dockerfile,dockerfile}*"
+        ,
           "**/docker-compose*.{yml,yaml}"
+        ,
+          "**/*{.,-,_}docker-compose*.{yml,yaml}"
         ,
           "**/.github/workflows/*.{yml,yaml}"
         ]

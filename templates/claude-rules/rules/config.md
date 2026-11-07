@@ -3,7 +3,9 @@ description: LGTM configuration safety rules.
 paths:
   - "**/*.{yaml,yml,json,toml,ini,env}"
   - "**/.env.example"
+  - "**/*.env.example"
   - "**/{Cargo.toml,Cargo.lock,package.json,pnpm-lock.yaml,yarn.lock,go.mod,go.sum,pyproject.toml,requirements.txt,Gemfile,Podfile}"
+  - "**/*requirements*.txt"
   - "**/README.md"
   - "**/docs/**"
 headings: ["YAML, JSON, And Config", "Dependency Standards", "Documentation Standards"]
@@ -24,7 +26,11 @@ rules:
         ,
           "**/.env.example"
         ,
+          "**/*.env.example"
+        ,
           "**/{Cargo.toml,Cargo.lock,package.json,pnpm-lock.yaml,yarn.lock,go.mod,go.sum,pyproject.toml,requirements.txt,Gemfile,Podfile}"
+        ,
+          "**/*requirements*.txt"
         ,
           "**/README.md"
         ,
@@ -98,7 +104,11 @@ rules:
         ,
           "**/.env.example"
         ,
+          "**/*.env.example"
+        ,
           "**/{Cargo.toml,Cargo.lock,package.json,pnpm-lock.yaml,yarn.lock,go.mod,go.sum,pyproject.toml,requirements.txt,Gemfile,Podfile}"
+        ,
+          "**/*requirements*.txt"
         ,
           "**/README.md"
         ,
@@ -152,7 +162,11 @@ rules:
         ,
           "**/.env.example"
         ,
+          "**/*.env.example"
+        ,
           "**/{Cargo.toml,Cargo.lock,package.json,pnpm-lock.yaml,yarn.lock,go.mod,go.sum,pyproject.toml,requirements.txt,Gemfile,Podfile}"
+        ,
+          "**/*requirements*.txt"
         ,
           "**/README.md"
         ,
@@ -213,7 +227,11 @@ rules:
         ,
           "**/.env.example"
         ,
+          "**/*.env.example"
+        ,
           "**/{Cargo.toml,Cargo.lock,package.json,pnpm-lock.yaml,yarn.lock,go.mod,go.sum,pyproject.toml,requirements.txt,Gemfile,Podfile}"
+        ,
+          "**/*requirements*.txt"
         ,
           "**/README.md"
         ,

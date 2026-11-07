@@ -320,3 +320,62 @@ fn contains_line_anchor(contents: &str) -> bool {
         .windows(3)
         .any(|window| window[0] == b'#' && window[1] == b'L' && window[2].is_ascii_digit())
 }
+
+/// Naming conventions that the matcher once covered only through mid-name
+/// matches stay selected through explicit globs; true mid-name false positives
+/// stay unselected.
+#[test]
+fn conventional_prefixed_files_keep_rule_scope_without_mid_name_matches() {
+    let registry = load_registry().expect("embedded registry");
+    let scoped = |id: &str, path: &str| {
+        registry
+            .iter()
+            .find(|rule| rule.id == id)
+            .unwrap_or_else(|| panic!("rule {id}"))
+            .applies_to
+            .file_patterns
+            .iter()
+            .any(|pattern| file_pattern_matches(pattern, path))
+    };
+    let config_rules = [
+        "new-dependency-review",
+        "dependency-change-review",
+        "config-schema-review",
+        "documentation-change-review",
+    ];
+    for path in [
+        "dev-requirements.txt",
+        "svc/test-requirements.txt",
+        "requirements-dev.txt",
+        "prod.env.example",
+        "svc/local.env.example",
+    ] {
+        for id in config_rules {
+            assert!(scoped(id, path), "{id} must scope {path}");
+        }
+    }
+    for path in ["XREADME.md", "mydocs/x.md"] {
+        for id in config_rules {
+            assert!(!scoped(id, path), "{id} must not scope {path}");
+        }
+    }
+    for path in [
+        "api.Dockerfile",
+        "svc/api.Dockerfile",
+        "web.dockerfile",
+        "prod.docker-compose.yml",
+        "dev-docker-compose.yaml",
+    ] {
+        assert!(scoped("iac-validation-review", path), "{path}");
+    }
+    assert!(!scoped(
+        "iac-validation-review",
+        "x.github/workflows/ci.yml"
+    ));
+    for path in ["unit_tests/client.py", "svc/integration-tests/helpers.py"] {
+        assert!(scoped("test-quality-guidance", path), "{path}");
+    }
+    for path in ["src/latest_version.py", "contests/x.py"] {
+        assert!(!scoped("test-quality-guidance", path), "{path}");
+    }
+}

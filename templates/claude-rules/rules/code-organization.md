@@ -208,6 +208,57 @@ rules:
           "changed_locations"
         ]
       }
+    },
+    {
+      "id": "business-rule-authority-review",
+      "title": "Enforce business rules authoritatively",
+      "description": "Business rules such as limits, eligibility, pricing, quotas, and allowed state transitions should be enforced by the server or domain layer that owns the data; client, UI, and caller-side checks are convenience only.",
+      "mechanism": "review",
+      "confidence": "low",
+      "examples": [
+        {
+          "language": "all",
+          "text": "good: the order service rejects a quantity above the stock limit; bad: only the form disables the submit button above the limit",
+          "schematic": true
+        }
+      ],
+      "limitations": [
+        "Locating the authoritative enforcement point is semantic review; client-only checks are not detected statically."
+      ],
+      "enforcement_stage": "prompt",
+      "severity": "warning",
+      "level": "review",
+      "category": "validation",
+      "applies_to": {
+        "languages": [],
+        "domains": [],
+        "file_patterns": [
+          "**/*.{rs,py,pyi,ts,tsx,js,jsx,mjs,cjs,go,java,kt,kts,cs}"
+        ]
+      },
+      "activation": {
+        "change_types": [
+          "create",
+          "modify"
+        ],
+        "signals": [
+          "business-rule",
+          "domain",
+          "pricing",
+          "quota"
+        ]
+      },
+      "instruction": "Enforce each business rule at the authoritative domain or server boundary, backed by schema constraints where possible; treat client and UI checks as bypassable hints.",
+      "enforcement": {
+        "mode": "instruction",
+        "checks": []
+      },
+      "overridable": true,
+      "evidence": {
+        "required": [
+          "review_result"
+        ]
+      }
     }
   ]
 ---
@@ -220,6 +271,7 @@ rules:
 - Keep dependency direction obvious: UI -> domain -> infrastructure, not the reverse.
 - Isolate external systems behind adapters: database, filesystem, HTTP, WebSocket, LLMs, queues, cloud APIs, and OS services.
 - Keep business rules out of controllers, route handlers, UI components, CLIs, and migration scripts.
+- Enforce business rules (limits, eligibility, pricing, quotas, state transitions) in the server or domain layer that owns the data; client and UI checks are UX only, as with server-side authorization in `security.md`.
 - Avoid circular dependencies. If two modules need each other, extract the shared concept.
 
 **Size limits**
@@ -243,3 +295,5 @@ rules:
 #### Review function complexity
 <!-- lgtm-rule: module-boundary-review -->
 #### Review module boundaries
+<!-- lgtm-rule: business-rule-authority-review -->
+#### Enforce business rules authoritatively

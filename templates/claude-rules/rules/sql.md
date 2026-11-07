@@ -3,6 +3,7 @@ description: LGTM SQL engineering rules.
 paths:
   - "**/*.sql"
   - "**/migrations/**"
+  - "**/*{_,-}migrations/**"
 headings: ["SQL"]
 rules:
   [

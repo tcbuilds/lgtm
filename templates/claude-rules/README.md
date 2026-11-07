@@ -90,6 +90,24 @@ Run `cargo test --test mobile_guidance` to verify scope and installation behavio
 To remove the Claude guidance, delete these three installed files; a later init
 will reinstall missing templates. Pi's bundled guidance changes with the binary.
 
+## State and concurrency guidance
+
+`state-and-concurrency.md` covers implicit state machines, check-then-act races,
+idempotent cross-system operations, lease fencing, event ordering and duplicates,
+and failure-path tests. Its rules are `should` or `review` guidance with no
+automated checks; nothing in it blocks a session.
+
+It loads on path-name hints rather than on every source file: source under
+directories such as `workers/`, `jobs/`, `queues/`, `events/`, `webhooks/`, or
+`workflows/`, `lock/`, or `lease/`, files named `lock`, `locks`, `lease`,
+`leases`, or `mutex` (alone or with a `_`/`-` suffix), and file names containing
+words such as `state`, `status`, `transition`, `worker`, `job`, `queue`,
+`event`, `webhook`, `_lock`/`Lock`, `_lease`/`Lease`, `retry`, `poll`, or
+`idempot`. It uses the same source extensions as the error-handling and
+code-organization rules. State logic in a file without such a hint does not
+load it; those error-handling and code-organization rules, and the testing
+rules, carry one-line pointers to the same practices.
+
 ## Codex
 
 Codex reads `AGENTS.md` rather than `CLAUDE.md`, and has no equivalent of

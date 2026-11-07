@@ -1,3 +1,5 @@
+#[path = "support/codex_v0_15_1.rs"]
+mod codex_v0_15_1;
 mod common;
 
 use common::TempRepo;
@@ -114,7 +116,8 @@ fn pre_mobile_codex_document_upgrades_and_then_stays_unchanged() {
     let repo = TempRepo::new();
     lgtm::init::install_agents(repo.path()).expect("current Codex install");
     let current = repo.read("AGENTS.md");
-    let mut previous = current.clone();
+    // v0.11.1 is v0.15.1 without the mobile documents.
+    let mut previous = codex_v0_15_1::v0_15_1_codex_document(&current);
     for name in MOBILE_DOCUMENTS {
         let source_path = format!("templates/claude-rules/rules/{name}");
         let (_, contents) = RULE_DOCUMENT_SOURCES

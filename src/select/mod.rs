@@ -171,6 +171,16 @@ impl GlobNfa {
         });
     }
 
+    /// Compile `*` or `**` as a loop on a fresh state. Looping on `current`
+    /// would leak the loop into sibling brace options that share it, so
+    /// `{*a,b}` would accept `xb`.
+    fn add_star(&mut self, current: usize, crosses_separator: bool) -> usize {
+        let wildcard = self.new_state();
+        self.add_epsilon(current, wildcard);
+        self.add_wildcard(wildcard, wildcard, crosses_separator);
+        wildcard
+    }
+
     fn compile_sequence(
         &mut self,
         pattern: &[u8],
@@ -202,26 +212,25 @@ impl GlobNfa {
                 }
                 b'*' if pattern.get(*index + 1) == Some(&b'*') => {
                     if pattern.get(*index + 2) == Some(&b'/') {
+                        // Zero directories, or any directories ending in `/`. The
+                        // loop gets its own state so `after` is reachable only at a
+                        // path component boundary, never mid-component.
                         let after = self.new_state();
+                        let directories = self.new_state();
                         self.add_epsilon(current, after);
-                        self.add_wildcard(current, current, true);
-                        self.add_literal(current, after, b'/');
+                        self.add_epsilon(current, directories);
+                        self.add_wildcard(directories, directories, true);
+                        self.add_literal(directories, after, b'/');
                         *index += 3;
                         current = after;
                     } else {
-                        let after = self.new_state();
-                        self.add_epsilon(current, after);
-                        self.add_wildcard(current, current, true);
+                        current = self.add_star(current, true);
                         *index += 2;
-                        current = after;
                     }
                 }
                 b'*' => {
-                    let after = self.new_state();
-                    self.add_epsilon(current, after);
-                    self.add_wildcard(current, current, false);
+                    current = self.add_star(current, false);
                     *index += 1;
-                    current = after;
                 }
                 b'?' => {
                     let next = self.new_state();
