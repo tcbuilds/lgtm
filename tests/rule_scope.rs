@@ -84,11 +84,17 @@ fn representative_paths(pattern: &str) -> Vec<String> {
         "Podfile",
         "Dockerfile",
         "Dockerfile.dev",
+        "api.Dockerfile",
         "docker-compose.yml",
         "docker-compose.dev.yaml",
+        "prod.docker-compose.yml",
         "docs/file.md",
         "migrations/file.sql",
+        "data_migrations/file.sql",
         "__tests__/file.ts",
+        "unit_tests/file.py",
+        "dev-requirements.txt",
+        "prod.env.example",
         ".github/workflows/check.yml",
     ];
 

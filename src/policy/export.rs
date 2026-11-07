@@ -189,7 +189,7 @@ mod tests {
         assert!(output.join("profiles/strict.json").is_file());
         let exported_rules = fs::read_to_string(output.join("rules.json")).expect("exported rules");
         let rules: serde_json::Value = serde_json::from_str(&exported_rules).expect("rules JSON");
-        assert_eq!(rules.as_array().expect("rule array").len(), 71);
+        assert_eq!(rules.as_array().expect("rule array").len(), 78);
 
         // Every source hashed by bundle_digest must be present in the export.
         let manifest_text =
@@ -223,7 +223,7 @@ mod tests {
             fs::read_to_string(output.join("rules.json")).expect("re-exported rules");
         let rules: serde_json::Value =
             serde_json::from_str(&reexported_rules).expect("re-exported rules JSON");
-        assert_eq!(rules.as_array().expect("rule array").len(), 71);
+        assert_eq!(rules.as_array().expect("rule array").len(), 78);
         fs::remove_dir_all(output).ok();
     }
 }
