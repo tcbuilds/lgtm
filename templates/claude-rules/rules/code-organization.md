@@ -226,7 +226,7 @@ rules:
         "Locating the authoritative enforcement point is semantic review; client-only checks are not detected statically."
       ],
       "enforcement_stage": "prompt",
-      "severity": "info",
+      "severity": "warning",
       "level": "review",
       "category": "validation",
       "applies_to": {

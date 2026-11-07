@@ -299,7 +299,7 @@ pub(super) const CURRENT_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
     TemplateDigest {
         release: "current",
         path: "code-organization.md",
-        sha256: "2d299b1675cbe21b32a674d8e64f3011d0d6a78e453969d845fd005a68f19eb3",
+        sha256: "27088c0f45da136fb49d573f28d05c05de973b22f535ea125660a94c404839d8",
     },
     TemplateDigest {
         release: "current",
@@ -394,7 +394,7 @@ pub(super) const CURRENT_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
     TemplateDigest {
         release: "current",
         path: "state-and-concurrency.md",
-        sha256: "ab1ad99432c045fe0e7ae6ab4b871083e13bde3d8350dfc0c3a19916e32c6b30",
+        sha256: "f77348f971ddb1f05bbbdb4a37a35192e9486ec96f928261459bbbc770f9386a",
     },
     TemplateDigest {
         release: "current",

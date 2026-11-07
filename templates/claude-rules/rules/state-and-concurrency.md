@@ -22,7 +22,7 @@ rules:
         "Native loading uses path-name hints, so state logic in files without those hints may not receive this guidance."
       ],
       "enforcement_stage": "prompt",
-      "severity": "info",
+      "severity": "warning",
       "level": "review",
       "category": "correctness",
       "applies_to": {"languages": [], "domains": [], "file_patterns": []},
@@ -94,7 +94,7 @@ rules:
         "A single-process mutex does not need fencing; apply this only to locks or leases shared across processes or hosts."
       ],
       "enforcement_stage": "prompt",
-      "severity": "info",
+      "severity": "warning",
       "level": "review",
       "category": "reliability",
       "applies_to": {"languages": [], "domains": [], "file_patterns": []},
