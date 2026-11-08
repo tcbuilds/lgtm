@@ -3,7 +3,7 @@
 //! Rule files carry a JSON-compatible YAML frontmatter object so the same
 //! document can be consumed by Claude Code and by the embedded policy loader.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -16,7 +16,7 @@ pub use super::frontmatter_sources::RULE_DOCUMENT_SOURCES;
 pub const RULE_FILE_SOURCES: &[(&str, &str)] = RULE_DOCUMENT_SOURCES;
 
 /// Preserve the registry order that callers use for stable packet output.
-const RULE_ORDER: &[&str] = &[
+pub(super) const RULE_ORDER: &[&str] = &[
     "no-committed-secrets",
     "no-swallowed-errors",
     "no-broad-exception-handling",
@@ -133,27 +133,40 @@ pub enum FrontmatterError {
     },
     #[error("frontmatter registry differs from JSON registry: {details}")]
     RegistryMismatch { details: String },
-    #[error("frontmatter registry is incomplete: expected {expected} rules, found {actual}")]
-    Incomplete { expected: usize, actual: usize },
+    #[error(
+        "frontmatter rule ids differ from RULE_ORDER: missing from rule files {missing:?}, unknown to RULE_ORDER {unknown:?}"
+    )]
+    RuleOrderMismatch {
+        missing: Vec<String>,
+        unknown: Vec<String>,
+    },
     #[error("frontmatter schema is invalid: {0}")]
     Schema(String),
 }
 
 /// Load every rule declared in the embedded rule-file frontmatter.
 pub fn load_registry() -> Result<Vec<Rule>, FrontmatterError> {
-    let mut rules = load_rule_files(RULE_FILE_SOURCES)?;
-    rules.sort_by_key(|rule| {
-        RULE_ORDER
-            .iter()
-            .position(|candidate| *candidate == rule.id)
-            .unwrap_or(RULE_ORDER.len())
-    });
-    if rules.len() != RULE_ORDER.len() {
-        return Err(FrontmatterError::Incomplete {
-            expected: RULE_ORDER.len(),
-            actual: rules.len(),
+    order_rules(load_rule_files(RULE_FILE_SOURCES)?, RULE_ORDER)
+}
+
+/// Sort rules into `order`, rejecting any id absent from either side so a rule
+/// renamed in its file cannot silently sort last.
+fn order_rules(mut rules: Vec<Rule>, order: &[&str]) -> Result<Vec<Rule>, FrontmatterError> {
+    let loaded: BTreeSet<&str> = rules.iter().map(|rule| rule.id.as_str()).collect();
+    let expected: BTreeSet<&str> = order.iter().copied().collect();
+    if loaded != expected {
+        return Err(FrontmatterError::RuleOrderMismatch {
+            missing: expected
+                .difference(&loaded)
+                .map(|id| id.to_string())
+                .collect(),
+            unknown: loaded
+                .difference(&expected)
+                .map(|id| id.to_string())
+                .collect(),
         });
     }
+    rules.sort_by_key(|rule| order.iter().position(|candidate| *candidate == rule.id));
     Ok(rules)
 }
 

@@ -604,9 +604,8 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        let declared =
-            frontmatter::load_rule_files(frontmatter::RULE_FILE_SOURCES).expect("rule files parse");
-        assert_eq!(rules.len(), declared.len());
+        let ids: Vec<&str> = rules.iter().map(|rule| rule.id.as_str()).collect();
+        assert_eq!(ids, frontmatter::RULE_ORDER);
     }
 
     #[test]
