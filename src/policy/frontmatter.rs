@@ -140,6 +140,8 @@ pub enum FrontmatterError {
         missing: Vec<String>,
         unknown: Vec<String>,
     },
+    #[error("RULE_ORDER lists rule id `{id}` more than once")]
+    DuplicateRuleOrderId { id: String },
     #[error("frontmatter schema is invalid: {0}")]
     Schema(String),
 }
@@ -150,10 +152,14 @@ pub fn load_registry() -> Result<Vec<Rule>, FrontmatterError> {
 }
 
 /// Sort rules into `order`, rejecting any id absent from either side so a rule
-/// renamed in its file cannot silently sort last.
+/// renamed in its file cannot silently sort last, and rejecting ids listed
+/// twice in `order` because set equality alone would accept them.
 fn order_rules(mut rules: Vec<Rule>, order: &[&str]) -> Result<Vec<Rule>, FrontmatterError> {
     let loaded: BTreeSet<&str> = rules.iter().map(|rule| rule.id.as_str()).collect();
-    let expected: BTreeSet<&str> = order.iter().copied().collect();
+    let mut expected = BTreeSet::new();
+    if let Some(id) = order.iter().find(|id| !expected.insert(**id)) {
+        return Err(FrontmatterError::DuplicateRuleOrderId { id: id.to_string() });
+    }
     if loaded != expected {
         return Err(FrontmatterError::RuleOrderMismatch {
             missing: expected

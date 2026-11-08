@@ -344,6 +344,8 @@ fn conventional_prefixed_files_keep_rule_scope_without_mid_name_matches() {
         "documentation-change-review",
     ];
     for path in [
+        "requirements.txt",
+        "svc/requirements.txt",
         "dev-requirements.txt",
         "svc/test-requirements.txt",
         "requirements-dev.txt",
