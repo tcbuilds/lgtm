@@ -75,7 +75,7 @@ notes in `doc/releases/`.
 - The guarded-commit CLI, commit parser, approval transactions, and adapter
   denial/approval/completion-veto responses are removed. Move verification to
   an explicit `lgtm check` or CI. Init stops generating native Codex command
-  bans; refresh retires only LGTM-owned Codex rules.
+  bans; init and managed refresh retire only LGTM-owned Codex command rules.
 
 ### Upgrade notes
 
