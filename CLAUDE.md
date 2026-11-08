@@ -4,10 +4,10 @@ Operational guidance for Claude Code contributors to `lgtm`.
 
 ## Scope and Architecture
 
-`lgtm` is a Rust 2024 CLI that compiles engineering policy into Claude Code hooks, normalized enforcement results, and local evidence. The v0.1.4 MVP supports Python repositories and Claude Code.
+`lgtm` is a Rust 2024 CLI that compiles engineering policy into agent hooks, normalized enforcement results, and local evidence. It supports Claude Code, Codex, and Pi; `README.md` lists the supported repository languages.
 
 - `src/main.rs` wires CLI commands; `src/lib.rs` exposes reusable modules.
-- `src/hooks/` implements the five Claude Code lifecycle hooks.
+- `src/hooks/` implements the five hook handlers (session start, user prompt submit, pre-tool-use, post-tool-use, stop) behind the six Claude Code events that init wires; `src/adapter/` translates Claude Code, Codex, and Pi hook payloads to and from them.
 - `src/checks/` contains native and wrapped checks; `src/policy/` loads profiles, overrides, and waivers.
 - `src/init/` safely merges repo configuration and hook settings.
 - `src/report.rs` renders evidence summaries.
