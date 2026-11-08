@@ -6,6 +6,7 @@ paths:
   - "**/*_test.{py,go,rs}"
   - "**/*.{test,spec}.{ts,tsx,js,jsx}"
   - "**/tests/**"
+  - "**/*{_,-}tests/**"
   - "**/__tests__/**"
 headings: ["Testing Standards"]
 rules:
@@ -221,6 +222,7 @@ rules:
           "**/*_test.{py,go,rs}",
           "**/*.{test,spec}.{ts,tsx,js,jsx}",
           "**/tests/**",
+          "**/*{_,-}tests/**",
           "**/__tests__/**"
         ]
       },
@@ -277,6 +279,7 @@ rules:
           "**/*_test.{py,go,rs}",
           "**/*.{test,spec}.{ts,tsx,js,jsx}",
           "**/tests/**",
+          "**/*{_,-}tests/**",
           "**/__tests__/**"
         ]
       },
@@ -335,6 +338,7 @@ rules:
           "**/*_test.{py,go,rs}",
           "**/*.{test,spec}.{ts,tsx,js,jsx}",
           "**/tests/**",
+          "**/*{_,-}tests/**",
           "**/__tests__/**"
         ]
       },
@@ -390,6 +394,7 @@ rules:
           "**/*_test.{py,go,rs}",
           "**/*.{test,spec}.{ts,tsx,js,jsx}",
           "**/tests/**",
+          "**/*{_,-}tests/**",
           "**/__tests__/**"
         ]
       },
@@ -491,6 +496,7 @@ Log text is presentation. Asserting on it breaks when you improve a message.
 - Use golden tests for stable text, JSON, CLI output, and generated artifacts.
 - Use contract tests for service boundaries and cross-language schemas.
 - Use fuzz tests for parsers, decoders, auth/token handlers, and anything that consumes untrusted input.
+- For stateful, concurrent, or retried code, test invalid transitions, competing callers, retries and duplicate delivery, and failure between steps.
 - Prefer real lightweight dependencies over excessive mocking. Mock only slow, flaky, paid, or external systems.
 
 ## Naming

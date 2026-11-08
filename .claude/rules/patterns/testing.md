@@ -5,6 +5,7 @@ paths:
   - "**/*_test.{py,go,rs}"
   - "**/*.{test,spec}.{ts,tsx,js,jsx}"
   - "**/tests/**"
+  - "**/*{_,-}tests/**"
   - "**/__tests__/**"
 ---
 

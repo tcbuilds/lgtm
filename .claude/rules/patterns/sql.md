@@ -131,7 +131,8 @@ DO UPDATE SET value = counters.value + 1;
 ```
 
 A `SELECT` followed by `INSERT` or `UPDATE` is a race. Let the database do it in
-one statement.
+one statement. The same check-then-act rule applies outside SQL; see
+`state-and-concurrency.md`.
 
 ## Constraints in the schema, not only in the app
 
