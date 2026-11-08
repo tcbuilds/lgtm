@@ -50,6 +50,39 @@ notes in `doc/releases/`.
   `*_tests/` and `*-tests/` (testing), and `*_migrations/` (SQL). The new globs
   also cover `requirements-dev.txt` and lowercase `*.dockerfile`.
 
+## [v0.15.1](doc/releases/v0.15.1.md) — 2026-10-26
+
+### Bug fixes
+
+- Claude Code init writes only the four `Edit(...)` deny rules. Claude Code
+  never matches path-scoped `Write(path)` rules, so the `Write(...)` twins
+  protected nothing and printed "Deny rule Write(...) never matches" warnings at
+  startup. Init merges and managed refresh remove the four exact legacy entries;
+  other `Write(...)` rules are preserved. Protection is unchanged.
+- Pi setup no longer installs `npm:pi-mcp-extension` or `npm:rtfd-pi`. It uses
+  Pi's built-in MCP support and adds `npm:@upstash/context7-pi` for library
+  documentation. Init and managed refresh remove the retired entries and add
+  Context7 when missing; MCP server configuration is not changed.
+
+## [v0.15.0](doc/releases/v0.15.0.md) — 2026-10-25
+
+### Breaking changes
+
+- Automatic hooks become observers: they no longer deny commands, protect edit
+  paths, intercept commits, request approval, or block task completion. Stop
+  and subagent-stop events report without running verification commands, and
+  post-tool findings are nonblocking context.
+- The guarded-commit CLI, commit parser, approval transactions, and adapter
+  denial/approval/completion-veto responses are removed. Move verification to
+  an explicit `lgtm check` or CI. Init stops generating native Codex command
+  bans; refresh retires only LGTM-owned Codex rules.
+
+### Upgrade notes
+
+- `lgtm check` still runs requested verification and returns exit code 2 on
+  error-level failures. Run `lgtm update`, then reload or restart agents. Roll
+  back with `lgtm update --version v0.14.2`.
+
 ## [v0.14.2](doc/releases/v0.14.2.md) — 2026-10-19
 
 ### Bug fixes
