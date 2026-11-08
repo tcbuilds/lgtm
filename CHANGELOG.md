@@ -13,6 +13,8 @@ changes that require user action. Do not list planned work as a shipped feature.
 At release time, move these entries into a dated version section and link its
 notes in `doc/releases/`.
 
+## [v0.16.0](doc/releases/v0.16.0.md) — 2026-11-08
+
 ### Features
 
 - Add `state-and-concurrency.md` guidance for implicit state machines,
