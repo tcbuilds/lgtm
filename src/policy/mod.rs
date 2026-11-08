@@ -604,7 +604,9 @@ mod tests {
     #[test]
     fn embedded_registry_loads_and_validates() {
         let rules = load_embedded_registry().expect("embedded registry must validate");
-        assert_eq!(rules.len(), 78);
+        let declared =
+            frontmatter::load_rule_files(frontmatter::RULE_FILE_SOURCES).expect("rule files parse");
+        assert_eq!(rules.len(), declared.len());
     }
 
     #[test]

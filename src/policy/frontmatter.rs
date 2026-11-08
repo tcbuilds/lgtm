@@ -148,9 +148,9 @@ pub fn load_registry() -> Result<Vec<Rule>, FrontmatterError> {
             .position(|candidate| *candidate == rule.id)
             .unwrap_or(RULE_ORDER.len())
     });
-    if rules.len() != 78 {
+    if rules.len() != RULE_ORDER.len() {
         return Err(FrontmatterError::Incomplete {
-            expected: 78,
+            expected: RULE_ORDER.len(),
             actual: rules.len(),
         });
     }
