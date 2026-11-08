@@ -10,7 +10,8 @@ fn policy_list_exposes_the_embedded_registry() {
         .expect("policy list starts");
     assert!(output.status.success());
     let rules: Value = serde_json::from_slice(&output.stdout).expect("policy list is JSON");
-    assert_eq!(rules.as_array().expect("rule array").len(), 78);
+    let embedded = lgtm::policy::load_embedded_registry().expect("embedded registry");
+    assert_eq!(rules.as_array().expect("rule array").len(), embedded.len());
     assert_eq!(rules[0]["id"], "no-committed-secrets");
 }
 

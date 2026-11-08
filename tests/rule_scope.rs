@@ -94,6 +94,7 @@ fn representative_paths(pattern: &str) -> Vec<String> {
         "__tests__/file.ts",
         "unit_tests/file.py",
         "dev-requirements.txt",
+        "requirements-dev.txt",
         "prod.env.example",
         ".github/workflows/check.yml",
     ];

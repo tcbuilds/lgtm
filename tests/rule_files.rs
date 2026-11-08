@@ -344,9 +344,16 @@ fn conventional_prefixed_files_keep_rule_scope_without_mid_name_matches() {
         "documentation-change-review",
     ];
     for path in [
+        "requirements.txt",
+        "svc/requirements.txt",
         "dev-requirements.txt",
         "svc/test-requirements.txt",
         "requirements-dev.txt",
+        "requirements_test.txt",
+        "svc/prod_requirements.txt",
+        "requirements.dev.txt",
+        "doc-requirements.txt",
+        "extras_requirements.txt",
         "prod.env.example",
         "svc/local.env.example",
     ] {
@@ -354,7 +361,12 @@ fn conventional_prefixed_files_keep_rule_scope_without_mid_name_matches() {
             assert!(scoped(id, path), "{id} must scope {path}");
         }
     }
-    for path in ["XREADME.md", "mydocs/x.md"] {
+    for path in [
+        "XREADME.md",
+        "mydocs/x.md",
+        "product_requirements.txt",
+        "spec/user-requirements.txt",
+    ] {
         for id in config_rules {
             assert!(!scoped(id, path), "{id} must not scope {path}");
         }

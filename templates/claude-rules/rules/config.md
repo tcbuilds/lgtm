@@ -5,7 +5,8 @@ paths:
   - "**/.env.example"
   - "**/*.env.example"
   - "**/{Cargo.toml,Cargo.lock,package.json,pnpm-lock.yaml,yarn.lock,go.mod,go.sum,pyproject.toml,requirements.txt,Gemfile,Podfile}"
-  - "**/*requirements*.txt"
+  - "**/requirements{-,_,.}*.txt"
+  - "**/{dev,development,test,tests,testing,prod,base,local,ci,doc,docs,lint,build,optional,extra,extras}{-,_}requirements.txt"
   - "**/README.md"
   - "**/docs/**"
 headings: ["YAML, JSON, And Config", "Dependency Standards", "Documentation Standards"]
@@ -30,7 +31,9 @@ rules:
         ,
           "**/{Cargo.toml,Cargo.lock,package.json,pnpm-lock.yaml,yarn.lock,go.mod,go.sum,pyproject.toml,requirements.txt,Gemfile,Podfile}"
         ,
-          "**/*requirements*.txt"
+          "**/requirements{-,_,.}*.txt"
+        ,
+          "**/{dev,development,test,tests,testing,prod,base,local,ci,doc,docs,lint,build,optional,extra,extras}{-,_}requirements.txt"
         ,
           "**/README.md"
         ,
@@ -108,7 +111,9 @@ rules:
         ,
           "**/{Cargo.toml,Cargo.lock,package.json,pnpm-lock.yaml,yarn.lock,go.mod,go.sum,pyproject.toml,requirements.txt,Gemfile,Podfile}"
         ,
-          "**/*requirements*.txt"
+          "**/requirements{-,_,.}*.txt"
+        ,
+          "**/{dev,development,test,tests,testing,prod,base,local,ci,doc,docs,lint,build,optional,extra,extras}{-,_}requirements.txt"
         ,
           "**/README.md"
         ,
@@ -166,7 +171,9 @@ rules:
         ,
           "**/{Cargo.toml,Cargo.lock,package.json,pnpm-lock.yaml,yarn.lock,go.mod,go.sum,pyproject.toml,requirements.txt,Gemfile,Podfile}"
         ,
-          "**/*requirements*.txt"
+          "**/requirements{-,_,.}*.txt"
+        ,
+          "**/{dev,development,test,tests,testing,prod,base,local,ci,doc,docs,lint,build,optional,extra,extras}{-,_}requirements.txt"
         ,
           "**/README.md"
         ,
@@ -231,7 +238,9 @@ rules:
         ,
           "**/{Cargo.toml,Cargo.lock,package.json,pnpm-lock.yaml,yarn.lock,go.mod,go.sum,pyproject.toml,requirements.txt,Gemfile,Podfile}"
         ,
-          "**/*requirements*.txt"
+          "**/requirements{-,_,.}*.txt"
+        ,
+          "**/{dev,development,test,tests,testing,prod,base,local,ci,doc,docs,lint,build,optional,extra,extras}{-,_}requirements.txt"
         ,
           "**/README.md"
         ,

@@ -305,7 +305,7 @@ pub(super) const CURRENT_TEMPLATE_DIGESTS: &[TemplateDigest] = &[
     TemplateDigest {
         release: "current",
         path: "config.md",
-        sha256: "4839952466bffa90a018ec724232e5da22d17c0e04e5466d6a7606fdb1b65e3a",
+        sha256: "e917def0fe4441362600bc999aef7a73b21398321a08cd1fd0e4a5612388363d",
     },
     TemplateDigest {
         release: "current",

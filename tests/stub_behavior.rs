@@ -177,8 +177,9 @@ fn compile_validate_prints_summary_and_exits_zero() {
         stdout.contains("no-committed-secrets"),
         "summary must list seed rule ids"
     );
+    let embedded = lgtm::policy::load_embedded_registry().expect("embedded registry");
     assert!(
-        stdout.contains("78 rules validated."),
+        stdout.contains(&format!("{} rules validated.", embedded.len())),
         "summary must report the validated rule count"
     );
 }

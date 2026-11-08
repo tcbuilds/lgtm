@@ -176,6 +176,9 @@ mod tests {
     fn export_writes_manifest_and_embedded_sources() {
         let output = std::env::temp_dir().join(format!("lgtm-export-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output);
+        let embedded_rule_count = crate::policy::load_embedded_registry()
+            .expect("embedded registry")
+            .len();
         let message = run(&output, false).expect("export succeeds");
         assert!(message.contains("exported policy bundle"));
         assert!(output.join("manifest.json").is_file());
@@ -189,7 +192,10 @@ mod tests {
         assert!(output.join("profiles/strict.json").is_file());
         let exported_rules = fs::read_to_string(output.join("rules.json")).expect("exported rules");
         let rules: serde_json::Value = serde_json::from_str(&exported_rules).expect("rules JSON");
-        assert_eq!(rules.as_array().expect("rule array").len(), 78);
+        assert_eq!(
+            rules.as_array().expect("rule array").len(),
+            embedded_rule_count
+        );
 
         // Every source hashed by bundle_digest must be present in the export.
         let manifest_text =
@@ -223,7 +229,10 @@ mod tests {
             fs::read_to_string(output.join("rules.json")).expect("re-exported rules");
         let rules: serde_json::Value =
             serde_json::from_str(&reexported_rules).expect("re-exported rules JSON");
-        assert_eq!(rules.as_array().expect("rule array").len(), 78);
+        assert_eq!(
+            rules.as_array().expect("rule array").len(),
+            embedded_rule_count
+        );
         fs::remove_dir_all(output).ok();
     }
 }

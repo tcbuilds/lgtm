@@ -13,6 +13,20 @@ changes that require user action. Do not list planned work as a shipped feature.
 At release time, move these entries into a dated version section and link its
 notes in `doc/releases/`.
 
+### Bug fixes
+
+- `config.md` no longer scopes any `.txt` file whose name contains
+  `requirements`, such as `product_requirements.txt` or
+  `user-requirements.txt`. Dependency rules now select `requirements.txt`,
+  `requirements-*.txt`, `requirements_*.txt`, `requirements.*.txt`, and `dev`,
+  `development`, `test`, `tests`, `testing`, `prod`, `base`, `local`, `ci`,
+  `doc`, `docs`, `lint`, `build`, `optional`, `extra`, or `extras` prefixed
+  `-requirements.txt` and `_requirements.txt` files. Tradeoff: any other
+  `<word>-requirements.txt` or `<word>_requirements.txt`, such as
+  `foo-requirements.txt`, is no longer selected. `lgtm refresh` and
+  `lgtm update` replace an untouched v0.16.0 `config.md` after saving it as a
+  content-addressed `.bak`.
+
 ## [v0.16.0](doc/releases/v0.16.0.md) — 2026-11-08
 
 ### Features

@@ -54,7 +54,7 @@ impl Scratch {
         fs::create_dir_all(root.path().join("work")).expect("work");
         let binary = root.path().join("bin/lgtm");
         fs::create_dir_all(binary.parent().expect("bin parent")).expect("bin");
-        fs::copy(env!("CARGO_BIN_EXE_lgtm"), &binary).expect("copy binary");
+        copy_executable(Path::new(env!("CARGO_BIN_EXE_lgtm")), &binary);
         Self { root, binary }
     }
 
@@ -80,19 +80,23 @@ impl Scratch {
     }
 }
 
-// Parallel copies and process creation can briefly leave a copied executable
-// busy on Linux. Retry only this OS spawn error, never a CLI failure or timeout.
+/// Copy an executable in a `cp` child so this process never holds its write fd.
+///
+/// A write descriptor opened here is inherited by every child another test
+/// thread forks before that child execs, and Linux refuses to exec a file with
+/// any open writer (ETXTBSY). Writing in a separate process leaves no
+/// descriptor for concurrent forks to inherit.
+fn copy_executable(source: &Path, destination: &Path) {
+    let mut copy = Command::new("cp");
+    copy.arg(source).arg(destination);
+    let output = run_bounded(&mut copy);
+    assert!(output.status.success(), "copy binary: {}", text(&output));
+}
+
 fn spawn_bounded(command: &mut Command) -> Child {
-    for attempt in 0..10 {
-        match command.spawn() {
-            Ok(child) => return child,
-            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 9 => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => panic!("command spawns: {error}"),
-        }
-    }
-    unreachable!("the final attempt returns or fails")
+    command
+        .spawn()
+        .unwrap_or_else(|error| panic!("command spawns: {error}"))
 }
 
 fn run_bounded(command: &mut Command) -> Output {

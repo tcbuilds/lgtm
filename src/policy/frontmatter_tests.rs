@@ -35,6 +35,39 @@ fn duplicate_frontmatter_ids_have_both_paths() {
 }
 
 #[test]
+fn rule_ids_absent_from_rule_order_are_rejected_by_name() {
+    let mut rule = load_registry().expect("embedded registry")[0].clone();
+    rule.id = "renamed-rule".to_string();
+    let error = order_rules(vec![rule], &["no-committed-secrets"]).expect_err("mismatch");
+    match &error {
+        FrontmatterError::RuleOrderMismatch { missing, unknown } => {
+            assert_eq!(missing, &["no-committed-secrets"]);
+            assert_eq!(unknown, &["renamed-rule"]);
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+    assert!(error.to_string().contains("no-committed-secrets"));
+    assert!(error.to_string().contains("renamed-rule"));
+}
+
+#[test]
+fn duplicate_rule_order_ids_are_rejected_by_name() {
+    let rule = load_registry().expect("embedded registry")[0].clone();
+    let error = order_rules(
+        vec![rule],
+        &["no-committed-secrets", "no-committed-secrets"],
+    )
+    .expect_err("duplicate order id");
+    match &error {
+        FrontmatterError::DuplicateRuleOrderId { id } => {
+            assert_eq!(id, "no-committed-secrets");
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+    assert!(error.to_string().contains("no-committed-secrets"));
+}
+
+#[test]
 fn body_excludes_frontmatter_sentinel() {
     let body = body("---\n{\"sentinel\":\"hidden\"}\n---\n# body").expect("body");
     assert!(
