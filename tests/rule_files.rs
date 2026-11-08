@@ -349,6 +349,9 @@ fn conventional_prefixed_files_keep_rule_scope_without_mid_name_matches() {
         "requirements-dev.txt",
         "requirements_test.txt",
         "svc/prod_requirements.txt",
+        "requirements.dev.txt",
+        "doc-requirements.txt",
+        "extras_requirements.txt",
         "prod.env.example",
         "svc/local.env.example",
     ] {
